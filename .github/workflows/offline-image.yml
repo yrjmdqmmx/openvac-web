@@ -49,3 +49,20 @@ jobs:
             ${{ runner.temp }}/openvac-image.tar.zst.sha256
           if-no-files-found: error
           retention-days: 1
+      - name: Export pinned pgvector database image
+        run: |
+          docker pull --platform linux/amd64 pgvector/pgvector:pg17
+          test "$(docker image inspect --format '{{.Architecture}}' pgvector/pgvector:pg17)" = amd64
+          docker save --output "$RUNNER_TEMP/openvac-postgres-pgvector.tar" pgvector/pgvector:pg17
+          zstd --threads=0 --rm "$RUNNER_TEMP/openvac-postgres-pgvector.tar"
+          cd "$RUNNER_TEMP"
+          sha256sum openvac-postgres-pgvector.tar.zst > openvac-postgres-pgvector.tar.zst.sha256
+      - name: Upload one-day pgvector artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: openvac-postgres-pgvector-pg17-linux-amd64
+          path: |
+            ${{ runner.temp }}/openvac-postgres-pgvector.tar.zst
+            ${{ runner.temp }}/openvac-postgres-pgvector.tar.zst.sha256
+          if-no-files-found: error
+          retention-days: 1

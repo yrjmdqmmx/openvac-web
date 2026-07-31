@@ -117,10 +117,12 @@ sh deploy/configure-staging-secrets.sh user@ecs-host
 
 If the ECS host cannot reach Docker Hub, manually dispatch
 `.github/workflows/offline-image.yml` from the exact release branch. The job
-builds a `linux/amd64` Docker archive, writes a SHA-256 checksum, and retains
-the artifact for one day. Download and verify it locally, then stream the
-decompressed archive to `docker load` over the approved SSH path. The workflow
-never receives ECS credentials and never connects to the server.
+builds a `linux/amd64` application archive and exports the pinned
+`pgvector/pgvector:pg17` database image as a separate archive. Each artifact
+has a SHA-256 checksum and is retained for one day. Download and verify both
+locally, then stream each decompressed archive to `docker load` over the
+approved SSH path. The workflow never receives ECS credentials and never
+connects to the server.
 
 ## Backup
 
