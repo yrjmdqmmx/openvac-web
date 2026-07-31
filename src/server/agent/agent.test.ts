@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { validateCitations, type Citation } from "./citations";
+import {
+  selectCitationPrefix,
+  validateCitations,
+  type Citation
+} from "./citations";
 import {
   buildExpertPrompt,
   hasRequiredAnswerSections,
@@ -143,5 +147,12 @@ describe("citation validation", () => {
     });
     expect(invalid.valid).toBe(false);
     expect(invalid.errors).toContain("Answer references missing citation [2].");
+  });
+
+  it("keeps citation numbering stable while removing trailing unused cards", () => {
+    expect(
+      selectCitationPrefix(["one", "two", "three", "four"], [1, 3])
+    ).toEqual(["one", "two", "three"]);
+    expect(selectCitationPrefix(["one", "two"], [])).toEqual([]);
   });
 });

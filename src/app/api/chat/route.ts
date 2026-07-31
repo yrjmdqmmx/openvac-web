@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   buildExpertPrompt,
   hasRequiredAnswerSections,
+  selectCitationPrefix,
   validateCitations,
   type AnswerMeta,
   type Citation,
@@ -246,12 +247,19 @@ export async function POST(request: Request) {
           }
         }
 
-        validateAnswer(answer, evidenceResult.evidence);
+        const citationValidation = validateAnswer(
+          answer,
+          evidenceResult.evidence
+        );
+        const citedEvidence = selectCitationPrefix(
+          evidenceResult.evidence,
+          citationValidation.usedCitationNumbers
+        );
         const meta: AnswerMeta = {
           riskLevel: prompt.risk.level,
           missingInputs: inferMissingInputs(parsed.data.message),
           webSearched: evidenceResult.webSearched,
-          citations: evidenceResult.evidence.map((item) => item.citation)
+          citations: citedEvidence.map((item) => item.citation)
         };
         const bufferedCitations = meta.citations.map(serializeCitation);
 
@@ -264,7 +272,7 @@ export async function POST(request: Request) {
           turn,
           answer,
           meta,
-          evidence: evidenceResult.evidence,
+          evidence: citedEvidence,
           usage,
           latencyMs: Date.now() - startedAt
         });
@@ -635,6 +643,7 @@ function validateAnswer(answer: string, evidence: GroundingEvidence[]) {
   if (!result.valid) {
     throw new InvalidAnswerError(`引用校验失败：${result.errors.join(" ")}`);
   }
+  return result;
 }
 
 function inferMissingInputs(question: string) {

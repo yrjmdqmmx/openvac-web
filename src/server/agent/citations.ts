@@ -32,6 +32,17 @@ export interface CitationValidationResult {
   usedCitationNumbers: number[];
 }
 
+export function selectCitationPrefix<T>(
+  items: readonly T[],
+  usedCitationNumbers: readonly number[]
+): T[] {
+  const lastUsed = usedCitationNumbers.reduce(
+    (maximum, value) => Math.max(maximum, value),
+    0
+  );
+  return items.slice(0, Math.min(items.length, lastUsed));
+}
+
 const CITATION_MARKER = /\[(\d+)\]/g;
 
 export function validateCitations(
