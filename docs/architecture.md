@@ -14,7 +14,7 @@
    and must report exactly one `search_info` call.
 6. Any fetched page is revalidated for HTTPS, authority hostname, DNS address,
    redirect target, response type, response size, and timeout.
-7. DeepSeek V4 Pro receives an explicitly untrusted JSON data envelope.
+7. DeepSeek V4 Flash receives an explicitly untrusted JSON data envelope.
    Instruction-like retrieved text is removed, and the provider drops
    `reasoning_content`.
 8. OpenVac buffers the candidate answer, validates the fixed five sections and

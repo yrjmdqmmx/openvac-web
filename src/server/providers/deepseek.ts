@@ -51,7 +51,7 @@ export class DeepSeekModelProvider implements ModelProvider {
     );
     this.model =
       optionalString(options.model ?? process.env.DEEPSEEK_MODEL) ??
-      "deepseek-v4-pro";
+      "deepseek-v4-flash";
     this.thinkingMode =
       options.thinkingMode ??
       (process.env.DEEPSEEK_THINKING_MODE === "enabled"

@@ -14,7 +14,7 @@ export default function ProductPage() {
         <h2 className="text-2xl font-semibold">基础模型</h2>
         <dl className="mt-5 grid gap-4 text-sm sm:grid-cols-[180px_1fr]">
           <dt className="text-[var(--muted)]">首发回答模型</dt>
-          <dd>DeepSeek V4 Pro（服务端标识 deepseek-v4-pro）</dd>
+          <dd>DeepSeek V4 Flash（服务端标识 deepseek-v4-flash）</dd>
           <dt className="text-[var(--muted)]">向量模型</dt>
           <dd>阿里云 text-embedding-v4，1024 维</dd>
           <dt className="text-[var(--muted)]">生成式 AI 备案号</dt>

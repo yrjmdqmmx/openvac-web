@@ -65,6 +65,7 @@ describe("DeepSeekModelProvider", () => {
       }
     ]);
     expect(JSON.stringify(events)).not.toContain("private");
+    expect(sentBody.model).toBe("deepseek-v4-flash");
     expect(sentBody.thinking).toEqual({ type: "disabled" });
     expect(sentBody.temperature).toBeUndefined();
   });

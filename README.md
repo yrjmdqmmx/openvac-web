@@ -26,7 +26,7 @@ file uploads, or provide a model picker.
 - Next.js 16 App Router, React 19, TypeScript, and Tailwind CSS
 - Better Auth with verified email/password accounts
 - Drizzle ORM, PostgreSQL 17, and pgvector (1024 dimensions)
-- DeepSeek V4 Pro behind a replaceable server-side `ModelProvider`
+- DeepSeek V4 Flash behind a replaceable server-side `ModelProvider`
 - Alibaba Cloud adapters for embeddings, web search, document parsing,
   transactional mail, and private object storage
 - a Node worker for OCR, review-gated ingestion, chunking, and embeddings
