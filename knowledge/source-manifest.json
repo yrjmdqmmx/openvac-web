@@ -1,0 +1,93 @@
+[
+  {
+    "sourceKey": "cern-vacuum-accelerators-2024",
+    "kind": "manual",
+    "name": "Vacuum for Particle Accelerators",
+    "publisher": "CERN Document Server",
+    "canonicalUrl": "https://cds.cern.ch/record/2929324?ln=en",
+    "baseUrl": "https://cds.cern.ch",
+    "sourceTier": "open_license",
+    "licensePolicy": "full_text_after_record_level_license_review",
+    "trustLevel": 95,
+    "enabled": false,
+    "notes": "Candidate core source. Verify the exact record Copyright/License field before ingestion."
+  },
+  {
+    "sourceKey": "nist-si-guide",
+    "kind": "web",
+    "name": "NIST SI units guidance",
+    "publisher": "National Institute of Standards and Technology",
+    "canonicalUrl": "https://www.nist.gov/pml/special-publication-811",
+    "baseUrl": "https://www.nist.gov",
+    "sourceTier": "open_license",
+    "licensePolicy": "full_text_only_when_no_third_party_material",
+    "trustLevel": 95,
+    "enabled": false,
+    "notes": "Review each record for third-party figures, tables, and copyright notices."
+  },
+  {
+    "sourceKey": "hse-safe-maintenance",
+    "kind": "web",
+    "name": "Safe maintenance guidance",
+    "publisher": "UK Health and Safety Executive",
+    "canonicalUrl": "https://www.hse.gov.uk/work-equipment-machinery/maintenance.htm",
+    "baseUrl": "https://www.hse.gov.uk",
+    "sourceTier": "open_license",
+    "licensePolicy": "open_government_licence_after_notice_review",
+    "trustLevel": 95,
+    "enabled": false,
+    "notes": "Confirm the page is covered by HSE reuse terms before full-text ingestion."
+  },
+  {
+    "sourceKey": "hse-dsear",
+    "kind": "web",
+    "name": "Dangerous Substances and Explosive Atmospheres",
+    "publisher": "UK Health and Safety Executive",
+    "canonicalUrl": "https://www.hse.gov.uk/fireandexplosion/dsear.htm",
+    "baseUrl": "https://www.hse.gov.uk",
+    "sourceTier": "open_license",
+    "licensePolicy": "open_government_licence_after_notice_review",
+    "trustLevel": 95,
+    "enabled": false,
+    "notes": "Safety source candidate; jurisdiction and local applicability must be stated."
+  },
+  {
+    "sourceKey": "hse-oxygen-safety",
+    "kind": "web",
+    "name": "Oxygen use safety guidance",
+    "publisher": "UK Health and Safety Executive",
+    "canonicalUrl": "https://www.hse.gov.uk/pubns/indg459.htm",
+    "baseUrl": "https://www.hse.gov.uk",
+    "sourceTier": "open_license",
+    "licensePolicy": "open_government_licence_after_notice_review",
+    "trustLevel": 95,
+    "enabled": false,
+    "notes": "High-risk source candidate. Requires expert applicability review."
+  },
+  {
+    "sourceKey": "iso-vacuum-standards",
+    "kind": "standard",
+    "name": "ISO vacuum technology standards",
+    "publisher": "International Organization for Standardization",
+    "canonicalUrl": "https://www.iso.org/ics/23.160/x/",
+    "baseUrl": "https://www.iso.org",
+    "sourceTier": "standard_metadata",
+    "licensePolicy": "metadata_and_link_only",
+    "trustLevel": 90,
+    "enabled": true,
+    "notes": "Never store standard full text without a separate documented licence."
+  },
+  {
+    "sourceKey": "manufacturer-product-metadata",
+    "kind": "manufacturer",
+    "name": "Manufacturer product and support pages",
+    "publisher": "Approved vacuum equipment manufacturers",
+    "canonicalUrl": "https://www.leybold.com/",
+    "baseUrl": "https://www.leybold.com",
+    "sourceTier": "manufacturer_metadata",
+    "licensePolicy": "metadata_summary_and_link_only",
+    "trustLevel": 85,
+    "enabled": true,
+    "notes": "Each manufacturer domain is separately allowlisted; do not infer current SKU, price, or stock."
+  }
+]

@@ -1,0 +1,10 @@
+.next
+node_modules
+coverage
+playwright-report
+test-results
+.playwright-cli
+output
+pnpm-lock.yaml
+concepts
+*.png

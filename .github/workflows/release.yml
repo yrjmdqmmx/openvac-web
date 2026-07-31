@@ -1,0 +1,169 @@
+name: Build and deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Deployment target
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+
+permissions: {}
+
+concurrency:
+  group: deploy-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          target: web
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: ${{ inputs.target }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Configure SSH
+        env:
+          ECS_SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
+          ECS_KNOWN_HOSTS: ${{ secrets.ECS_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$ECS_SSH_KEY" > "$HOME/.ssh/openvac"
+          chmod 600 "$HOME/.ssh/openvac"
+          printf '%s\n' "$ECS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+      - name: Deploy immutable image
+        env:
+          ECS_HOST: ${{ secrets.ECS_HOST }}
+          ECS_USER: ${{ secrets.ECS_USER }}
+          TARGET: ${{ inputs.target }}
+          IMAGE_TAGS: ${{ needs.image.outputs.image }}
+          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$ECS_HOST"
+          test -n "$ECS_USER"
+          release_id="$GITHUB_SHA"
+          case "$release_id" in
+            ""|*[!0-9a-f]*)
+              echo "GITHUB_SHA must be lowercase hexadecimal" >&2
+              exit 64
+              ;;
+          esac
+          test "${#release_id}" -eq 40
+          image_tag="$(printf '%s\n' "$IMAGE_TAGS" | head -n 1)"
+          release_image="${image_tag%@*}@${IMAGE_DIGEST}"
+          case "$TARGET" in
+            production)
+              deploy_dir="/opt/openvac"
+              compose_project="openvac-production"
+              health_url="https://openvac.yixingretail.cn/api/health"
+              ;;
+            staging)
+              deploy_dir="/opt/openvac-staging"
+              compose_project="openvac-staging"
+              health_url="https://staging-openvac.yixingretail.cn/api/health"
+              ;;
+            *)
+              echo "Unsupported deployment target: $TARGET" >&2
+              exit 64
+              ;;
+          esac
+
+          bundle_root="$RUNNER_TEMP/openvac-deploy-$release_id"
+          bundle_archive="$RUNNER_TEMP/bundle.tar.gz"
+          bundle_checksum="$RUNNER_TEMP/bundle.tar.gz.sha256"
+          install -d -m 700 "$bundle_root"
+          cp docker-compose.yml "$bundle_root/docker-compose.yml"
+          cp -R deploy "$bundle_root/deploy"
+          (
+            cd "$bundle_root"
+            find docker-compose.yml deploy -type f -print |
+              LC_ALL=C sort |
+              xargs sha256sum > DEPLOY_BUNDLE.sha256
+            tar -czf "$bundle_archive" \
+              docker-compose.yml deploy DEPLOY_BUNDLE.sha256
+          )
+          (
+            cd "$RUNNER_TEMP"
+            sha256sum bundle.tar.gz > "$bundle_checksum"
+          )
+
+          remote_stage="/tmp/openvac-deploy-$release_id-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+            "$ECS_USER@$ECS_HOST" "install -d -m 700 '$remote_stage'"
+          scp -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+            "$bundle_archive" "$bundle_checksum" \
+            "$ECS_USER@$ECS_HOST:$remote_stage/"
+          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+            "$ECS_USER@$ECS_HOST" \
+            sh -s -- \
+            "$remote_stage" "$deploy_dir" "$release_id" "$release_image" \
+            "$compose_project" "$health_url" <<'REMOTE_SCRIPT'
+          set -eu
+          if [ "$#" -ne 6 ]; then
+            exit 64
+          fi
+          remote_stage="$1"
+          deploy_dir="$2"
+          release_id="$3"
+          release_image="$4"
+          compose_project="$5"
+          health_url="$6"
+          case "$remote_stage" in
+            /tmp/openvac-deploy-*) ;;
+            *) exit 64 ;;
+          esac
+          cleanup() {
+            rm -rf -- "$remote_stage"
+          }
+          trap cleanup EXIT HUP INT TERM
+          cd "$remote_stage"
+          sha256sum --check bundle.tar.gz.sha256
+          install -d -m 700 bundle
+          tar -xzf bundle.tar.gz -C bundle
+          sh bundle/deploy/activate-bundle.sh \
+            "$deploy_dir" "$release_id" "$remote_stage/bundle" \
+            "$release_image" "$compose_project" "$health_url"
+          REMOTE_SCRIPT

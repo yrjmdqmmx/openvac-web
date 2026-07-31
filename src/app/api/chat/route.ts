@@ -1,0 +1,710 @@
+import { and, asc, desc, eq, isNull, max, sql } from "drizzle-orm";
+import { z } from "zod";
+import {
+  buildExpertPrompt,
+  hasRequiredAnswerSections,
+  validateCitations,
+  type AnswerMeta,
+  type Citation,
+  type GroundingEvidence
+} from "@/server/agent";
+import { auth } from "@/server/auth";
+import { collectEvidence } from "@/server/chat/evidence";
+import { citationSourcePolicy } from "@/server/chat/citation-policy";
+import { serializeStoredCitation } from "@/server/chat/stored-message";
+import { db } from "@/server/db";
+import {
+  citations,
+  conversations,
+  messageCitations,
+  messages,
+  user
+} from "@/server/db/schema";
+import { getModelProvider, type ModelUsage } from "@/server/providers";
+import {
+  commitQuota,
+  QuotaExceededError,
+  releaseQuota,
+  reserveAnswerQuota
+} from "@/server/quota";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 600;
+
+const inputSchema = z.object({
+  conversationId: z.string().uuid().optional(),
+  message: z.string().trim().min(2).max(4000),
+  clientRequestId: z.string().uuid()
+});
+
+type PersistedTurn = {
+  conversationId: string;
+  userMessageId: string;
+  assistantMessageId: string;
+};
+
+export async function POST(request: Request) {
+  const session = await auth.api.getSession({ headers: request.headers });
+  if (!session) {
+    return jsonError(401, "UNAUTHENTICATED", "请先登录并完成邮箱验证。");
+  }
+
+  const parsed = inputSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) {
+    return jsonError(400, "INVALID_REQUEST", "问题或请求标识格式不正确。");
+  }
+
+  const [account] = await db
+    .select({
+      banned: user.banned,
+      banReason: user.banReason,
+      banExpires: user.banExpires
+    })
+    .from(user)
+    .where(eq(user.id, session.user.id))
+    .limit(1);
+  if (
+    account?.banned &&
+    (!account.banExpires || account.banExpires > new Date())
+  ) {
+    return jsonError(
+      403,
+      "ACCOUNT_SUSPENDED",
+      account.banReason || "账户当前无法使用，请联系支持人员。"
+    );
+  }
+
+  const replay = await findReplay(session.user.id, parsed.data.clientRequestId);
+  if (replay) {
+    return replayResponse(replay);
+  }
+
+  let reservation;
+  try {
+    reservation = await reserveAnswerQuota({
+      userId: session.user.id,
+      clientRequestId: parsed.data.clientRequestId,
+      metadata: { conversationId: parsed.data.conversationId ?? null }
+    });
+  } catch (error) {
+    if (error instanceof QuotaExceededError) {
+      return Response.json(
+        {
+          error: {
+            code: error.code,
+            message: "今天的成功回答额度已用完。",
+            resetAt: error.resetAt.toISOString()
+          }
+        },
+        { status: 429 }
+      );
+    }
+    return jsonError(
+      503,
+      "QUOTA_UNAVAILABLE",
+      "额度服务暂时不可用，请稍后重试。"
+    );
+  }
+
+  if (reservation.idempotent) {
+    const completedReplay = await findReplay(
+      session.user.id,
+      parsed.data.clientRequestId
+    );
+    if (completedReplay) {
+      return replayResponse(completedReplay);
+    }
+    if (reservation.status !== "reserved") {
+      return jsonError(
+        409,
+        "REQUEST_ALREADY_USED",
+        "这个请求标识已经使用，请刷新后重试。"
+      );
+    }
+    return jsonError(
+      409,
+      "REQUEST_IN_PROGRESS",
+      "同一请求正在处理中，请等待完成后重试。"
+    );
+  }
+  if (reservation.status !== "reserved") {
+    return jsonError(
+      409,
+      "REQUEST_ALREADY_USED",
+      "这个请求标识已经使用，请刷新后重试。"
+    );
+  }
+
+  let turn: PersistedTurn;
+  try {
+    turn = await createPendingTurn({
+      userId: session.user.id,
+      conversationId: parsed.data.conversationId,
+      question: parsed.data.message,
+      clientRequestId: parsed.data.clientRequestId,
+      model: getModelProvider().model
+    });
+  } catch (error) {
+    await releaseQuota({
+      leaseId: reservation.leaseId,
+      userId: session.user.id,
+      reason: "message_persistence_failed"
+    }).catch(() => undefined);
+    if (error instanceof ConversationNotFoundError) {
+      return jsonError(
+        404,
+        "CONVERSATION_NOT_FOUND",
+        "这段对话不存在或已删除。"
+      );
+    }
+    return jsonError(
+      503,
+      "PERSISTENCE_FAILED",
+      "暂时无法保存问题，请稍后重试。"
+    );
+  }
+
+  const encoder = new TextEncoder();
+  let streamClosed = false;
+  const responseStream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: Record<string, unknown>) => {
+        if (streamClosed) return;
+        try {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
+          );
+        } catch {
+          streamClosed = true;
+        }
+      };
+      const heartbeat = setInterval(() => {
+        if (streamClosed) return;
+        try {
+          controller.enqueue(encoder.encode(": keep-alive\n\n"));
+        } catch {
+          streamClosed = true;
+        }
+      }, 15_000);
+
+      const startedAt = Date.now();
+      let answer = "";
+      let usage: ModelUsage | undefined;
+
+      try {
+        send({
+          type: "status",
+          stage: "reserved",
+          label: "已预占本次回答额度…"
+        });
+        const evidenceResult = await collectEvidence({
+          question: parsed.data.message,
+          userId: session.user.id,
+          clientRequestId: parsed.data.clientRequestId,
+          signal: request.signal,
+          onStage: (label) =>
+            send({
+              type: "status",
+              stage: label.includes("权威") ? "searching" : "retrieving",
+              label
+            })
+        });
+
+        const prompt = buildExpertPrompt({
+          question: parsed.data.message,
+          evidence: evidenceResult.evidence,
+          conversationContext: await loadConversationContext(
+            turn.conversationId,
+            turn.userMessageId
+          )
+        });
+        send({
+          type: "status",
+          stage: "answering",
+          label: "正在组织有依据的回答…"
+        });
+
+        for await (const event of getModelProvider().stream({
+          messages: prompt.messages,
+          temperature: 0.1,
+          maxOutputTokens: parseMaximumOutputTokens(),
+          signal: request.signal
+        })) {
+          if (event.type === "text-delta") {
+            answer += event.text;
+          } else if (event.type === "finish") {
+            usage = event.usage;
+          }
+        }
+
+        validateAnswer(answer, evidenceResult.evidence);
+        const meta: AnswerMeta = {
+          riskLevel: prompt.risk.level,
+          missingInputs: inferMissingInputs(parsed.data.message),
+          webSearched: evidenceResult.webSearched,
+          citations: evidenceResult.evidence.map((item) => item.citation)
+        };
+        const bufferedCitations = meta.citations.map(serializeCitation);
+
+        send({
+          type: "status",
+          stage: "saving",
+          label: "正在校验引用并保存回答…"
+        });
+        await completeTurn({
+          turn,
+          answer,
+          meta,
+          evidence: evidenceResult.evidence,
+          usage,
+          latencyMs: Date.now() - startedAt
+        });
+        const committedReservation = await commitQuota({
+          leaseId: reservation.leaseId,
+          userId: session.user.id
+        });
+        if (committedReservation.status !== "committed") {
+          throw new QuotaCommitError();
+        }
+
+        for (const text of chunkText(answer)) {
+          send({ type: "delta", text });
+        }
+        for (const citation of bufferedCitations) {
+          send({
+            type: "citation",
+            citation
+          });
+        }
+
+        send({
+          type: "complete",
+          conversationId: turn.conversationId,
+          messageId: turn.assistantMessageId,
+          meta: {
+            ...meta,
+            citations: bufferedCitations
+          }
+        });
+      } catch (error) {
+        const cancelled = request.signal.aborted;
+        await failTurn(
+          turn.assistantMessageId,
+          cancelled ? "cancelled" : "failed",
+          cancelled ? "CLIENT_CANCELLED" : errorCode(error),
+          safeErrorMessage(error)
+        ).catch(() => undefined);
+        await releaseQuota({
+          leaseId: reservation.leaseId,
+          userId: session.user.id,
+          reason: cancelled ? "client_cancelled" : "answer_failed"
+        }).catch(() => undefined);
+        send({
+          type: "error",
+          code: cancelled ? "CANCELLED" : errorCode(error),
+          message: cancelled
+            ? "已取消回答，本次不会扣除额度。"
+            : "本次回答未能通过证据或引用校验，额度已归还。"
+        });
+      } finally {
+        clearInterval(heartbeat);
+        if (!streamClosed) {
+          streamClosed = true;
+          controller.close();
+        }
+      }
+    },
+    cancel() {
+      streamClosed = true;
+    }
+  });
+
+  return new Response(responseStream, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no"
+    }
+  });
+}
+
+async function createPendingTurn(input: {
+  userId: string;
+  conversationId?: string;
+  question: string;
+  clientRequestId: string;
+  model: string;
+}): Promise<PersistedTurn> {
+  return db.transaction(async (tx) => {
+    const now = new Date();
+    let conversationId = input.conversationId;
+
+    if (conversationId) {
+      const [owned] = await tx
+        .select({ id: conversations.id })
+        .from(conversations)
+        .where(
+          and(
+            eq(conversations.id, conversationId),
+            eq(conversations.userId, input.userId),
+            isNull(conversations.deletedAt)
+          )
+        )
+        .limit(1);
+      if (!owned) throw new ConversationNotFoundError();
+    } else {
+      const [created] = await tx
+        .insert(conversations)
+        .values({
+          userId: input.userId,
+          title: makeConversationTitle(input.question),
+          model: input.model,
+          lastMessageAt: now
+        })
+        .returning({ id: conversations.id });
+      conversationId = created!.id;
+    }
+
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${conversationId}))`
+    );
+    const [sequenceRow] = await tx
+      .select({ value: max(messages.sequence) })
+      .from(messages)
+      .where(eq(messages.conversationId, conversationId));
+    const userSequence = (sequenceRow?.value ?? 0) + 1;
+    const userMessageId = crypto.randomUUID();
+    const assistantMessageId = crypto.randomUUID();
+
+    await tx.insert(messages).values([
+      {
+        id: userMessageId,
+        conversationId,
+        userId: input.userId,
+        sequence: userSequence,
+        role: "user",
+        status: "completed",
+        content: input.question,
+        clientRequestId: input.clientRequestId,
+        completedAt: now
+      },
+      {
+        id: assistantMessageId,
+        conversationId,
+        userId: input.userId,
+        sequence: userSequence + 1,
+        role: "assistant",
+        status: "streaming",
+        content: "",
+        model: input.model,
+        metadata: { clientRequestId: input.clientRequestId }
+      }
+    ]);
+    await tx
+      .update(conversations)
+      .set({ lastMessageAt: now, updatedAt: now })
+      .where(eq(conversations.id, conversationId));
+
+    return { conversationId, userMessageId, assistantMessageId };
+  });
+}
+
+async function completeTurn(input: {
+  turn: PersistedTurn;
+  answer: string;
+  meta: AnswerMeta;
+  evidence: GroundingEvidence[];
+  usage?: ModelUsage;
+  latencyMs: number;
+}) {
+  await db.transaction(async (tx) => {
+    await tx
+      .update(messages)
+      .set({
+        content: input.answer,
+        status: "completed",
+        inputTokens: input.usage?.inputTokens,
+        outputTokens: input.usage?.outputTokens,
+        latencyMs: input.latencyMs,
+        completedAt: new Date(),
+        metadata: {
+          riskLevel: input.meta.riskLevel,
+          missingInputs: input.meta.missingInputs,
+          webSearched: input.meta.webSearched
+        }
+      })
+      .where(eq(messages.id, input.turn.assistantMessageId));
+
+    for (const [index, item] of input.evidence.entries()) {
+      const [created] = await tx
+        .insert(citations)
+        .values({
+          sourceType: item.citation.sourceId.startsWith("web:")
+            ? "web"
+            : "knowledge",
+          title: item.citation.title,
+          url: item.citation.url,
+          quote: item.excerpt,
+          sourceTier: item.citation.licenseClass,
+          license: item.citation.licenseClass,
+          locator: { pageOrSection: item.citation.pageOrSection ?? null },
+          metadata: {
+            publisher: item.citation.publisher,
+            fetchedAt: new Date(item.citation.fetchedAt).toISOString(),
+            sourceId: item.citation.sourceId
+          }
+        })
+        .returning({ id: citations.id });
+      await tx.insert(messageCitations).values({
+        messageId: input.turn.assistantMessageId,
+        citationId: created!.id,
+        ordinal: index + 1
+      });
+    }
+    await tx
+      .update(conversations)
+      .set({ lastMessageAt: new Date(), updatedAt: new Date() })
+      .where(eq(conversations.id, input.turn.conversationId));
+  });
+}
+
+async function failTurn(
+  assistantMessageId: string,
+  status: "failed" | "cancelled",
+  code: string,
+  message: string
+) {
+  await db
+    .update(messages)
+    .set({
+      status,
+      errorCode: code,
+      errorMessage: message,
+      completedAt: new Date()
+    })
+    .where(eq(messages.id, assistantMessageId));
+}
+
+async function loadConversationContext(
+  conversationId: string,
+  currentUserMessageId: string
+) {
+  const rows = await db
+    .select({
+      id: messages.id,
+      role: messages.role,
+      content: messages.content
+    })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.conversationId, conversationId),
+        eq(messages.status, "completed")
+      )
+    )
+    .orderBy(desc(messages.sequence))
+    .limit(10);
+
+  return rows
+    .filter((row) => row.id !== currentUserMessageId)
+    .reverse()
+    .map((row) => `${row.role === "user" ? "用户" : "OpenVac"}：${row.content}`)
+    .join("\n");
+}
+
+async function findReplay(userId: string, clientRequestId: string) {
+  const [userMessage] = await db
+    .select({
+      conversationId: messages.conversationId,
+      sequence: messages.sequence
+    })
+    .from(messages)
+    .innerJoin(conversations, eq(messages.conversationId, conversations.id))
+    .where(
+      and(
+        eq(conversations.userId, userId),
+        eq(messages.clientRequestId, clientRequestId),
+        isNull(conversations.deletedAt)
+      )
+    )
+    .limit(1);
+  if (!userMessage) return null;
+
+  const [assistant] = await db
+    .select({
+      id: messages.id,
+      content: messages.content,
+      status: messages.status,
+      metadata: messages.metadata
+    })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.conversationId, userMessage.conversationId),
+        eq(messages.sequence, userMessage.sequence + 1)
+      )
+    )
+    .limit(1);
+  if (!assistant || assistant.status !== "completed") return null;
+
+  const storedCitations = await db
+    .select({
+      id: citations.id,
+      title: citations.title,
+      url: citations.url,
+      license: citations.license,
+      locator: citations.locator,
+      metadata: citations.metadata
+    })
+    .from(messageCitations)
+    .innerJoin(citations, eq(messageCitations.citationId, citations.id))
+    .where(eq(messageCitations.messageId, assistant.id))
+    .orderBy(asc(messageCitations.ordinal));
+
+  return {
+    conversationId: userMessage.conversationId,
+    messageId: assistant.id,
+    content: assistant.content,
+    metadata: assistant.metadata,
+    citations: storedCitations
+  };
+}
+
+function replayResponse(
+  replay: NonNullable<Awaited<ReturnType<typeof findReplay>>>
+) {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        const emit = (event: Record<string, unknown>) =>
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
+          );
+        for (const text of chunkText(replay.content)) {
+          emit({ type: "delta", text });
+        }
+        const replayCitations = replay.citations
+          .map((citation) => serializeStoredCitation(citation))
+          .filter((citation) => citation !== null);
+        replayCitations.forEach((citation) =>
+          emit({ type: "citation", citation })
+        );
+        emit({
+          type: "complete",
+          conversationId: replay.conversationId,
+          messageId: replay.messageId,
+          meta: {
+            riskLevel: replay.metadata.riskLevel ?? "low",
+            missingInputs: replay.metadata.missingInputs ?? [],
+            webSearched: replay.metadata.webSearched ?? false,
+            citations: replayCitations
+          }
+        });
+        controller.close();
+      }
+    }),
+    {
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform"
+      }
+    }
+  );
+}
+
+function validateAnswer(answer: string, evidence: GroundingEvidence[]) {
+  if (!hasRequiredAnswerSections(answer)) {
+    throw new InvalidAnswerError("模型回答未满足 OpenVac 的五段结构。");
+  }
+  const citationList = evidence.map((item) => item.citation);
+  const result = validateCitations(answer, citationList, {
+    knownSourceIds: citationList.map((citation) => citation.sourceId)
+  });
+  if (!result.valid) {
+    throw new InvalidAnswerError(`引用校验失败：${result.errors.join(" ")}`);
+  }
+}
+
+function inferMissingInputs(question: string) {
+  const fields = [
+    ["泵的准确型号", /(?:型号|model|[A-Z]{2,}[-\s]?\d{2,})/i],
+    ["抽取介质", /(?:介质|气体|空气|氧气|氢气|溶剂|蒸气)/u],
+    [
+      "入口与目标压力",
+      /(?:入口压力|目标压力|极限压力|工作压力|\bPa\b|mbar|Torr)/i
+    ],
+    ["目标或实测抽速", /(?:抽速|L\/s|m³\/h|m3\/h)/i],
+    ["温度与运行时间", /(?:温度|℃|°C|运行.{0,5}(?:分钟|小时))/i]
+  ] as const;
+  return fields
+    .filter(([, pattern]) => !pattern.test(question))
+    .map(([label]) => label)
+    .slice(0, 4);
+}
+
+function makeConversationTitle(question: string) {
+  const compact = question.replace(/\s+/g, " ").trim();
+  return compact.length <= 28 ? compact : `${compact.slice(0, 28)}…`;
+}
+
+function serializeCitation(citation: Citation) {
+  return {
+    ...citation,
+    sourcePolicy: citationSourcePolicy(citation.url, citation.licenseClass),
+    fetchedAt: new Date(citation.fetchedAt).toISOString()
+  };
+}
+
+function parseMaximumOutputTokens() {
+  const value = Number.parseInt(
+    process.env.MODEL_MAX_OUTPUT_TOKENS ?? "4096",
+    10
+  );
+  return Number.isSafeInteger(value) && value > 0 ? value : 4096;
+}
+
+function chunkText(value: string, maximumCharacters = 320): string[] {
+  const characters = Array.from(value);
+  const chunks: string[] = [];
+  for (
+    let offset = 0;
+    offset < characters.length;
+    offset += maximumCharacters
+  ) {
+    chunks.push(characters.slice(offset, offset + maximumCharacters).join(""));
+  }
+  return chunks;
+}
+
+function errorCode(error: unknown) {
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof error.code === "string"
+  ) {
+    return error.code;
+  }
+  return error instanceof InvalidAnswerError
+    ? "ANSWER_VALIDATION_FAILED"
+    : "ANSWER_FAILED";
+}
+
+function safeErrorMessage(error: unknown) {
+  if (error instanceof InvalidAnswerError) return error.message;
+  return "Provider or persistence operation failed.";
+}
+
+function jsonError(status: number, code: string, message: string) {
+  return Response.json({ error: { code, message } }, { status });
+}
+
+class ConversationNotFoundError extends Error {}
+class InvalidAnswerError extends Error {}
+class QuotaCommitError extends Error {
+  readonly code = "QUOTA_COMMIT_FAILED";
+}

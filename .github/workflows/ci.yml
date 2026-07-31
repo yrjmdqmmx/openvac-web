@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      BETTER_AUTH_SECRET: ci-only-secret-with-at-least-32-characters
+      BETTER_AUTH_URL: http://127.0.0.1:3000
+      APP_URL: http://127.0.0.1:3000
+      NEXT_PUBLIC_APP_URL: http://127.0.0.1:3000
+      DATABASE_URL: postgres://openvac:openvac@127.0.0.1:5432/openvac
+      ALLOW_DEVELOPMENT_MOCKS: "true"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.28.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # brace-expansion 1.1.18 backports CVE-2026-14257's maxLength
+      # guard, but the advisory range still flags the compatible 1.x line.
+      - run: pnpm audit --audit-level high --ignore CVE-2026-14257
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: openvac
+          POSTGRES_PASSWORD: openvac
+          POSTGRES_DB: openvac
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openvac -d openvac"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      BETTER_AUTH_SECRET: ci-only-secret-with-at-least-32-characters
+      BETTER_AUTH_URL: http://127.0.0.1:3000
+      APP_URL: http://127.0.0.1:3000
+      NEXT_PUBLIC_APP_URL: http://127.0.0.1:3000
+      DATABASE_URL: postgres://openvac:openvac@127.0.0.1:5432/openvac
+      ALLOW_DEVELOPMENT_MOCKS: "true"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.28.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:migrate
+      - run: pnpm test
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      BETTER_AUTH_SECRET: ci-only-secret-with-at-least-32-characters
+      BETTER_AUTH_URL: http://127.0.0.1:3000
+      APP_URL: http://127.0.0.1:3000
+      NEXT_PUBLIC_APP_URL: http://127.0.0.1:3000
+      DATABASE_URL: postgres://openvac:openvac@127.0.0.1:5432/openvac
+      ALLOW_DEVELOPMENT_MOCKS: "true"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.28.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
