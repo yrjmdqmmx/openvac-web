@@ -11,6 +11,7 @@ import {
 import { auth } from "@/server/auth";
 import { collectEvidence } from "@/server/chat/evidence";
 import { citationSourcePolicy } from "@/server/chat/citation-policy";
+import { buildNoEvidenceAnswer } from "@/server/chat/fallback-answer";
 import { serializeStoredCitation } from "@/server/chat/stored-message";
 import { db } from "@/server/db";
 import {
@@ -225,16 +226,23 @@ export async function POST(request: Request) {
           label: "正在组织有依据的回答…"
         });
 
-        for await (const event of getModelProvider().stream({
-          messages: prompt.messages,
-          temperature: 0.1,
-          maxOutputTokens: parseMaximumOutputTokens(),
-          signal: request.signal
-        })) {
-          if (event.type === "text-delta") {
-            answer += event.text;
-          } else if (event.type === "finish") {
-            usage = event.usage;
+        if (evidenceResult.evidence.length === 0) {
+          answer = buildNoEvidenceAnswer({
+            question: parsed.data.message,
+            risk: prompt.risk
+          });
+        } else {
+          for await (const event of getModelProvider().stream({
+            messages: prompt.messages,
+            temperature: 0.1,
+            maxOutputTokens: parseMaximumOutputTokens(),
+            signal: request.signal
+          })) {
+            if (event.type === "text-delta") {
+              answer += event.text;
+            } else if (event.type === "finish") {
+              usage = event.usage;
+            }
           }
         }
 

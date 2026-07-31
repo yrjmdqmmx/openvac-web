@@ -93,6 +93,10 @@ export function ChatWorkspace({
     async (rawQuestion: string) => {
       const question = rawQuestion.trim();
       if (!question || busy) return;
+      if (Array.from(question).length < 2) {
+        setError("请至少输入 2 个字符，以便 OpenVac 理解你的问题。");
+        return;
+      }
 
       const clientRequestId = crypto.randomUUID();
       const localAssistantId = makeLocalId("assistant");
@@ -611,7 +615,7 @@ export function ChatWorkspace({
               ) : (
                 <button
                   type="submit"
-                  disabled={!input.trim()}
+                  disabled={Array.from(input.trim()).length < 2}
                   className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[var(--ink)] text-white disabled:opacity-30"
                   aria-label="发送"
                 >

@@ -39,6 +39,40 @@ function jsonResponse(payload: unknown): Response {
 }
 
 describe("ChatWorkspace pending question draft", () => {
+  it("keeps one-character questions on the client with a clear message", async () => {
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        void input;
+        void init;
+        return jsonResponse({ data: { items: [] } });
+      }
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      createElement(ChatWorkspace, {
+        userId: "user-a",
+        userName: "用户 A"
+      })
+    );
+
+    const input = screen.getByLabelText("继续提问");
+    fireEvent.change(input, { target: { value: "?" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(
+      await screen.findByText(
+        "请至少输入 2 个字符，以便 OpenVac 理解你的问题。"
+      )
+    ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([request, init]) =>
+          String(request) === "/api/chat" && init?.method === "POST"
+      )
+    ).toBe(false);
+  });
+
   it("shows an editable confirmation without automatically sending", async () => {
     savePendingQuestionDraft({
       text: "登录前保存的问题",
