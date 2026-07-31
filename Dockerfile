@@ -36,6 +36,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/package.json /app/pnpm-lock.yaml ./
 COPY --from=builder --chown=nextjs:nodejs /app/drizzle.config.ts /app/tsconfig.json ./
 COPY --from=builder --chown=nextjs:nodejs /app/drizzle ./drizzle
+COPY --from=builder --chown=nextjs:nodejs /app/knowledge ./knowledge
 COPY --from=builder --chown=nextjs:nodejs /app/src ./src
 COPY --from=builder --chown=nextjs:nodejs /app/scripts ./scripts
 USER nextjs
