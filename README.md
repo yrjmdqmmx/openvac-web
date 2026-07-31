@@ -134,7 +134,7 @@ services.
 
 The public source repository drives CI and GHCR image publication. Runtime data
 and secrets remain on Alibaba Cloud ECS. Deploy staging first at
-`staging-openvac.yixingretail.cn`; production at `openvac.yixingretail.cn`
+`staging-openvac.openvac.cn`; production at `openvac.cn`
 requires a manually approved GitHub environment.
 
 The deployment workflow uses immutable image digests, applies migrations before

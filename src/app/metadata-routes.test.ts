@@ -34,9 +34,7 @@ describe("runtime metadata routes", () => {
   it("falls back to the public production origin when APP_URL is empty", () => {
     vi.stubEnv("APP_URL", " ");
 
-    expect(robots().sitemap).toBe(
-      "https://openvac.yixingretail.cn/sitemap.xml"
-    );
-    expect(sitemap()[0]?.url).toBe("https://openvac.yixingretail.cn");
+    expect(robots().sitemap).toBe("https://openvac.cn/sitemap.xml");
+    expect(sitemap()[0]?.url).toBe("https://openvac.cn");
   });
 });

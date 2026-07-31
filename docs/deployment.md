@@ -50,6 +50,44 @@ GitHub environment secrets:
 Staging and production are separate protected GitHub environments. Production
 requires manual approval.
 
+### Alibaba Cloud DirectMail
+
+Use the verified transactional sender `no-reply@mail.openvac.cn` in the
+`cn-hangzhou` region. The application calls the DirectMail OpenAPI endpoint
+`dm.aliyuncs.com`; it does not use SMTP, so no SMTP password is required.
+
+Create these DirectMail tags before sending authentication mail:
+
+- `auth-verify-email`
+- `auth-reset-password`
+- `auth-delete-account`
+
+Create a dedicated RAM user with OpenAPI access only and grant the minimum
+custom policy below. Do not use the Alibaba Cloud account owner's AccessKey.
+
+```json
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["dm:SingleSendMail"],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+Store its AccessKey only in the ECS environment file (mode `0600`) or a
+protected GitHub environment secret. Where supported, restrict the credential
+to the ECS public source IP. Set:
+
+```dotenv
+ALIBABA_DIRECTMAIL_ACCOUNT_NAME=no-reply@mail.openvac.cn
+ALIBABA_DIRECTMAIL_REGION=cn-hangzhou
+ALIBABA_DIRECTMAIL_ENDPOINT=dm.aliyuncs.com
+```
+
 ## 4. First release
 
 1. Verify DNS and ICP state.

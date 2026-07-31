@@ -48,6 +48,22 @@ describe("deployment Compose project isolation", () => {
     );
   });
 
+  it("targets the OpenVac domains and verified DirectMail sender", () => {
+    const compose = source("docker-compose.yml");
+    const release = source(".github/workflows/release.yml");
+    const productionNginx = source("deploy/nginx/openvac.conf");
+    const stagingNginx = source("deploy/nginx/staging-openvac.conf");
+
+    expect(compose).toContain("no-reply@mail.openvac.cn");
+    expect(release).toContain("https://openvac.cn/api/health");
+    expect(release).toContain("https://staging-openvac.openvac.cn/api/health");
+    expect(productionNginx).toContain("server_name openvac.cn;");
+    expect(stagingNginx).toContain("server_name staging-openvac.openvac.cn;");
+    expect(
+      `${compose}\n${release}\n${productionNginx}\n${stagingNginx}`
+    ).not.toContain("yixingretail.cn");
+  });
+
   it("rejects mismatched directory/project pairs before every Compose action", () => {
     const deploy = source("deploy/deploy.sh");
 

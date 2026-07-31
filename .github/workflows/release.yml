@@ -98,12 +98,12 @@ jobs:
             production)
               deploy_dir="/opt/openvac"
               compose_project="openvac-production"
-              health_url="https://openvac.yixingretail.cn/api/health"
+              health_url="https://openvac.cn/api/health"
               ;;
             staging)
               deploy_dir="/opt/openvac-staging"
               compose_project="openvac-staging"
-              health_url="https://staging-openvac.yixingretail.cn/api/health"
+              health_url="https://staging-openvac.openvac.cn/api/health"
               ;;
             *)
               echo "Unsupported deployment target: $TARGET" >&2
