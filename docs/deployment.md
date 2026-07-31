@@ -104,6 +104,15 @@ ALIBABA_DIRECTMAIL_ENDPOINT=dm.aliyuncs.com
 8. Perform a new-host deployment, upgrade rollback, and `restore-drill.sh`.
 9. Trigger production only after the signed acceptance record.
 
+### Offline staging bootstrap
+
+If the ECS host cannot reach Docker Hub, manually dispatch
+`.github/workflows/offline-image.yml` from the exact release branch. The job
+builds a `linux/amd64` Docker archive, writes a SHA-256 checksum, and retains
+the artifact for one day. Download and verify it locally, then stream the
+decompressed archive to `docker load` over the approved SSH path. The workflow
+never receives ECS credentials and never connects to the server.
+
 ## Backup
 
 `deploy/backup.sh` requires an explicit OpenVac backup directory, refuses
