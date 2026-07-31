@@ -93,6 +93,8 @@ describe("expert answer prompt", () => {
       expect(system).toContain(section);
     }
     expect(system).toContain("不得输出、复述或暗示内部推理过程");
+    expect(system).toContain("不得向用户提及 JSON、字段名、数据包");
+    expect(system).toContain("概念题若无需补充");
     expect(built.messages[1]?.content).toContain("[1]");
   });
 

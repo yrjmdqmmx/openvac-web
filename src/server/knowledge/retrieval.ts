@@ -281,6 +281,7 @@ export function reciprocalRankFusion<T>(
 }
 
 function mapRetrievalRow(row: Record<string, unknown>): RetrievalCandidate {
+  const chunkId = requiredRowString(row, "chunk_id");
   const sourceId = stringValue(row.source_id);
   const canonicalUrl = stringValue(row.canonical_url);
   const metadata = recordValue(row.citation_metadata);
@@ -298,7 +299,7 @@ function mapRetrievalRow(row: Record<string, unknown>): RetrievalCandidate {
   const citation =
     sourceId && canonicalUrl
       ? {
-          sourceId,
+          sourceId: `${sourceId}:chunk:${chunkId}`,
           title: stringValue(row.title) ?? "未命名来源",
           publisher: stringValue(row.publisher) ?? "来源发布者未标注",
           url: canonicalUrl,
@@ -309,7 +310,7 @@ function mapRetrievalRow(row: Record<string, unknown>): RetrievalCandidate {
       : undefined;
 
   return {
-    chunkId: requiredRowString(row, "chunk_id"),
+    chunkId,
     documentId: requiredRowString(row, "document_id"),
     versionId: requiredRowString(row, "version_id"),
     title: requiredRowString(row, "title"),

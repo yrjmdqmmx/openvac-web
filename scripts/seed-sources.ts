@@ -26,7 +26,8 @@ for (const source of manifest as SourceManifestItem[]) {
     metadata: {
       sourceKey: source.sourceKey,
       seededBy: "knowledge/source-manifest.json",
-      rightsReviewed: false
+      rightsReviewed:
+        "rightsReviewed" in source ? source.rightsReviewed === true : false
     },
     updatedAt: new Date()
   } as typeof knowledgeSources.$inferInsert;

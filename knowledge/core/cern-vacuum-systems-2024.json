@@ -1,0 +1,127 @@
+{
+  "source": {
+    "sourceKey": "cern-vacuum-systems-2024",
+    "kind": "manual",
+    "name": "Vacuum systems",
+    "publisher": "CERN",
+    "canonicalUrl": "https://cds.cern.ch/record/2929324?ln=en",
+    "baseUrl": "https://cds.cern.ch",
+    "sourceTier": "open_license",
+    "licensePolicy": "Creative Commons Attribution 4.0",
+    "trustLevel": 100,
+    "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "doi": "10.23730/CYRSP-2024-003.1259"
+  },
+  "document": {
+    "externalKey": "cern-2024-003-vacuum-systems",
+    "title": "Vacuum systems（OpenVac 中文知识摘编）",
+    "description": "依据 CERN 2024 年 Vacuum systems 章节人工核对并用中文改写的基础知识。",
+    "language": "zh-CN",
+    "mimeType": "application/pdf",
+    "tags": ["真空基础", "真空泵", "抽速", "流导", "气载", "放气"]
+  },
+  "citation": {
+    "authors": ["Vincent Baglin", "Roberto Kersevan"],
+    "publishedYear": 2024,
+    "fetchedAt": "2026-07-31T16:19:00.000Z",
+    "reviewedAt": "2026-07-31T16:19:00.000Z",
+    "reviewMethod": "official-pdf-text-and-page-review",
+    "licenseClass": "open"
+  },
+  "chunks": [
+    {
+      "pageStart": 1259,
+      "pageEnd": 1259,
+      "sectionPath": ["II.8.1 Introduction"],
+      "keywords": ["真空", "真空技术", "压力", "分子碰撞"],
+      "content": "真空并不是绝对不存在物质，而是气体分子密度和分子碰撞率低于周围环境的状态。真空科学与技术的核心目的，是降低分子与周围环境发生碰撞的频率，从而保护工艺质量。工程上应使用压力、气体组成、温度等可测量量描述真空，不能只用‘真空度高低’作模糊判断。"
+    },
+    {
+      "pageStart": 1261,
+      "pageEnd": 1262,
+      "sectionPath": ["II.8.2 Basic concepts", "II.8.2.1 Gas kinetic theory"],
+      "keywords": ["压力", "帕", "mbar", "Torr", "分压", "单位换算"],
+      "content": "压力是气体分子作用在容器壁单位面积上的力，SI 单位是 Pa；真空工程也常用 mbar 和 Torr。常用换算为 1 mbar = 100 Pa，1 Torr 约为 133 Pa。混合气体的总压力等于各组分分压之和。比较设备参数或排查故障前，必须先统一压力单位，并区分总压与分压。"
+    },
+    {
+      "pageStart": 1262,
+      "pageEnd": 1263,
+      "sectionPath": ["II.8.2 Basic concepts", "II.8.2.2 Gas flow"],
+      "keywords": ["平均自由程", "黏滞流", "分子流", "流态", "压力范围"],
+      "content": "气体分子的平均自由程随压力降低而增大。系统从大气压抽到高真空时，会经历湍流、黏滞层流和分子流等不同流态；进入高真空和超高真空后，分子与腔壁的碰撞通常比彼此碰撞更重要。泵型、管路流导、测量方法和抽空过程都与所处流态有关。"
+    },
+    {
+      "pageStart": 1263,
+      "pageEnd": 1264,
+      "sectionPath": [
+        "II.8.2 Basic concepts",
+        "II.8.2.2 Gas flow",
+        "Conductance"
+      ],
+      "keywords": ["流导", "管径", "管长", "分子流", "管路损失"],
+      "content": "流导 C 表示管路让气体通过的能力，等于气体通量 Q 与管路两端压差之比，常用单位为 L/s。在分子流条件下，长直圆管的流导随直径的三次方增加、随长度增加而降低。因此，真空管路宜尽量短而粗；只提高泵的铭牌抽速而不改善细长管路，往往不能显著改善腔体端压力。"
+    },
+    {
+      "pageStart": 1264,
+      "pageEnd": 1265,
+      "sectionPath": ["II.8.2 Basic concepts", "Pumping speed and throughput"],
+      "keywords": ["抽速", "抽气速度", "气体通量", "气载", "工作压力", "Q=PS"],
+      "content": "泵的抽气速度 S 定义为泵入口处被抽走的气体通量 Q 与入口压力 P 之比，即 S = Q/P；等价地，气体通量满足 Q = P×S。稳态近似下，系统压力可理解为气载与有效抽速之比。要降低压力，可以减少漏气、放气和工艺进气形成的气载，也可以提高系统在腔体位置实际获得的有效抽速。"
+    },
+    {
+      "pageStart": 1265,
+      "pageEnd": 1266,
+      "sectionPath": ["II.8.2 Basic concepts", "Effective pumping speed"],
+      "keywords": ["有效抽速", "泵口抽速", "流导限制", "腔体压力", "选泵"],
+      "content": "泵通过管路连接到真空腔体时，腔体端有效抽速 Seff 同时受泵口抽速 S 和管路流导 C 限制，二者按串联关系共同决定系统能力。当 C 远小于 S 时，Seff 接近 C，系统处于流导受限状态；此时继续换更大抽速的泵收益很小，应优先缩短管路、增大管径或调整泵的位置。"
+    },
+    {
+      "pageStart": 1272,
+      "pageEnd": 1272,
+      "sectionPath": ["II.8.3 Instrumentation", "II.8.3.3 Vacuum pumps"],
+      "keywords": ["真空泵", "抽气", "捕集", "前级泵", "维持真空", "泵的作用"],
+      "content": "真空泵是从容器中移除气体分子，或在系统内捕集气体分子，以建立和维持真空的装置。没有一种泵能覆盖从大气压到超高真空的全部压力范围。按作用机理可粗分为两类：油封机械泵、涡轮分子泵等把气体输送到系统外；离子泵、低温泵和吸气剂泵等把气体捕集在系统内。实际系统常由不同泵组合完成粗抽、前级支持和高真空维持。"
+    },
+    {
+      "pageStart": 1272,
+      "pageEnd": 1272,
+      "sectionPath": [
+        "II.8.3 Instrumentation",
+        "II.8.3.3 Vacuum pumps",
+        "Pump examples"
+      ],
+      "keywords": [
+        "旋片泵",
+        "涡轮分子泵",
+        "离子泵",
+        "粗真空",
+        "高真空",
+        "超高真空"
+      ],
+      "content": "CERN 章节给出的典型原理示例是：油封旋片泵通过吸入、封闭、压缩和排气完成粗抽，也常作为涡轮分子泵的前级；涡轮分子泵在分子流区通过高速叶片向气体分子传递动量，并需要前级泵处理出口气体；溅射离子泵没有排气口，而是在高真空范围内捕集残余气体，常用于维持真空。具体可用压力范围和性能必须以目标型号的厂家曲线与手册为准。"
+    },
+    {
+      "pageStart": 1273,
+      "pageEnd": 1274,
+      "sectionPath": ["II.8.4 Outgassing"],
+      "keywords": ["放气", "漏气", "气载", "抽空时间", "水汽", "材料"],
+      "content": "在没有真实泄漏时，真空系统的气载仍可能主要来自材料表面和内部的放气。抽空过程通常依次受到容积气体排出、表面解吸、材料内部扩散和渗透影响；其中表面水汽解吸可能使压力下降越来越慢。遇到抽不到目标压力时，不能只判断泵太小，还应检查漏率、材料和密封件放气、污染、温度、暴露空气时间以及抽空历史。"
+    },
+    {
+      "pageStart": 1264,
+      "pageEnd": 1272,
+      "sectionPath": ["OpenVac engineering synthesis", "Pump selection inputs"],
+      "keywords": [
+        "选泵",
+        "选型",
+        "目标压力",
+        "抽空时间",
+        "介质",
+        "气载",
+        "流导",
+        "前级泵"
+      ],
+      "content": "基于该章节的抽速、气载、流导和泵型原理，选泵至少要确认：腔体容积与期望抽空时间，入口初始压力、目标压力和连续工作压力，气体种类及工艺进气量，漏气与放气形成的总气载，连接管路的直径、长度和附件流导，以及泵是否需要前级支持。腐蚀、可燃、有毒、富氧、粉尘、蒸汽或冷凝性介质还必须单独做材料兼容与安全审查。只有目标压力而没有气载和管路条件，不能可靠确定泵型与规格。"
+    }
+  ]
+}

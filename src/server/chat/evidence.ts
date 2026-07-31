@@ -5,6 +5,10 @@ import {
   PostgresHybridRetrievalRepository,
   type RetrievalCandidate
 } from "@/server/knowledge/retrieval";
+import {
+  extractLexicalTerms,
+  POSTGRES_LEXICAL_RETRIEVAL_SQL
+} from "@/server/knowledge/lexical";
 import { SafeWebFetcher } from "@/server/knowledge/web-fetch";
 import { getEmbeddingProvider, getWebSearchProvider } from "@/server/providers";
 import {
@@ -303,38 +307,9 @@ async function retrieveLocal(question: string): Promise<{
 async function lexicalFallback(
   question: string
 ): Promise<RetrievalCandidate[]> {
-  const rows = await sqlClient.unsafe(
-    `
-      WITH q AS (SELECT websearch_to_tsquery('simple', $1::text) query)
-      SELECT
-        kc.id AS chunk_id,
-        kd.id AS document_id,
-        kv.id AS version_id,
-        kd.title,
-        kc.content,
-        kc.page_start,
-        kc.page_end,
-        kc.section_path,
-        ks.id AS source_id,
-        ks.publisher,
-        ks.canonical_url,
-        ks.source_tier,
-        ts_rank_cd(to_tsvector('simple', kc.content), q.query) AS score
-      FROM knowledge_chunk kc
-      JOIN knowledge_version kv ON kv.id = kc.version_id
-      JOIN knowledge_document kd ON kd.id = kv.document_id
-      LEFT JOIN knowledge_source ks ON ks.id = kd.source_id
-      CROSS JOIN q
-      WHERE kv.status = 'published'
-        AND kd.status = 'published'
-        AND kd.current_version_id = kv.id
-        AND to_tsvector('simple', kc.content) @@ q.query
-        AND (ks.id IS NULL OR (ks.enabled = TRUE AND ks.deleted_at IS NULL))
-      ORDER BY score DESC, kc.id
-      LIMIT 8
-    `,
-    [question]
-  );
+  const terms = extractLexicalTerms(question);
+  if (terms.length === 0) return [];
+  const rows = await sqlClient.unsafe(POSTGRES_LEXICAL_RETRIEVAL_SQL, [terms]);
 
   return [...rows].map((row) => {
     const record = row as Record<string, unknown>;
@@ -344,6 +319,7 @@ async function lexicalFallback(
       typeof record.page_end === "number" ? record.page_end : undefined;
     const sourceId =
       typeof record.source_id === "string" ? record.source_id : undefined;
+    const chunkId = String(record.chunk_id);
     const url =
       typeof record.canonical_url === "string"
         ? record.canonical_url
@@ -353,7 +329,7 @@ async function lexicalFallback(
     const citation: Citation | undefined =
       sourceId && url
         ? {
-            sourceId,
+            sourceId: `${sourceId}:chunk:${chunkId}`,
             title: String(record.title),
             publisher: String(record.publisher || "来源发布者未标注"),
             url,
@@ -363,7 +339,7 @@ async function lexicalFallback(
                 : pageEnd && pageEnd !== pageStart
                   ? `第 ${pageStart}-${pageEnd} 页`
                   : `第 ${pageStart} 页`,
-            fetchedAt: new Date(0),
+            fetchedAt: citationFetchedAt(record.citation_metadata),
             licenseClass:
               sourceTier === "open_license"
                 ? "open"
@@ -374,7 +350,7 @@ async function lexicalFallback(
         : undefined;
 
     return {
-      chunkId: String(record.chunk_id),
+      chunkId,
       documentId: String(record.document_id),
       versionId: String(record.version_id),
       title: String(record.title),
@@ -389,6 +365,12 @@ async function lexicalFallback(
       citation
     };
   });
+}
+
+function citationFetchedAt(value: unknown): string | Date {
+  if (typeof value !== "object" || value === null) return new Date(0);
+  const fetchedAt = (value as Record<string, unknown>).fetchedAt;
+  return typeof fetchedAt === "string" ? fetchedAt : new Date(0);
 }
 
 function parseDomains(value: string | undefined) {

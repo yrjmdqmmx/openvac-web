@@ -26,6 +26,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "knowledge:seed": "tsx scripts/seed-sources.ts",
+    "knowledge:seed-core": "tsx scripts/seed-core-knowledge.ts",
     "eval": "tsx scripts/run-evals.ts",
     "smoke:deepseek": "tsx scripts/smoke-deepseek.ts"
   },

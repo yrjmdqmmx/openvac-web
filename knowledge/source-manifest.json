@@ -7,10 +7,11 @@
     "canonicalUrl": "https://cds.cern.ch/record/2929324?ln=en",
     "baseUrl": "https://cds.cern.ch",
     "sourceTier": "open_license",
-    "licensePolicy": "full_text_after_record_level_license_review",
+    "licensePolicy": "Creative Commons Attribution 4.0",
     "trustLevel": 95,
-    "enabled": false,
-    "notes": "Candidate core source. Verify the exact record Copyright/License field before ingestion."
+    "enabled": true,
+    "rightsReviewed": true,
+    "notes": "Record and official PDF reviewed on 2026-07-31. DOI 10.23730/CYRSP-2024-003.1259; published by CERN under CC BY 4.0."
   },
   {
     "sourceKey": "nist-si-guide",

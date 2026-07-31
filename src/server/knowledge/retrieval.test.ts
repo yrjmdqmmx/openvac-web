@@ -63,7 +63,7 @@ describe("PostgresHybridRetrievalRepository", () => {
       score: 0.032,
       vectorRank: 1,
       citation: {
-        sourceId: "source-1",
+        sourceId: "source-1:chunk:chunk-1",
         licenseClass: "open"
       }
     });
