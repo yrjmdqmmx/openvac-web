@@ -83,6 +83,8 @@ protected GitHub environment secret. Where supported, restrict the credential
 to the ECS public source IP. Set:
 
 ```dotenv
+ALIBABA_DIRECTMAIL_ACCESS_KEY_ID=
+ALIBABA_DIRECTMAIL_ACCESS_KEY_SECRET=
 ALIBABA_DIRECTMAIL_ACCOUNT_NAME=no-reply@mail.openvac.cn
 ALIBABA_DIRECTMAIL_REGION=cn-hangzhou
 ALIBABA_DIRECTMAIL_ENDPOINT=dm.aliyuncs.com

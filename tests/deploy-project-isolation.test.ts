@@ -54,6 +54,12 @@ describe("deployment Compose project isolation", () => {
     const productionNginx = source("deploy/nginx/openvac.conf");
     const stagingNginx = source("deploy/nginx/staging-openvac.conf");
 
+    expect(compose).toContain(
+      "ALIBABA_DIRECTMAIL_ACCESS_KEY_ID: ${ALIBABA_DIRECTMAIL_ACCESS_KEY_ID:-}"
+    );
+    expect(compose).toContain(
+      "ALIBABA_DIRECTMAIL_ACCESS_KEY_SECRET: ${ALIBABA_DIRECTMAIL_ACCESS_KEY_SECRET:-}"
+    );
     expect(compose).toContain("no-reply@mail.openvac.cn");
     expect(release).toContain("https://openvac.cn/api/health");
     expect(release).toContain("https://staging-openvac.openvac.cn/api/health");

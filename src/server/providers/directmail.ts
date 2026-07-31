@@ -37,11 +37,18 @@ export class AlibabaDirectMailProvider implements EmailProvider {
   private readonly endpoint: string;
 
   constructor(options: DirectMailOptions = {}) {
-    this.accessKeyId = options.accessKeyId ?? process.env.ALIBABA_ACCESS_KEY_ID;
+    this.accessKeyId =
+      options.accessKeyId ??
+      process.env.ALIBABA_DIRECTMAIL_ACCESS_KEY_ID ??
+      process.env.ALIBABA_ACCESS_KEY_ID;
     this.accessKeySecret =
-      options.accessKeySecret ?? process.env.ALIBABA_ACCESS_KEY_SECRET;
+      options.accessKeySecret ??
+      process.env.ALIBABA_DIRECTMAIL_ACCESS_KEY_SECRET ??
+      process.env.ALIBABA_ACCESS_KEY_SECRET;
     this.securityToken =
-      options.securityToken ?? process.env.ALIBABA_SECURITY_TOKEN;
+      options.securityToken ??
+      process.env.ALIBABA_DIRECTMAIL_SECURITY_TOKEN ??
+      process.env.ALIBABA_SECURITY_TOKEN;
     this.accountName =
       options.accountName ?? process.env.ALIBABA_DIRECTMAIL_ACCOUNT_NAME;
     this.region =
@@ -77,12 +84,12 @@ export class AlibabaDirectMailProvider implements EmailProvider {
     ]);
     const accessKeyId = requireString(
       PROVIDER_ID,
-      "ALIBABA_ACCESS_KEY_ID",
+      "ALIBABA_DIRECTMAIL_ACCESS_KEY_ID",
       this.accessKeyId
     );
     const accessKeySecret = requireString(
       PROVIDER_ID,
-      "ALIBABA_ACCESS_KEY_SECRET",
+      "ALIBABA_DIRECTMAIL_ACCESS_KEY_SECRET",
       this.accessKeySecret
     );
     const accountName = requireString(
