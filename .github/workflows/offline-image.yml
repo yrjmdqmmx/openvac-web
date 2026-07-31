@@ -1,6 +1,9 @@
 name: Build offline ECS image
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/offline-image.yml
   workflow_dispatch:
 
 permissions: {}
