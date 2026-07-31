@@ -1,9 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
 FROM node:24-alpine AS base
+ARG PNPM_VERSION=10.28.2
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable
+RUN npm install --global "pnpm@${PNPM_VERSION}" \
+    && test "$(pnpm --version)" = "$PNPM_VERSION"
 WORKDIR /app
 
 FROM base AS deps

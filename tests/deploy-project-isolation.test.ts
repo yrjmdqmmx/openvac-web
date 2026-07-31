@@ -48,6 +48,15 @@ describe("deployment Compose project isolation", () => {
     );
   });
 
+  it("preinstalls the pinned package manager in the offline runtime image", () => {
+    const dockerfile = source("Dockerfile");
+
+    expect(dockerfile).toContain("ARG PNPM_VERSION=10.28.2");
+    expect(dockerfile).toContain('npm install --global "pnpm@${PNPM_VERSION}"');
+    expect(dockerfile).toContain('test "$(pnpm --version)" = "$PNPM_VERSION"');
+    expect(dockerfile).not.toContain("corepack enable");
+  });
+
   it("targets the OpenVac domains and verified DirectMail sender", () => {
     const compose = source("docker-compose.yml");
     const release = source(".github/workflows/release.yml");
