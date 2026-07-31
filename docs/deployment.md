@@ -90,6 +90,15 @@ ALIBABA_DIRECTMAIL_REGION=cn-hangzhou
 ALIBABA_DIRECTMAIL_ENDPOINT=dm.aliyuncs.com
 ```
 
+For the first staging bootstrap, configure the model and DirectMail credentials
+from a trusted local terminal. The helper disables terminal echo and sends the
+three values to ECS over SSH standard input, so they do not enter shell history
+or process arguments:
+
+```bash
+sh deploy/configure-staging-secrets.sh user@ecs-host
+```
+
 ## 4. First release
 
 1. Verify DNS and ICP state.

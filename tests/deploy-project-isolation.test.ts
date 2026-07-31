@@ -70,6 +70,17 @@ describe("deployment Compose project isolation", () => {
     ).not.toContain("yixingretail.cn");
   });
 
+  it("keeps first-run staging secrets out of arguments and shell history", () => {
+    const configureSecrets = source("deploy/configure-staging-secrets.sh");
+
+    expect(configureSecrets).toContain("stty -echo");
+    expect(configureSecrets).toContain('|\n  ssh "$ssh_target"');
+    expect(configureSecrets).toContain("/opt/openvac-staging/.env");
+    expect(configureSecrets).not.toContain("set -x");
+    expect(configureSecrets).not.toMatch(/ssh[^\n]*\$deepseek_key/);
+    expect(configureSecrets).not.toMatch(/ssh[^\n]*\$directmail_secret/);
+  });
+
   it("rejects mismatched directory/project pairs before every Compose action", () => {
     const deploy = source("deploy/deploy.sh");
 
