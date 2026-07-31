@@ -1,7 +1,8 @@
+import DirectMailModule, { SingleSendMailRequest } from "@alicloud/dm20151123";
+
 import { ProviderResponseError } from "./errors";
 import {
   asRecord,
-  loadOptionalModule,
   optionalString,
   pickString,
   requireConstructor,
@@ -77,11 +78,16 @@ export class AlibabaDirectMailProvider implements EmailProvider {
       );
     }
 
-    const sdk = loadOptionalModule(PROVIDER_ID, "@alicloud/dm20151123");
-    const Client = requireConstructor(PROVIDER_ID, sdk, ["default"]);
-    const Request = requireConstructor(PROVIDER_ID, sdk, [
-      "SingleSendMailRequest"
-    ]);
+    // The SDK must be a static import so Next.js standalone output traces it
+    // into the runtime image. The package is CommonJS and exposes its client
+    // either directly or under a nested default depending on the loader.
+    const directMailModule: unknown = DirectMailModule;
+    const Client =
+      typeof directMailModule === "function"
+        ? (directMailModule as new (value?: Record<string, unknown>) => unknown)
+        : requireConstructor(PROVIDER_ID, asRecord(directMailModule), [
+            "default"
+          ]);
     const accessKeyId = requireString(
       PROVIDER_ID,
       "ALIBABA_DIRECTMAIL_ACCESS_KEY_ID",
@@ -105,7 +111,7 @@ export class AlibabaDirectMailProvider implements EmailProvider {
       regionId: this.region,
       type: this.securityToken ? "sts" : "access_key"
     });
-    const request = new Request({
+    const request = new SingleSendMailRequest({
       accountName,
       addressType: 1,
       replyToAddress: false,

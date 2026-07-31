@@ -265,7 +265,7 @@ describe("AlibabaWebSearchProvider", () => {
 });
 
 describe("provider construction", () => {
-  it("keeps optional Alibaba SDK loading lazy", () => {
+  it("constructs the DirectMail provider with its runtime SDK linked", () => {
     expect(() => new AlibabaDirectMailProvider({})).not.toThrow();
     expect(getEmailProvider()).toHaveProperty(
       "sendTransactional",

@@ -57,6 +57,13 @@ describe("deployment Compose project isolation", () => {
     expect(dockerfile).not.toContain("corepack enable");
   });
 
+  it("statically traces the DirectMail SDK into the standalone runtime", () => {
+    const directMailProvider = source("src/server/providers/directmail.ts");
+
+    expect(directMailProvider).toContain('from "@alicloud/dm20151123"');
+    expect(directMailProvider).not.toContain("loadOptionalModule");
+  });
+
   it("targets the OpenVac domains and verified DirectMail sender", () => {
     const compose = source("docker-compose.yml");
     const release = source(".github/workflows/release.yml");
