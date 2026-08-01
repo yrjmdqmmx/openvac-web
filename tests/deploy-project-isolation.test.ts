@@ -43,7 +43,12 @@ describe("deployment Compose project isolation", () => {
     );
     expect(release).not.toContain('image_tag="$(printf');
     expect(release).toContain(
-      'validate_release_image "$release_modeling_image" "Modeling image"'
+      'validate_release_image "$release_modeling_image" "Modeling registry image"'
+    );
+    expect(release).toContain("modeling_archive_config_digest:");
+    expect(release).toContain("openvac-modeling-release.tar.zst.sha256");
+    expect(release).toContain(
+      'OPENVAC_MODELING_PRELOADED_ID="$modeling_archive_config_digest"'
     );
     expect(activation).toContain('if [ "$#" -ne 7 ]');
     expect(deploy).toContain('if [ "$#" -ne 4 ]');
@@ -107,8 +112,11 @@ describe("deployment Compose project isolation", () => {
     expect(release).toContain("run_with_heartbeat()");
     expect(release).toContain('operation_pid="$!"');
     expect(release).toContain('while kill -0 "$operation_pid"');
-    expect(release).toContain('run_with_heartbeat "modeling image pull"');
     expect(release).toContain('run_with_heartbeat "modeling benchmark"');
+    expect(release).toContain(
+      'loaded_modeling_id="$(docker image inspect --format \'{{.Id}}\' "$release_modeling_image")"'
+    );
+    expect(release).not.toContain('run_with_heartbeat "modeling image pull"');
     expect(benchmark).toBeGreaterThan(0);
     expect(activation).toBeGreaterThan(benchmark);
     expect(release).toContain('cat "$benchmark_file"');
@@ -176,7 +184,7 @@ describe("deployment Compose project isolation", () => {
     expect(offline).toContain("- Service activation: not performed");
   });
 
-  it("runs the same host preflight before benchmark and deployment pulls", () => {
+  it("runs host preflight before benchmark identity verification and deployment pulls", () => {
     const release = source(".github/workflows/release.yml");
     const deploy = source("deploy/deploy.sh");
     const benchmarkStart = release.indexOf("REMOTE_BENCHMARK");
@@ -184,8 +192,8 @@ describe("deployment Compose project isolation", () => {
       'bundle/deploy/preflight-host.sh" "$target"',
       benchmarkStart
     );
-    const benchmarkPull = release.indexOf(
-      'docker pull "$release_modeling_image"',
+    const benchmarkIdentity = release.indexOf(
+      'loaded_modeling_id="$(docker image inspect',
       benchmarkStart
     );
     const deployPreflight = deploy.indexOf(
@@ -194,9 +202,25 @@ describe("deployment Compose project isolation", () => {
     const deployPull = deploy.indexOf("release_compose pull web worker");
 
     expect(benchmarkPreflight).toBeGreaterThan(benchmarkStart);
-    expect(benchmarkPull).toBeGreaterThan(benchmarkPreflight);
+    expect(benchmarkIdentity).toBeGreaterThan(benchmarkPreflight);
     expect(deployPreflight).toBeGreaterThan(0);
     expect(deployPull).toBeGreaterThan(deployPreflight);
+  });
+
+  it("skips the remote modeling pull only for an exact verified preloaded image", () => {
+    const deploy = source("deploy/deploy.sh");
+
+    expect(deploy).toContain('if [ -n "${OPENVAC_MODELING_PRELOADED_ID:-}" ]');
+    expect(deploy).toContain(
+      'actual_modeling_id="$(docker image inspect --format \'{{.Id}}\' "$release_modeling_image")"'
+    );
+    expect(deploy).toContain(
+      '[ "$actual_modeling_id" = "$OPENVAC_MODELING_PRELOADED_ID" ]'
+    );
+    expect(deploy).toContain("release_compose pull web worker modeling-worker");
+    expect(deploy).toContain(
+      "release_compose pull web worker modeling-service modeling-worker"
+    );
   });
 
   it("deploys only default-branch-reachable commits with default-branch CI", () => {
