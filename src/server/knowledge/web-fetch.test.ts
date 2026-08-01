@@ -9,6 +9,7 @@ import {
   type HttpsRequester,
   SafeWebFetcher,
   assertSafeResolvedAddresses,
+  createPinnedLookup,
   isPublicIpAddress,
   validateFetchUrl
 } from "./web-fetch";
@@ -111,6 +112,26 @@ describe("safe web fetch DNS policy", () => {
         { address: "127.0.0.1", family: 4 }
       ])
     ).toThrow(ProviderResponseError);
+  });
+
+  it("returns an address array when Node requests lookup with all=true", () => {
+    const lookup = createPinnedLookup({ address: "8.8.8.8", family: 4 });
+
+    lookup("nist.gov", { all: true }, (error, addresses, family) => {
+      expect(error).toBeNull();
+      expect(addresses).toEqual([{ address: "8.8.8.8", family: 4 }]);
+      expect(family).toBeUndefined();
+    });
+  });
+
+  it("returns the legacy address and family when all=false", () => {
+    const lookup = createPinnedLookup({ address: "8.8.8.8", family: 4 });
+
+    lookup("nist.gov", { all: false }, (error, address, family) => {
+      expect(error).toBeNull();
+      expect(address).toBe("8.8.8.8");
+      expect(family).toBe(4);
+    });
   });
 });
 

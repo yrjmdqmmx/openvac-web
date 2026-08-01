@@ -225,9 +225,7 @@ export class SafeWebFetcher {
         },
         agent: false,
         signal,
-        lookup: (_hostname, _options, callback): void => {
-          callback(null, address.address, address.family);
-        }
+        lookup: createPinnedLookup(address)
       };
       const request = this.requester(
         url,
@@ -382,6 +380,18 @@ export class SafeWebFetcher {
       request.end();
     });
   }
+}
+
+export function createPinnedLookup(
+  address: ResolvedAddress
+): NonNullable<RequestOptions["lookup"]> {
+  return (_hostname, options, callback): void => {
+    if (options.all) {
+      callback(null, [address]);
+      return;
+    }
+    callback(null, address.address, address.family);
+  };
 }
 
 export function validateFetchUrl(
