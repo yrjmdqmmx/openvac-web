@@ -368,9 +368,8 @@ jobs:
             exit 64
           fi
           release_modeling_registry_image="$release_modeling_image"
-          modeling_config_hex="${MODELING_ARCHIVE_CONFIG_DIGEST#sha256:}"
           loaded_modeling_tag="$image_repository:modeling-archive-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          release_modeling_image="openvac-modeling-release:$modeling_config_hex"
+          release_modeling_image=""
 
           archive_dir="$RUNNER_TEMP/openvac-modeling-release"
           modeling_archive="$archive_dir/openvac-modeling-release.tar.zst"
@@ -467,15 +466,54 @@ jobs:
               -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
               "$ECS_USER@$ECS_HOST" docker load
 
-          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
-            "$ECS_USER@$ECS_HOST" \
-            docker image tag "$loaded_modeling_tag" "$release_modeling_image"
+          loaded_modeling_id="$(
+            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+              "$ECS_USER@$ECS_HOST" \
+              sh -s -- "$loaded_modeling_tag" "$release_id" <<'REMOTE_IMAGE_IDENTITY'
+          set -eu
+          if [ "$#" -ne 2 ]; then
+            exit 64
+          fi
+          loaded_modeling_tag="$1"
+          release_id="$2"
+          case "$loaded_modeling_tag" in
+            ghcr.io/*:modeling-archive-*) ;;
+            *) exit 64 ;;
+          esac
+          case "$release_id" in
+            ""|*[!0-9a-f]*) exit 64 ;;
+          esac
+          [ "${#release_id}" -eq 40 ] || exit 64
+          loaded_id="$(docker image inspect --format '{{.Id}}' "$loaded_modeling_tag")"
+          case "$loaded_id" in
+            sha256:*) loaded_hex="${loaded_id#sha256:}" ;;
+            *) exit 1 ;;
+          esac
+          case "$loaded_hex" in
+            ""|*[!0-9a-f]*) exit 1 ;;
+          esac
+          [ "${#loaded_hex}" -eq 64 ] || exit 1
+          loaded_revision="$(
+            docker image inspect \
+              --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+              "$loaded_modeling_tag"
+          )"
+          [ "$loaded_revision" = "$release_id" ] || {
+            echo "Loaded modeling image revision does not match the release commit" >&2
+            exit 1
+          }
+          docker image tag "$loaded_modeling_tag" "openvac-modeling-release:$loaded_hex"
+          printf '%s\n' "$loaded_id"
+          REMOTE_IMAGE_IDENTITY
+          )"
+          validate_digest "$loaded_modeling_id" "Loaded modeling image ID"
+          release_modeling_image="openvac-modeling-release:${loaded_modeling_id#sha256:}"
 
           set +e
           ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
             "$ECS_USER@$ECS_HOST" \
             sh -s -- "$remote_stage" "$release_modeling_image" \
-            "$MODELING_ARCHIVE_CONFIG_DIGEST" "$release_id" \
+            "$loaded_modeling_id" "$release_id" \
             "$benchmark_iterations" "$TARGET" >"$benchmark_file" <<'REMOTE_BENCHMARK'
           set -eu
           if [ "$#" -ne 6 ]; then
@@ -599,7 +637,7 @@ jobs:
             "$ECS_USER@$ECS_HOST" \
             sh -s -- \
             "$remote_stage" "$deploy_dir" "$release_id" "$release_image" \
-            "$release_modeling_image" "$MODELING_ARCHIVE_CONFIG_DIGEST" \
+            "$release_modeling_image" "$loaded_modeling_id" \
             "$compose_project" "$health_url" <<'REMOTE_ACTIVATE'
           set -eu
           if [ "$#" -ne 8 ]; then
