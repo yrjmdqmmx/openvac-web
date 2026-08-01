@@ -1,0 +1,59 @@
+{
+  "sourceCanonicalUrl": "https://patents.google.com/patent/CN221568833U/zh",
+  "document": {
+    "externalKey": "patent-cn221568833u",
+    "title": "CN221568833U — 单级旋片真空泵（元数据草稿）",
+    "description": "仅保存书目信息、权利要求/段落/图号定位和 OpenVac 独立摘要；不保存专利全文或附图。",
+    "language": "zh-CN",
+    "mimeType": "application/patent-metadata+json",
+    "tags": ["专利", "单级旋片泵", "双滑板", "滚筒", "结构案例"]
+  },
+  "citation": {
+    "publicationNumber": "CN221568833U",
+    "jurisdiction": "CN",
+    "documentType": "utility-model-grant",
+    "title": "单级旋片真空泵",
+    "applicationNumber": "CN202323608429.2U",
+    "assignee": "上海首道真空设备有限公司",
+    "inventors": ["王鹏"],
+    "filingDate": "2023-12-27",
+    "priorityDate": "2023-12-27",
+    "publicationDate": "2024-08-20",
+    "primaryAuthorityUrl": "https://cponline.cnipa.gov.cn/",
+    "exactTextMirrorUrl": "https://patents.google.com/patent/CN221568833U/zh",
+    "grantPdfMirrorUrl": "https://patentimages.storage.googleapis.com/f6/2a/1e/40460562c3de5d/CN221568833U.pdf",
+    "licenseClass": "metadata_only",
+    "ingestionMode": "metadata_only",
+    "bibliographicVerifiedAt": "2026-08-01T00:00:00.000Z",
+    "legalStatusDisclaimer": "Current ownership and legal status require a live CNIPA check; OpenVac does not provide legal advice.",
+    "evidenceLevel": "patentee_disclosure",
+    "independentPerformanceValidation": false
+  },
+  "review": {
+    "status": "required",
+    "requirements": [
+      "核对书目信息、权利要求号、说明书段落和图号",
+      "确认摘要未把双滑板与橡胶滚筒写成单级旋片泵通用结构",
+      "确认未把申请人的密封、磨损主张写成已验证性能",
+      "确认正文与附图未进入全文或向量库"
+    ]
+  },
+  "sections": [
+    {
+      "sectionPath": ["OpenVac bibliographic summary"],
+      "keywords": [
+        "CN221568833U",
+        "单级旋片泵",
+        "双滑板",
+        "橡胶滚筒",
+        "防撞垫"
+      ],
+      "content": "CN221568833U 是一种单级旋片真空泵结构案例。权利要求1描述旋转轴两侧固定板内的两个滑腔、并排滑板、圆形接触端头和橡胶滚筒；权利要求2–5进一步描述进排气通道、侧盖与输出轴、弹簧推动的滑座及橡胶防撞垫。图3–6分别用于定位泵体内部、双滑腔/滑板、防撞垫和滚筒结构。文献把双滑板作为密封冗余，并希望用滚动接触减少摩擦。"
+    },
+    {
+      "sectionPath": ["OpenVac evidence warning"],
+      "keywords": ["专利主张", "磨损", "密封", "性能验证", "物理表述"],
+      "content": "双滑板提高密封、橡胶滚筒减少磨损等属于专利权人的设计主张，文献没有给出抽速、极限压力、寿命、漏率或材料兼容性测试。说明书把滑板伸出原因表述为‘向心力’，不能照搬成基础物理结论。该专利只适合作为特殊端部与冗余密封结构案例，不能单独支撑选泵参数、故障定案或传统油封旋片泵的通用原理。"
+    }
+  ]
+}

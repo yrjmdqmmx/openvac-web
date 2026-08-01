@@ -30,6 +30,10 @@ try {
         kc.version_id,
         kc.content,
         ks.source_tier,
+        ks.enabled AS source_enabled,
+        ks.deleted_at AS source_deleted_at,
+        ks.canonical_url,
+        ks.publisher,
         ks.metadata AS source_metadata,
         kv.metadata AS version_metadata,
         kv.citation_metadata
@@ -91,16 +95,33 @@ try {
               AND ks.id = kd.source_id
               AND ks.enabled = TRUE
               AND ks.deleted_at IS NULL
+              AND ks.canonical_url ~ '^https://[^/?#[:space:]@]+([/?#]|$)'
+              AND btrim(ks.publisher) <> ''
               AND kv.citation_metadata ->> 'ingestionMode' = 'full_text'
               AND kv.metadata ->> 'reviewStatus' = 'approved'
+              AND kv.metadata #>> '{review,status}' = 'approved'
               AND (
                 (
                   ks.source_tier = 'open_license'
-                  AND ks.metadata ->> 'rightsReviewed' = 'true'
+                  AND ks.metadata #>> '{rightsDecision,status}' = 'approved'
+                  AND ks.metadata #>> '{rightsDecision,scope}' = 'full_text'
+                  AND ks.metadata #>> '{rightsDecision,appliesToRecordUrl}' = ks.canonical_url
                 )
                 OR (
                   ks.source_tier = 'internal'
-                  AND ks.metadata ->> 'commercialAiRightsConfirmed' = 'true'
+                  AND (
+                    ks.metadata ->> 'commercialAiRightsConfirmed' = 'true'
+                    OR ks.metadata #>> '{rightsDecision,commercialAiUse}' = 'approved'
+                    OR ks.metadata #>> '{rightsDecision,commercialAiRights}' = 'approved'
+                  )
+                  AND (
+                    NOT (ks.metadata ? 'rightsDecision')
+                    OR (
+                      ks.metadata #>> '{rightsDecision,status}' = 'approved'
+                      AND ks.metadata #>> '{rightsDecision,scope}' = 'full_text'
+                      AND ks.metadata #>> '{rightsDecision,appliesToRecordUrl}' = ks.canonical_url
+                    )
+                  )
                 )
               )
             RETURNING kc.id
@@ -175,6 +196,15 @@ function mapCandidate(row: SqlRow): PublishedEmbeddingCandidate {
     versionId: requiredString(row.version_id, "version_id"),
     content: requiredString(row.content, "content"),
     sourceTier: requiredString(row.source_tier, "source_tier"),
+    sourceEnabled: row.source_enabled === true,
+    sourceDeletedAt:
+      row.source_deleted_at instanceof Date ||
+      typeof row.source_deleted_at === "string"
+        ? row.source_deleted_at
+        : null,
+    canonicalUrl:
+      typeof row.canonical_url === "string" ? row.canonical_url : null,
+    publisher: typeof row.publisher === "string" ? row.publisher : null,
     sourceMetadata: recordValue(row.source_metadata),
     versionMetadata: recordValue(row.version_metadata),
     citationMetadata: recordValue(row.citation_metadata)

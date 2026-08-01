@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   HybridRetriever,
+  POSTGRES_HYBRID_RETRIEVAL_SQL,
   PostgresHybridRetrievalRepository,
   reciprocalRankFusion
 } from "./retrieval";
@@ -29,6 +30,21 @@ describe("reciprocalRankFusion", () => {
 });
 
 describe("PostgresHybridRetrievalRepository", () => {
+  it("fails closed on missing sources, review, or record-scoped rights", () => {
+    expect(POSTGRES_HYBRID_RETRIEVAL_SQL).toContain(
+      "JOIN knowledge_source ks ON ks.id = kd.source_id"
+    );
+    expect(POSTGRES_HYBRID_RETRIEVAL_SQL).not.toContain(
+      "LEFT JOIN knowledge_source"
+    );
+    expect(POSTGRES_HYBRID_RETRIEVAL_SQL).toContain(
+      "kv.metadata #>> '{review,status}' = 'approved'"
+    );
+    expect(POSTGRES_HYBRID_RETRIEVAL_SQL).toContain(
+      "ks.metadata #>> '{rightsDecision,appliesToRecordUrl}' = ks.canonical_url"
+    );
+  });
+
   it("passes a 1024 vector and maps a published evidence row", async () => {
     const execute = vi.fn(async () => [
       {

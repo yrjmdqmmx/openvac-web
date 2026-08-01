@@ -11,8 +11,18 @@ const base: PublishedEmbeddingCandidate = {
   versionId: "version-1",
   content: "reviewed evidence",
   sourceTier: "open_license",
-  sourceMetadata: { rightsReviewed: true },
-  versionMetadata: { reviewStatus: "approved" },
+  sourceEnabled: true,
+  sourceDeletedAt: null,
+  canonicalUrl: "https://cds.cern.ch/record/2929324",
+  publisher: "CERN",
+  sourceMetadata: {
+    rightsDecision: {
+      status: "approved",
+      scope: "full_text",
+      appliesToRecordUrl: "https://cds.cern.ch/record/2929324"
+    }
+  },
+  versionMetadata: { reviewStatus: "approved", review: { status: "approved" } },
   citationMetadata: { ingestionMode: "full_text" }
 };
 

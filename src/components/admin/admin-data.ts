@@ -34,10 +34,13 @@ export const adminModuleConfigs = {
     endpoint: "/api/admin/sources",
     responseKeys: ["sources"],
     columns: [
+      "kind",
       "name",
-      "baseUrl",
+      "publisher",
+      "canonicalUrl",
       "sourceTier",
       "licensePolicy",
+      "rightsStatus",
       "enabled",
       "updatedAt"
     ]
@@ -96,9 +99,13 @@ export const adminColumnLabels: Record<string, string> = {
   contactName: "联系人",
   companyName: "公司",
   contactMethod: "联系类型",
+  kind: "来源类型",
+  publisher: "发布机构",
+  canonicalUrl: "记录地址",
   baseUrl: "基础地址",
   sourceTier: "来源层级",
   licensePolicy: "授权策略",
+  rightsStatus: "权利状态",
   enabled: "启用",
   version: "版本",
   key: "配置项",

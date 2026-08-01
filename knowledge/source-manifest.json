@@ -1,9 +1,9 @@
 [
   {
-    "sourceKey": "cern-vacuum-accelerators-2024",
+    "sourceKey": "cern-vacuum-systems-2024",
     "kind": "manual",
-    "name": "Vacuum for Particle Accelerators",
-    "publisher": "CERN Document Server",
+    "name": "II.8 — Vacuum systems",
+    "publisher": "CERN",
     "canonicalUrl": "https://cds.cern.ch/record/2929324?ln=en",
     "baseUrl": "https://cds.cern.ch",
     "sourceTier": "open_license",
@@ -11,7 +11,83 @@
     "trustLevel": 95,
     "enabled": true,
     "rightsReviewed": true,
+    "rightsDecision": {
+      "status": "approved",
+      "scope": "full_text",
+      "basis": "The record and article state that this specific work is published under Creative Commons Attribution 4.0. Third-party courtesy figures remain excluded from OpenVac redistribution.",
+      "evidenceUrl": "https://e-publishing.cern.ch/index.php/CYRSP/article/view/1624",
+      "appliesToRecordUrl": "https://cds.cern.ch/record/2929324?ln=en",
+      "reviewedBy": "openvac-codex-source-review",
+      "reviewedAt": "2026-08-01T00:00:00.000Z"
+    },
     "notes": "Record and official PDF reviewed on 2026-07-31. DOI 10.23730/CYRSP-2024-003.1259; published by CERN under CC BY 4.0."
+  },
+  {
+    "sourceKey": "cern-vacuum-superconducting-devices-2014",
+    "kind": "manual",
+    "name": "Vacuum Technology for Superconducting Devices",
+    "publisher": "CERN",
+    "canonicalUrl": "https://cds.cern.ch/record/1974068",
+    "baseUrl": "https://cds.cern.ch",
+    "sourceTier": "open_license",
+    "licensePolicy": "Creative Commons Attribution 4.0",
+    "trustLevel": 95,
+    "enabled": true,
+    "rightsReviewed": true,
+    "rightsDecision": {
+      "status": "approved",
+      "scope": "full_text",
+      "basis": "The CERN record marks this specific publication as Creative Commons Attribution 4.0. Third-party courtesy figures remain excluded from OpenVac redistribution.",
+      "evidenceUrl": "https://cds.cern.ch/record/1974068",
+      "appliesToRecordUrl": "https://cds.cern.ch/record/1974068",
+      "reviewedBy": "openvac-codex-source-review",
+      "reviewedAt": "2026-08-01T00:00:00.000Z"
+    },
+    "notes": "DOI 10.5170/CERN-2014-005.497; CERN proceedings pages 497–515. Only reviewed text derivatives may be published; third-party courtesy images and curves are excluded."
+  },
+  {
+    "sourceKey": "patent-us7674096b2",
+    "kind": "patent",
+    "name": "US7674096B2 — Portable, rotary vane vacuum pump with removable oil reservoir cartridge",
+    "publisher": "United States Patent and Trademark Office",
+    "canonicalUrl": "https://patentcenter.uspto.gov/applications/10947899",
+    "baseUrl": "https://www.uspto.gov",
+    "sourceTier": "metadata_only",
+    "licensePolicy": "bibliographic_metadata_independent_summary_and_link_only",
+    "trustLevel": 80,
+    "enabled": true,
+    "rightsDecision": {
+      "status": "approved",
+      "scope": "metadata_only",
+      "basis": "Public patent bibliographic facts, short claim and figure locators, and an independently written OpenVac summary only. No patent full text or drawings are ingested.",
+      "evidenceUrl": "https://www.uspto.gov/web/offices/pac/mpep/documents/0600_608_02.htm",
+      "appliesToRecordUrl": "https://patentcenter.uspto.gov/applications/10947899",
+      "reviewedBy": "openvac-codex-source-review",
+      "reviewedAt": "2026-08-01T00:00:00.000Z"
+    },
+    "notes": "Patent disclosure, not independent performance validation or legal advice. Exact text mirror: https://patents.google.com/patent/US7674096B2/en"
+  },
+  {
+    "sourceKey": "patent-cn221568833u",
+    "kind": "patent",
+    "name": "CN221568833U — 单级旋片真空泵",
+    "publisher": "China National Intellectual Property Administration",
+    "canonicalUrl": "https://patents.google.com/patent/CN221568833U/zh",
+    "baseUrl": "https://cponline.cnipa.gov.cn",
+    "sourceTier": "metadata_only",
+    "licensePolicy": "bibliographic_metadata_independent_summary_and_link_only",
+    "trustLevel": 80,
+    "enabled": true,
+    "rightsDecision": {
+      "status": "approved",
+      "scope": "metadata_only",
+      "basis": "Public patent bibliographic facts, short claim and figure locators, and an independently written OpenVac summary only. No patent full text or drawings are ingested.",
+      "evidenceUrl": "https://www.cnipa.gov.cn/art/2023/1/31/art_3164_181829.html",
+      "appliesToRecordUrl": "https://patents.google.com/patent/CN221568833U/zh",
+      "reviewedBy": "openvac-codex-source-review",
+      "reviewedAt": "2026-08-01T00:00:00.000Z"
+    },
+    "notes": "CNIPA is the primary authority; the canonical URL is an exact public mirror for this record. Patent claims are not independent performance tests."
   },
   {
     "sourceKey": "nist-si-guide",

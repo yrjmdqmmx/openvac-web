@@ -1,0 +1,111 @@
+{
+  "sourceCanonicalUrl": "https://cds.cern.ch/record/1974068",
+  "document": {
+    "externalKey": "cern-2014-005-vacuum-superconducting-devices",
+    "title": "Vacuum Technology for Superconducting Devices（OpenVac 中文知识草稿）",
+    "description": "依据 CERN 论文集 pp.497–515 逐页定位后独立撰写的中文技术草稿；发布前必须完成人工技术复核。",
+    "language": "zh-CN",
+    "mimeType": "application/pdf",
+    "tags": [
+      "真空基础",
+      "有效抽速",
+      "气体传热",
+      "涡轮分子泵",
+      "低温泵",
+      "超导装置"
+    ]
+  },
+  "citation": {
+    "authors": ["Paolo Chiggiato"],
+    "publishedYear": 2014,
+    "publication": "CERN-2014-005",
+    "pageRange": "497–515",
+    "doi": "10.5170/CERN-2014-005.497",
+    "recordUrl": "https://cds.cern.ch/record/1974068",
+    "officialPdfUrl": "https://cds.cern.ch/record/1974068/files/arXiv%3A1501.07162.pdf",
+    "licenseClass": "open",
+    "licenseName": "Creative Commons Attribution 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "ingestionMode": "full_text",
+    "fetchedAt": "2026-08-01T00:00:00.000Z",
+    "curationMethod": "official-record-and-page-located-Chinese-synthesis",
+    "changesMade": "Chinese technical synthesis and chunking; third-party courtesy images, curves and tables excluded.",
+    "thirdPartyAssetsExcluded": true
+  },
+  "review": {
+    "status": "required",
+    "requirements": [
+      "逐条核对页码、公式适用条件、单位和压力范围",
+      "确认没有把特定超导装置案例推广为普通工业系统通则",
+      "确认未复制第三方 courtesy 图片、曲线或表格",
+      "由真空行业专家批准后才允许向量化和发布"
+    ]
+  },
+  "sections": [
+    {
+      "pageStart": 497,
+      "pageEnd": 499,
+      "sectionPath": [
+        "2. Vacuum science fundamentals",
+        "Flow regimes and Knudsen number"
+      ],
+      "keywords": ["Knudsen 数", "黏性流", "过渡流", "分子流", "平均自由程"],
+      "content": "真空系统中的流动状态应由平均自由程与系统特征尺寸的比值（Knudsen 数）判断，而不能只凭一个压力数值。Kn 很小时，分子间碰撞占主导，可按黏性流处理；Kn 很大时，分子与壁面的碰撞更重要，进入分子流；两者之间是过渡区。压力边界会随气体、温度和几何尺寸变化，不同资料对‘低真空、高真空、超高真空’的分界也可能不同。"
+    },
+    {
+      "pageStart": 499,
+      "pageEnd": 502,
+      "sectionPath": [
+        "2.1 Free molecular gas flow",
+        "Conductance and effective pumping speed"
+      ],
+      "keywords": ["流导", "孔口", "管路", "有效抽速", "标称抽速"],
+      "content": "在分子流条件下，孔口和管路会限制气体从腔体到泵入口的输运。泵的标称抽速 S 与连接管路流导 C 共同决定腔体端有效抽速；两者可按串联阻抗理解。当 C 远小于 S 时，有效抽速主要由管路决定，盲目增大泵的铭牌抽速收益有限。计算前必须确认流态、气体、温度、管径、长度、弯头和阀件，缺少这些输入不能给确定结果。"
+    },
+    {
+      "pageStart": 502,
+      "pageEnd": 504,
+      "sectionPath": ["2.1.3 Outgassing", "2.1.4 Pressure profile"],
+      "keywords": ["放气", "气载", "材料", "表面处理", "压力分布"],
+      "content": "系统气载不仅来自真实泄漏，还包括表面解吸、材料内部扩散、渗透和工艺进气。稳态压力由气载分布与局部有效抽速共同决定，因此泵的极限压力不等于整套装置可达压力。材料选择、清洁、表面粗糙度、聚合物用量、空气暴露历史和烘烤条件应在设计阶段一起评估；遇到压力平台时，应同时排查漏气、放气、污染和流导限制。"
+    },
+    {
+      "pageStart": 506,
+      "pageEnd": 508,
+      "sectionPath": ["2.2 Heat transfer in residual gas"],
+      "keywords": ["残余气体", "气体传热", "热辐射", "压力", "低温绝热"],
+      "content": "残余气体会在不同温度的表面之间传热，机理随压力和流动状态变化。在低温绝热系统中，降低压力可以削弱气体导热，但所需压力取决于气体种类、表面温度、间距、几何和表面状态。文献中的示例阈值只适用于其给定条件，OpenVac 不应把某个压力值回答成所有真空夹层的统一验收标准。"
+    },
+    {
+      "pageStart": 508,
+      "pageEnd": 509,
+      "sectionPath": ["3. Vacuum pumps", "Momentum-transfer and capture pumps"],
+      "keywords": ["排出型泵", "捕获型泵", "动量传递", "低温泵", "泵型组合"],
+      "content": "真空泵可按作用方式分为把气体输送到出口的动量传递类，以及把气体留在系统内的捕获类。前者通常需要合适的排气与前级条件；后者的抽速、容量和再生需求依气体而异。没有一种泵覆盖从大气压到超高真空的全部范围，工程系统往往组合粗抽、前级和高真空泵。"
+    },
+    {
+      "pageStart": 509,
+      "pageEnd": 511,
+      "sectionPath": ["3.1 Turbomolecular pumps"],
+      "keywords": ["涡轮分子泵", "分子流", "前级泵", "压缩比", "氢气"],
+      "content": "涡轮分子泵依靠高速转子叶片向气体分子传递动量，只有入口处进入分子流后才能充分发挥额定抽速，并需要前级泵处理出口气体。抽速、压缩比和允许前级压力与气体种类有关，轻气体尤其不能照搬氮气参数。选型和故障判断必须查目标型号曲线，并遵守厂家关于停电、转子失速、空气倒灌、磁场和联锁的要求。"
+    },
+    {
+      "pageStart": 511,
+      "pageEnd": 513,
+      "sectionPath": [
+        "3.2 Cryopumps",
+        "Cryocondensation, cryosorption and cryotrapping"
+      ],
+      "keywords": ["低温泵", "低温凝结", "低温吸附", "低温捕集", "氢", "氦"],
+      "content": "低温抽气包含低温凝结、低温吸附和低温捕集等机制。不同气体的饱和蒸气压和与低温表面的相互作用不同；氢、氦等轻气体通常需要依靠高比表面积吸附材料或特定捕集设计。低温泵的可用抽速并不代表无限容量，气体逐步积累后性能会变化。"
+    },
+    {
+      "pageStart": 513,
+      "pageEnd": 515,
+      "sectionPath": ["3.2 Cryopumps", "Capacity and regeneration"],
+      "keywords": ["低温泵容量", "再生", "隔离", "LHC", "束流屏"],
+      "content": "低温泵必须同时评估瞬时抽速、特定气体容量和再生周期。再生会释放已捕获气体，需要按设备说明隔离、升温、排气并控制压力和介质风险。文献中的 LHC 束流屏、冷孔和吸附材料属于特定超导加速器案例，只能帮助理解低温真空设计，不能直接套用于普通工业装置。涉及可燃、有毒、腐蚀或富氧介质时必须转人工做安全与材料兼容审查。"
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "sourceCanonicalUrl": "https://patentcenter.uspto.gov/applications/10947899",
+  "document": {
+    "externalKey": "patent-us7674096b2",
+    "title": "US7674096B2 — 带可拆卸储油盒的便携式旋片真空泵（元数据草稿）",
+    "description": "仅保存书目信息、权利要求/图号定位和 OpenVac 独立摘要；不保存专利全文或附图。",
+    "language": "zh-CN",
+    "mimeType": "application/patent-metadata+json",
+    "tags": ["专利", "单级旋片泵", "储油盒", "油循环", "结构案例"]
+  },
+  "citation": {
+    "publicationNumber": "US7674096B2",
+    "jurisdiction": "US",
+    "documentType": "utility-patent-grant",
+    "title": "Portable, rotary vane vacuum pump with removable oil reservoir cartridge",
+    "applicationNumber": "US10/947,899",
+    "inventors": ["Gregroy S. Sundheim"],
+    "inventorNameNote": "The US grant prints Gregroy; the PCT family prints Gregory.",
+    "filingDate": "2004-09-22",
+    "priorityDate": "2004-09-22",
+    "publicationDate": "2010-03-09",
+    "officialRecordUrl": "https://patentcenter.uspto.gov/applications/10947899",
+    "exactTextMirrorUrl": "https://patents.google.com/patent/US7674096B2/en",
+    "grantPdfMirrorUrl": "https://patentimages.storage.googleapis.com/11/42/19/0b8e2612f1a7ff/US7674096.pdf",
+    "licenseClass": "metadata_only",
+    "ingestionMode": "metadata_only",
+    "bibliographicVerifiedAt": "2026-08-01T00:00:00.000Z",
+    "legalStatusDisclaimer": "Current ownership and legal status require a live USPTO check; OpenVac does not provide legal advice.",
+    "evidenceLevel": "patentee_disclosure",
+    "independentPerformanceValidation": false
+  },
+  "review": {
+    "status": "required",
+    "requirements": [
+      "核对书目信息、权利要求号和图号",
+      "确认摘要未把专利实施例写成行业通用结构",
+      "确认没有把申请人性能陈述写成独立测试结果",
+      "确认正文与附图未进入全文或向量库"
+    ]
+  },
+  "sections": [
+    {
+      "sectionPath": ["OpenVac bibliographic summary"],
+      "keywords": ["US7674096B2", "旋片泵", "可拆卸储油盒", "油封", "油品指示"],
+      "content": "US7674096B2 公开了一种便携式旋片真空泵结构案例：偏心转子与泵腔的接近接触区上方形成储油区域，用油维持液封和叶片润滑；外置可拆卸储油盒兼作油池，设计目标是更换储油盒时带走近乎全部旧油，并通过透明盒体观察油液状态。权利要求1聚焦可拆储油盒、供回油和拆卸换油组合；权利要求2–10补充透明材料、油品指示、替换盒与重力回油；图3–7对应泵和油循环，图8–18对应储油盒及供油结构。"
+    },
+    {
+      "sectionPath": ["OpenVac evidence warning"],
+      "keywords": ["专利主张", "性能验证", "极限压力", "法律状态"],
+      "content": "这是一份专利权人技术披露，不是厂家现售型号手册、第三方性能测试或安全认证。说明书出现的约 50–150 μmHg 仅是其实施例陈述，不能推广为所有单级旋片泵的极限压力，也不能据此确定选型、寿命或维护周期。OpenVac 不对专利有效性、当前权属或自由实施作法律判断。"
+    }
+  ]
+}

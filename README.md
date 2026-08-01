@@ -72,11 +72,14 @@ pnpm eval
 pnpm eval:core
 ```
 
-Knowledge Phase 1 uses only tracked, rights-reviewed records. The local
+Knowledge Phase 1 uses only tracked, record-scoped source decisions. The local
 `知识库/` directory is intentionally ignored by both Git and Docker and must not
-be uploaded. After seeding the reviewed CERN core on a configured environment,
-run `pnpm knowledge:embed-published` and then `pnpm eval:core:live` to verify the
-real Top-5 hybrid retrieval path.
+be uploaded. `pnpm knowledge:seed` registers governed sources and
+`pnpm knowledge:seed-candidates` creates review-required drafts. Candidate
+seeding never impersonates a reviewer, creates patent vectors, or overwrites a
+draft that may contain human edits. After a human review, worker completion,
+and publication, run `pnpm knowledge:verify-governance` and
+`pnpm eval:core:live` against the real PostgreSQL/pgvector path.
 
 Database changes are generated and applied with:
 
@@ -111,6 +114,13 @@ Every source has a license class:
 Manufacturer sites and GB/ISO standards default to `metadata_only`. OCR never
 publishes automatically: model numbers, decimals, units, and curves require
 human review.
+
+Patent records also default to `metadata_only`. The repository may store
+bibliographic facts, short claim/figure locators, an independently written
+summary, and an authority link; it does not store or vectorize patent full text
+or drawings without a separate record-level rights decision. A patent
+disclosure is not independent performance validation, a safety certification,
+or legal advice.
 
 ## Security and privacy
 

@@ -47,7 +47,10 @@ describe("API validation schemas", () => {
 
   it("accepts only absolute source whitelist URLs", () => {
     const base = {
+      kind: "manual",
       name: "CERN Document Server",
+      publisher: "CERN",
+      canonicalUrl: "https://cds.cern.ch/record/2929324?ln=en",
       sourceTier: "open_license",
       licensePolicy: "逐份核验开放许可",
       enabled: true
@@ -60,6 +63,19 @@ describe("API validation schemas", () => {
       sourceSchema.safeParse({ ...base, baseUrl: "https://cds.cern.ch/" })
         .success
     ).toBe(true);
+    expect(
+      sourceSchema.safeParse({
+        ...base,
+        baseUrl: "https://cds.cern.ch/",
+        rightsDecision: {
+          status: "approved",
+          scope: "full_text",
+          basis: "This exact record is published under CC BY 4.0.",
+          evidenceUrl: "https://cds.cern.ch/record/2929324?ln=en",
+          appliesToRecordUrl: "https://cds.cern.ch/record/another"
+        }
+      }).success
+    ).toBe(false);
   });
 
   it("defaults knowledge drafts to full-text ingestion for policy enforcement", () => {

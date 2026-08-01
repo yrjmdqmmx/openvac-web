@@ -42,6 +42,11 @@ import {
   systemSettings,
   user as users
 } from "@/server/db/schema";
+import {
+  assertKnowledgeSourceAuthorized,
+  KnowledgeSourcePolicyError,
+  type GovernedKnowledgeSource
+} from "@/server/knowledge/source-policy";
 
 import { ApiError } from "./errors";
 import { auditLogReadPolicy } from "./audit-policy";
@@ -59,7 +64,8 @@ import {
   type KnowledgeReviewInput,
   type ModelBudgetInput,
   type PageInput,
-  type PageResult
+  type PageResult,
+  type SourceInput
 } from "./types";
 
 function auditValues(
@@ -162,20 +168,75 @@ function sourceDomain(value: string | null): string {
   }
 }
 
+function assertSourceRightsMutationAllowed(
+  audit: AuditContext,
+  hasRightsDecision: boolean
+): void {
+  if (
+    hasRightsDecision &&
+    audit.actor.role !== "owner" &&
+    audit.actor.role !== "admin"
+  ) {
+    throw new ApiError(
+      403,
+      "SOURCE_RIGHTS_APPROVAL_FORBIDDEN",
+      "只有 owner 或 admin 可以记录来源权利决定。"
+    );
+  }
+}
+
+function reviewedRightsDecision(
+  decision: NonNullable<SourceInput["rightsDecision"]>,
+  canonicalUrl: string,
+  audit: AuditContext,
+  reviewedAt: Date
+): Record<string, unknown> {
+  if (decision.appliesToRecordUrl !== canonicalUrl) {
+    throw new ApiError(
+      409,
+      "SOURCE_RIGHTS_SCOPE_MISMATCH",
+      "权利决定必须精确对应当前 canonicalUrl。"
+    );
+  }
+  return {
+    ...decision,
+    reviewedBy: audit.actor.id,
+    reviewedAt: reviewedAt.toISOString()
+  };
+}
+
 export function sourceAdminTableShape<
   T extends {
+    kind?: string;
     publisher: string | null;
     name: string;
     baseUrl: string | null;
+    canonicalUrl?: string | null;
     licensePolicy: string | null;
     sourceTier: string;
+    metadata?: Record<string, unknown>;
   }
 >(item: T) {
+  const rightsDecision = recordValue(item.metadata?.rightsDecision);
   return {
     ...item,
     publisher: item.publisher ?? item.name,
     domain: sourceDomain(item.baseUrl),
-    licenseClass: item.licensePolicy ?? item.sourceTier
+    licenseClass: item.licensePolicy ?? item.sourceTier,
+    rightsStatus:
+      typeof rightsDecision.status === "string"
+        ? rightsDecision.status
+        : "not_recorded",
+    rightsScope:
+      typeof rightsDecision.scope === "string" ? rightsDecision.scope : null,
+    rightsReviewedBy:
+      typeof rightsDecision.reviewedBy === "string"
+        ? rightsDecision.reviewedBy
+        : null,
+    rightsReviewedAt:
+      typeof rightsDecision.reviewedAt === "string"
+        ? rightsDecision.reviewedAt
+        : null
   };
 }
 
@@ -199,39 +260,21 @@ function enumValue<const T extends readonly string[]>(
 }
 
 function assertPublishableKnowledgeSource(
-  source:
-    | {
-        sourceTier:
-          | "open_license"
-          | "manufacturer_metadata"
-          | "standard_metadata"
-          | "internal";
-        enabled: boolean;
-      }
-    | undefined,
+  source: GovernedKnowledgeSource | undefined,
   citationMetadata: Record<string, unknown>,
   operation: "发布" | "回滚发布"
 ): void {
-  if (!source?.enabled) {
-    throw new ApiError(
-      409,
-      "KNOWLEDGE_SOURCE_DISABLED",
-      `该知识来源未启用，不能${operation}。`
-    );
-  }
-
-  const metadataOnlySource =
-    source.sourceTier === "manufacturer_metadata" ||
-    source.sourceTier === "standard_metadata";
-  if (
-    metadataOnlySource &&
-    citationMetadata.ingestionMode !== "metadata_only"
-  ) {
-    throw new ApiError(
-      409,
-      "SOURCE_LICENSE_RESTRICTED",
-      "厂商和标准资料仅允许发布元数据与链接，不能发布全文。"
-    );
+  try {
+    assertKnowledgeSourceAuthorized(source, citationMetadata);
+  } catch (error) {
+    if (error instanceof KnowledgeSourcePolicyError) {
+      throw new ApiError(
+        409,
+        error.code,
+        `${error.message} 当前操作：${operation}。`
+      );
+    }
+    throw error;
   }
 }
 
@@ -539,18 +582,11 @@ async function loadKnowledgeDocumentView(
         metadata: version.metadata,
         chunkCount
       });
-      if (document.sourceId) {
-        assertPublishableKnowledgeSource(
-          source
-            ? {
-                sourceTier: source.sourceTier,
-                enabled: source.enabled
-              }
-            : undefined,
-          version.citationMetadata,
-          "发布"
-        );
-      }
+      assertPublishableKnowledgeSource(
+        source,
+        version.citationMetadata,
+        "发布"
+      );
       publishReady = true;
     } catch {
       publishReady = false;
@@ -1857,26 +1893,25 @@ export const apiStore: ApiStore = {
         reviewerId: audit.actor.id,
         reviewedAt: now
       });
-      if (document.sourceId) {
-        const [source] = await tx
-          .select({
-            sourceTier: knowledgeSources.sourceTier,
-            enabled: knowledgeSources.enabled
-          })
-          .from(knowledgeSources)
-          .where(
-            and(
-              eq(knowledgeSources.id, document.sourceId),
-              isNull(knowledgeSources.deletedAt)
-            )
-          )
-          .limit(1);
-        assertPublishableKnowledgeSource(
-          source,
-          version.citationMetadata,
-          "发布"
-        );
-      }
+      const [source] = document.sourceId
+        ? await tx
+            .select({
+              sourceTier: knowledgeSources.sourceTier,
+              enabled: knowledgeSources.enabled,
+              deletedAt: knowledgeSources.deletedAt,
+              canonicalUrl: knowledgeSources.canonicalUrl,
+              publisher: knowledgeSources.publisher,
+              metadata: knowledgeSources.metadata
+            })
+            .from(knowledgeSources)
+            .where(eq(knowledgeSources.id, document.sourceId))
+            .limit(1)
+        : [];
+      assertPublishableKnowledgeSource(
+        source,
+        version.citationMetadata,
+        "发布"
+      );
       const existingReview = recordValue(version.metadata.review);
       const [existingChunkResult] =
         transition.task &&
@@ -2005,26 +2040,25 @@ export const apiStore: ApiStore = {
         chunkCount
       });
 
-      if (document.sourceId) {
-        const [source] = await tx
-          .select({
-            sourceTier: knowledgeSources.sourceTier,
-            enabled: knowledgeSources.enabled
-          })
-          .from(knowledgeSources)
-          .where(
-            and(
-              eq(knowledgeSources.id, document.sourceId),
-              isNull(knowledgeSources.deletedAt)
-            )
-          )
-          .limit(1);
-        assertPublishableKnowledgeSource(
-          source,
-          version.citationMetadata,
-          "发布"
-        );
-      }
+      const [source] = document.sourceId
+        ? await tx
+            .select({
+              sourceTier: knowledgeSources.sourceTier,
+              enabled: knowledgeSources.enabled,
+              deletedAt: knowledgeSources.deletedAt,
+              canonicalUrl: knowledgeSources.canonicalUrl,
+              publisher: knowledgeSources.publisher,
+              metadata: knowledgeSources.metadata
+            })
+            .from(knowledgeSources)
+            .where(eq(knowledgeSources.id, document.sourceId))
+            .limit(1)
+        : [];
+      assertPublishableKnowledgeSource(
+        source,
+        version.citationMetadata,
+        "发布"
+      );
 
       const [publishedVersion] = await tx
         .update(knowledgeVersions)
@@ -2135,26 +2169,25 @@ export const apiStore: ApiStore = {
         chunkCount: Number(targetChunkResult?.value ?? 0)
       });
 
-      if (document.sourceId) {
-        const [source] = await tx
-          .select({
-            sourceTier: knowledgeSources.sourceTier,
-            enabled: knowledgeSources.enabled
-          })
-          .from(knowledgeSources)
-          .where(
-            and(
-              eq(knowledgeSources.id, document.sourceId),
-              isNull(knowledgeSources.deletedAt)
-            )
-          )
-          .limit(1);
-        assertPublishableKnowledgeSource(
-          source,
-          target.citationMetadata,
-          "回滚发布"
-        );
-      }
+      const [source] = document.sourceId
+        ? await tx
+            .select({
+              sourceTier: knowledgeSources.sourceTier,
+              enabled: knowledgeSources.enabled,
+              deletedAt: knowledgeSources.deletedAt,
+              canonicalUrl: knowledgeSources.canonicalUrl,
+              publisher: knowledgeSources.publisher,
+              metadata: knowledgeSources.metadata
+            })
+            .from(knowledgeSources)
+            .where(eq(knowledgeSources.id, document.sourceId))
+            .limit(1)
+        : [];
+      assertPublishableKnowledgeSource(
+        source,
+        target.citationMetadata,
+        "回滚发布"
+      );
 
       const [maxVersion] = await tx
         .select({
@@ -2300,16 +2333,33 @@ export const apiStore: ApiStore = {
   async createSource(input, audit) {
     const id = crypto.randomUUID();
     const now = new Date();
+    assertSourceRightsMutationAllowed(
+      audit,
+      input.rightsDecision !== undefined
+    );
 
     return db.transaction(async (tx) => {
       const [created] = await tx
         .insert(knowledgeSources)
         .values({
           id,
+          kind: input.kind,
           name: input.name,
+          publisher: input.publisher,
+          canonicalUrl: input.canonicalUrl,
           baseUrl: input.baseUrl,
           sourceTier: input.sourceTier,
           licensePolicy: input.licensePolicy,
+          metadata: input.rightsDecision
+            ? {
+                rightsDecision: reviewedRightsDecision(
+                  input.rightsDecision,
+                  input.canonicalUrl,
+                  audit,
+                  now
+                )
+              }
+            : {},
           notes: input.notes ?? null,
           enabled: input.enabled,
           createdBy: audit.actor.id,
@@ -2320,7 +2370,9 @@ export const apiStore: ApiStore = {
 
       await tx.insert(auditLogs).values(
         auditValues(audit, "knowledge_source.create", "knowledge_source", id, {
-          sourceTier: input.sourceTier
+          sourceTier: input.sourceTier,
+          kind: input.kind,
+          rightsDecisionRecorded: input.rightsDecision !== undefined
         })
       );
       return created;
@@ -2328,18 +2380,62 @@ export const apiStore: ApiStore = {
   },
 
   async updateSource(sourceId, input, audit) {
-    const patch: Partial<typeof knowledgeSources.$inferInsert> = {
-      updatedAt: new Date()
-    };
-    if (input.name !== undefined) patch.name = input.name;
-    if (input.baseUrl !== undefined) patch.baseUrl = input.baseUrl;
-    if (input.sourceTier !== undefined) patch.sourceTier = input.sourceTier;
-    if (input.licensePolicy !== undefined)
-      patch.licensePolicy = input.licensePolicy;
-    if (input.notes !== undefined) patch.notes = input.notes;
-    if (input.enabled !== undefined) patch.enabled = input.enabled;
+    assertSourceRightsMutationAllowed(
+      audit,
+      input.rightsDecision !== undefined
+    );
 
     return db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({
+          canonicalUrl: knowledgeSources.canonicalUrl,
+          metadata: knowledgeSources.metadata
+        })
+        .from(knowledgeSources)
+        .where(
+          and(
+            eq(knowledgeSources.id, sourceId),
+            isNull(knowledgeSources.deletedAt)
+          )
+        )
+        .limit(1)
+        .for("update");
+      if (!existing) return null;
+
+      const patch: Partial<typeof knowledgeSources.$inferInsert> = {
+        updatedAt: new Date()
+      };
+      if (input.kind !== undefined) patch.kind = input.kind;
+      if (input.name !== undefined) patch.name = input.name;
+      if (input.publisher !== undefined) patch.publisher = input.publisher;
+      if (input.canonicalUrl !== undefined)
+        patch.canonicalUrl = input.canonicalUrl;
+      if (input.baseUrl !== undefined) patch.baseUrl = input.baseUrl;
+      if (input.sourceTier !== undefined) patch.sourceTier = input.sourceTier;
+      if (input.licensePolicy !== undefined)
+        patch.licensePolicy = input.licensePolicy;
+      if (input.notes !== undefined) patch.notes = input.notes;
+      if (input.enabled !== undefined) patch.enabled = input.enabled;
+      if (input.rightsDecision !== undefined) {
+        const canonicalUrl = input.canonicalUrl ?? existing.canonicalUrl;
+        if (!canonicalUrl) {
+          throw new ApiError(
+            409,
+            "SOURCE_CANONICAL_URL_REQUIRED",
+            "记录权利决定前必须设置 canonicalUrl。"
+          );
+        }
+        patch.metadata = {
+          ...existing.metadata,
+          rightsDecision: reviewedRightsDecision(
+            input.rightsDecision,
+            canonicalUrl,
+            audit,
+            new Date()
+          )
+        };
+      }
+
       const [updated] = await tx
         .update(knowledgeSources)
         .set(patch)

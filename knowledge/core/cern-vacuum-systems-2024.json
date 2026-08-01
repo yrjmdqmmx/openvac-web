@@ -2,7 +2,7 @@
   "source": {
     "sourceKey": "cern-vacuum-systems-2024",
     "kind": "manual",
-    "name": "Vacuum systems",
+    "name": "II.8 — Vacuum systems",
     "publisher": "CERN",
     "canonicalUrl": "https://cds.cern.ch/record/2929324?ln=en",
     "baseUrl": "https://cds.cern.ch",
@@ -10,12 +10,21 @@
     "licensePolicy": "Creative Commons Attribution 4.0",
     "trustLevel": 100,
     "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
-    "doi": "10.23730/CYRSP-2024-003.1259"
+    "doi": "10.23730/CYRSP-2024-003.1259",
+    "rightsDecision": {
+      "status": "approved",
+      "scope": "full_text",
+      "basis": "The record and article state that this specific work is published under Creative Commons Attribution 4.0. Third-party courtesy figures remain excluded from OpenVac redistribution.",
+      "evidenceUrl": "https://e-publishing.cern.ch/index.php/CYRSP/article/view/1624",
+      "appliesToRecordUrl": "https://cds.cern.ch/record/2929324?ln=en",
+      "reviewedBy": "openvac-codex-source-review",
+      "reviewedAt": "2026-08-01T00:00:00.000Z"
+    }
   },
   "document": {
     "externalKey": "cern-2024-003-vacuum-systems",
-    "title": "Vacuum systems（OpenVac 中文知识摘编）",
-    "description": "依据 CERN 2024 年 Vacuum systems 章节人工核对并用中文改写的基础知识。",
+    "title": "II.8 — Vacuum systems（OpenVac 中文知识摘编）",
+    "description": "依据 CERN 2024 年 Vacuum systems 章节页码定位后由 OpenVac 独立整理的中文基础知识；工程定案仍需专家复核。",
     "language": "zh-CN",
     "mimeType": "application/pdf",
     "tags": ["真空基础", "真空泵", "抽速", "流导", "气载", "放气"]

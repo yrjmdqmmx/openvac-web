@@ -151,33 +151,83 @@ export const knowledgeReviewSchema = z.object({
     .regex(/^[a-f0-9]{64}$/u, "内容哈希必须是小写 SHA-256。")
 });
 
-export const sourceSchema = z.object({
-  name: z.string().trim().min(1).max(200),
-  baseUrl: z.url().max(2000),
-  sourceTier: z.enum([
-    "open_license",
-    "manufacturer_metadata",
-    "standard_metadata",
-    "internal"
-  ]),
-  licensePolicy: z.string().trim().min(1).max(500),
-  notes: optionalTrimmed(2000),
-  enabled: z.boolean().default(true)
+const sourceKindSchema = z.enum([
+  "upload",
+  "manual",
+  "manufacturer",
+  "standard",
+  "patent",
+  "web"
+]);
+
+const sourceTierSchema = z.enum([
+  "open_license",
+  "metadata_only",
+  "manufacturer_metadata",
+  "standard_metadata",
+  "internal"
+]);
+
+const httpsSourceUrlSchema = z
+  .url()
+  .max(2_000)
+  .refine((value) => {
+    try {
+      const parsed = new URL(value);
+      return (
+        parsed.protocol === "https:" &&
+        parsed.username === "" &&
+        parsed.password === ""
+      );
+    } catch {
+      return false;
+    }
+  }, "来源地址必须是不含凭据的 HTTPS URL。");
+
+const sourceRightsDecisionSchema = z.object({
+  status: z.enum(["approved", "pending", "rejected"]),
+  scope: z.enum(["full_text", "metadata_only"]),
+  basis: z.string().trim().min(10).max(2_000),
+  evidenceUrl: httpsSourceUrlSchema,
+  appliesToRecordUrl: httpsSourceUrlSchema
 });
+
+export const sourceSchema = z
+  .object({
+    kind: sourceKindSchema,
+    name: z.string().trim().min(1).max(200),
+    publisher: z.string().trim().min(1).max(200),
+    canonicalUrl: httpsSourceUrlSchema,
+    baseUrl: httpsSourceUrlSchema,
+    sourceTier: sourceTierSchema,
+    licensePolicy: z.string().trim().min(1).max(500),
+    rightsDecision: sourceRightsDecisionSchema.optional(),
+    notes: optionalTrimmed(2000),
+    enabled: z.boolean().default(true)
+  })
+  .superRefine((value, context) => {
+    if (
+      value.rightsDecision &&
+      value.rightsDecision.appliesToRecordUrl !== value.canonicalUrl
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["rightsDecision", "appliesToRecordUrl"],
+        message: "权利决定必须精确对应 canonicalUrl。"
+      });
+    }
+  });
 
 export const sourceUpdateSchema = z
   .object({
+    kind: sourceKindSchema.optional(),
     name: z.string().trim().min(1).max(200).optional(),
-    baseUrl: z.url().max(2000).optional(),
-    sourceTier: z
-      .enum([
-        "open_license",
-        "manufacturer_metadata",
-        "standard_metadata",
-        "internal"
-      ])
-      .optional(),
+    publisher: z.string().trim().min(1).max(200).optional(),
+    canonicalUrl: httpsSourceUrlSchema.optional(),
+    baseUrl: httpsSourceUrlSchema.optional(),
+    sourceTier: sourceTierSchema.optional(),
     licensePolicy: z.string().trim().min(1).max(500).optional(),
+    rightsDecision: sourceRightsDecisionSchema.optional(),
     notes: optionalTrimmed(2000),
     enabled: z.boolean().optional()
   })

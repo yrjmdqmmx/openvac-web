@@ -160,13 +160,43 @@ eligible AS (
   FROM knowledge_chunk kc
   JOIN knowledge_version kv ON kv.id = kc.version_id
   JOIN knowledge_document kd ON kd.id = kv.document_id
-  LEFT JOIN knowledge_source ks ON ks.id = kd.source_id
+  JOIN knowledge_source ks ON ks.id = kd.source_id
   WHERE
     kc.embedding IS NOT NULL
     AND kv.status = 'published'
     AND kd.status = 'published'
     AND kd.current_version_id = kv.id
-    AND (ks.id IS NULL OR (ks.enabled = TRUE AND ks.deleted_at IS NULL))
+    AND kv.citation_metadata ->> 'ingestionMode' = 'full_text'
+    AND kv.metadata ->> 'reviewStatus' = 'approved'
+    AND kv.metadata #>> '{review,status}' = 'approved'
+    AND ks.enabled = TRUE
+    AND ks.deleted_at IS NULL
+    AND ks.canonical_url ~ '^https://[^/?#[:space:]@]+([/?#]|$)'
+    AND btrim(ks.publisher) <> ''
+    AND (
+      (
+        ks.source_tier = 'open_license'
+        AND ks.metadata #>> '{rightsDecision,status}' = 'approved'
+        AND ks.metadata #>> '{rightsDecision,scope}' = 'full_text'
+        AND ks.metadata #>> '{rightsDecision,appliesToRecordUrl}' = ks.canonical_url
+      )
+      OR (
+        ks.source_tier = 'internal'
+        AND (
+          ks.metadata ->> 'commercialAiRightsConfirmed' = 'true'
+          OR ks.metadata #>> '{rightsDecision,commercialAiUse}' = 'approved'
+          OR ks.metadata #>> '{rightsDecision,commercialAiRights}' = 'approved'
+        )
+        AND (
+          NOT (ks.metadata ? 'rightsDecision')
+          OR (
+            ks.metadata #>> '{rightsDecision,status}' = 'approved'
+            AND ks.metadata #>> '{rightsDecision,scope}' = 'full_text'
+            AND ks.metadata #>> '{rightsDecision,appliesToRecordUrl}' = ks.canonical_url
+          )
+        )
+      )
+    )
 ),
 vector_matches AS (
   SELECT

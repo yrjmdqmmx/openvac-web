@@ -26,6 +26,7 @@ const statusLabel: Record<string, string> = {
 
 const sourceTierLabel: Record<string, string> = {
   open_license: "开放许可",
+  metadata_only: "仅元数据",
   manufacturer_metadata: "厂商元数据",
   standard_metadata: "标准元数据",
   internal: "内部资料"

@@ -110,12 +110,28 @@ export type KnowledgeReviewInput = {
   expectedContentHash: string;
 };
 
+export type SourceRightsDecisionInput = {
+  status: "approved" | "pending" | "rejected";
+  scope: "full_text" | "metadata_only";
+  basis: string;
+  evidenceUrl: string;
+  appliesToRecordUrl: string;
+};
+
 export type SourceInput = {
+  kind: "upload" | "manual" | "manufacturer" | "standard" | "patent" | "web";
   name: string;
+  publisher: string;
+  canonicalUrl: string;
   baseUrl: string;
   sourceTier:
-    "open_license" | "manufacturer_metadata" | "standard_metadata" | "internal";
+    | "open_license"
+    | "metadata_only"
+    | "manufacturer_metadata"
+    | "standard_metadata"
+    | "internal";
   licensePolicy: string;
+  rightsDecision?: SourceRightsDecisionInput;
   notes?: string;
   enabled: boolean;
 };
