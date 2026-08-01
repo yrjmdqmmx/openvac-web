@@ -104,6 +104,9 @@ describe("deployment Compose project isolation", () => {
 
     expect(release).toContain("benchmark_iterations=20");
     expect(release).toContain("benchmark_iterations=1");
+    expect(release).toContain('benchmark_pid="$!"');
+    expect(release).toContain('while kill -0 "$benchmark_pid"');
+    expect(release).toContain("OpenVac modeling benchmark is still running");
     expect(benchmark).toBeGreaterThan(0);
     expect(activation).toBeGreaterThan(benchmark);
     expect(release).toContain('cat "$benchmark_file"');
