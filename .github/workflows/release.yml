@@ -368,7 +368,9 @@ jobs:
             exit 64
           fi
           release_modeling_registry_image="$release_modeling_image"
-          release_modeling_image="$image_repository@$MODELING_ARCHIVE_CONFIG_DIGEST"
+          modeling_config_hex="${MODELING_ARCHIVE_CONFIG_DIGEST#sha256:}"
+          loaded_modeling_tag="$image_repository:modeling-archive-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          release_modeling_image="openvac-modeling-release:$modeling_config_hex"
 
           archive_dir="$RUNNER_TEMP/openvac-modeling-release"
           modeling_archive="$archive_dir/openvac-modeling-release.tar.zst"
@@ -465,6 +467,10 @@ jobs:
               -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
               "$ECS_USER@$ECS_HOST" docker load
 
+          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+            "$ECS_USER@$ECS_HOST" \
+            docker image tag "$loaded_modeling_tag" "$release_modeling_image"
+
           set +e
           ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
             "$ECS_USER@$ECS_HOST" \
@@ -486,13 +492,16 @@ jobs:
             *) exit 64 ;;
           esac
           case "$release_modeling_image" in
-            ghcr.io/*@sha256:*) ;;
+            openvac-modeling-release:*) ;;
             *) exit 64 ;;
           esac
           case "$expected_modeling_id" in
             sha256:*) ;;
             *) exit 64 ;;
           esac
+          expected_modeling_hex="${expected_modeling_id#sha256:}"
+          [ "$release_modeling_image" = "openvac-modeling-release:$expected_modeling_hex" ] ||
+            exit 64
           case "$release_id" in
             ""|*[!0-9a-f]*) exit 64 ;;
           esac

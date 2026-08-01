@@ -209,6 +209,7 @@ describe("deployment Compose project isolation", () => {
 
   it("skips the remote modeling pull only for an exact verified preloaded image", () => {
     const deploy = source("deploy/deploy.sh");
+    const release = source(".github/workflows/release.yml");
 
     expect(deploy).toContain('if [ -n "${OPENVAC_MODELING_PRELOADED_ID:-}" ]');
     expect(deploy).toContain(
@@ -216,6 +217,15 @@ describe("deployment Compose project isolation", () => {
     );
     expect(deploy).toContain(
       '[ "$actual_modeling_id" = "$OPENVAC_MODELING_PRELOADED_ID" ]'
+    );
+    expect(deploy).toContain(
+      '[ "$release_modeling_image" = "openvac-modeling-release:$modeling_image_digest" ]'
+    );
+    expect(release).toContain(
+      'release_modeling_image="openvac-modeling-release:$modeling_config_hex"'
+    );
+    expect(release).toContain(
+      'docker image tag "$loaded_modeling_tag" "$release_modeling_image"'
     );
     expect(deploy).toContain("release_compose pull web worker modeling-worker");
     expect(deploy).toContain(
