@@ -54,8 +54,22 @@ validate_release_image() {
 
 validate_release_image "$release_image" "web release image"
 web_image_digest="${release_image##*@sha256:}"
-validate_release_image "$release_modeling_image" "modeling release image"
-modeling_image_digest="${release_modeling_image##*@sha256:}"
+if [ -n "${OPENVAC_MODELING_PRELOADED_ID:-}" ]; then
+  case "$OPENVAC_MODELING_PRELOADED_ID" in
+    sha256:*) modeling_image_digest="${OPENVAC_MODELING_PRELOADED_ID#sha256:}" ;;
+    *) fail "preloaded modeling image ID must use sha256" ;;
+  esac
+  case "$modeling_image_digest" in
+    ""|*[!0-9a-f]*) fail "preloaded modeling image ID must be lowercase hexadecimal" ;;
+  esac
+  [ "${#modeling_image_digest}" -eq 64 ] ||
+    fail "preloaded modeling image ID must contain 64 hexadecimal characters"
+  [ "$release_modeling_image" = "openvac-modeling-release:$modeling_image_digest" ] ||
+    fail "preloaded modeling reference must be content-addressed by its image ID"
+else
+  validate_release_image "$release_modeling_image" "modeling release image"
+  modeling_image_digest="${release_modeling_image##*@sha256:}"
+fi
 [ "$web_image_digest" != "$modeling_image_digest" ] ||
   fail "web and modeling release images must have distinct digests"
 
