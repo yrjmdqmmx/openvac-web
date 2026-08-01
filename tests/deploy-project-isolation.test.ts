@@ -152,6 +152,16 @@ describe("deployment Compose project isolation", () => {
       "outputs: type=docker,dest=${{ runner.temp }}/openvac-modeling-image.tar"
     );
     expect(offline).toContain("openvac-modeling-image.tar.zst.sha256");
+    expect(offline).toContain("name: staging");
+    expect(offline).toContain('sha256sum --check "$(basename "$checksum")"');
+    expect(
+      offline.indexOf('sha256sum --check "$(basename "$checksum")"')
+    ).toBeLessThan(offline.indexOf('"$ECS_USER@$ECS_HOST" docker load'));
+    expect(offline).toContain(
+      'if [ "$loaded_id" != "$expected_config_digest" ]'
+    );
+    expect(offline).toContain('docker pull "$release_modeling_image"');
+    expect(offline).toContain("- Service activation: not performed");
   });
 
   it("runs the same host preflight before benchmark and deployment pulls", () => {
