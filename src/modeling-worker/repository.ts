@@ -1048,7 +1048,7 @@ async function insertArtifacts(
           $8,
           $9,
           $10,
-          $11,
+          $11::timestamptz,
           $12::jsonb,
           $13
         )
@@ -1066,7 +1066,7 @@ async function insertArtifacts(
         artifact.objectKey,
         artifact.checksumSha256,
         artifact.sizeBytes,
-        artifact.expiresAt,
+        artifact.expiresAt?.toISOString() ?? null,
         JSON.stringify(artifact.metadata),
         job.ownerId
       ]

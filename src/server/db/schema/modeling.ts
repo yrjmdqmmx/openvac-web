@@ -499,7 +499,7 @@ export const modelingImportIntent = pgTable(
     ),
     check(
       "modeling_import_intent_object_key_private_valid",
-      sql`length(${table.objectKey}) > 0 and left(${table.objectKey}, 1) <> '/' and ${table.objectKey} !~ '(^|/)\.\.(/|$)'`
+      sql`length(${table.objectKey}) > 0 and left(${table.objectKey}, 1) <> '/' and ${table.objectKey} !~ '(^|/)\\.\\.(/|$)'`
     ),
     check(
       "modeling_import_intent_completion_shape_valid",
@@ -605,7 +605,7 @@ export const modelingArtifact = pgTable(
     ),
     check(
       "modeling_artifact_key_private_valid",
-      sql`length(${table.objectKey}) > 0 and left(${table.objectKey}, 1) <> '/' and ${table.objectKey} !~ '(^|/)\.\.(/|$)'`
+      sql`length(${table.objectKey}) > 0 and left(${table.objectKey}, 1) <> '/' and ${table.objectKey} !~ '(^|/)\\.\\.(/|$)'`
     )
   ]
 );

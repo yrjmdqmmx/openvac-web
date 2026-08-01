@@ -386,7 +386,9 @@ export function ModelingWorkspace({
         }
         setKernelPreview({
           status: "ready",
-          url: `${modelingArtifactDownloadUrl(artifactId)}?v=${encodeURIComponent(revisionId)}`,
+          // Artifact ids are immutable and unique. Extra cache-busting query
+          // keys would be rejected by the strict signed-download endpoint.
+          url: modelingArtifactDownloadUrl(artifactId),
           message: "OCCT / GLB 权威预览",
           diagnostics: completed.output?.diagnostics
         });
@@ -753,17 +755,14 @@ export function ModelingWorkspace({
     [initialTemplate, queueKernelPreview, refreshRevisions, userId]
   );
 
-  const showAiPreviewArtifact = useCallback(
-    (artifactId: string, previewKey: string) => {
-      aiPreviewRestoreRef.current ??= kernelPreviewRef.current;
-      setKernelPreview({
-        status: "ready",
-        url: `${modelingArtifactDownloadUrl(artifactId)}?ai-preview=${encodeURIComponent(previewKey)}`,
-        message: "AI 计划 dry-run · 尚未确认"
-      });
-    },
-    []
-  );
+  const showAiPreviewArtifact = useCallback((artifactId: string) => {
+    aiPreviewRestoreRef.current ??= kernelPreviewRef.current;
+    setKernelPreview({
+      status: "ready",
+      url: modelingArtifactDownloadUrl(artifactId),
+      message: "AI 计划 dry-run · 尚未确认"
+    });
+  }, []);
 
   const sendAiPrompt = useCallback(
     async (prompt: string) => {
@@ -798,7 +797,7 @@ export function ModelingWorkspace({
         }
         if (result.status === "preview") {
           if (result.previewArtifactId) {
-            showAiPreviewArtifact(result.previewArtifactId, result.planId);
+            showAiPreviewArtifact(result.previewArtifactId);
           }
           dispatch({
             type: "ai/preview",

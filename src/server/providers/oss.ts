@@ -1,11 +1,7 @@
+import OSS from "ali-oss";
+
 import { ProviderResponseError } from "./errors";
-import {
-  asRecord,
-  loadOptionalModule,
-  optionalString,
-  pickString,
-  requireString
-} from "./runtime";
+import { asRecord, optionalString, pickString, requireString } from "./runtime";
 import type {
   CreatePrivateUploadUrlRequest,
   ObjectStorage,
@@ -317,17 +313,7 @@ export class AlibabaOssStorage implements ObjectStorage {
       "ALIBABA_OSS_ACCESS_KEY_SECRET",
       this.options.accessKeySecret
     );
-    const sdkModule = loadOptionalModule(PROVIDER_ID, "ali-oss");
-    const Client = sdkModule.default ?? sdkModule;
-    if (typeof Client !== "function") {
-      throw new ProviderResponseError(
-        PROVIDER_ID,
-        "The installed ali-oss package does not expose a client constructor."
-      );
-    }
-    this.client = new (
-      Client as new (options: Record<string, unknown>) => OssClient
-    )({
+    this.client = new OSS({
       region,
       bucket,
       endpoint: optionalString(this.options.endpoint),
@@ -336,7 +322,7 @@ export class AlibabaOssStorage implements ObjectStorage {
       stsToken: optionalString(this.options.securityToken),
       authorizationV4: true,
       secure: true
-    });
+    }) as unknown as OssClient;
     return this.client;
   }
 }

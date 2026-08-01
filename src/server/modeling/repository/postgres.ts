@@ -712,8 +712,8 @@ export class PostgresModelingRepository implements ModelingRepository {
           `update modeling_validation_attempt
               set lease_token = $2,
                   consumed_compute_ms = consumed_compute_ms + reserved_compute_ms,
-                  reserved_compute_ms = $3,
-                  reservation_expires_at = now() + ($3 * interval '1 millisecond')
+                  reserved_compute_ms = $3::integer,
+                  reservation_expires_at = now() + ($3::integer * interval '1 millisecond')
             where id = $1
               and status = 'reserved'
               and reservation_expires_at <= now()
@@ -753,8 +753,8 @@ export class PostgresModelingRepository implements ModelingRepository {
            (owner_id, project_id, scope_key, kind, idempotency_key,
             request_hash, status, reserved_compute_ms, lease_token,
             reservation_expires_at)
-         values ($1, $2, $3, $4, $5, $6, 'reserved', $7, $8,
-                 now() + ($7 * interval '1 millisecond'))
+         values ($1, $2, $3, $4, $5, $6, 'reserved', $7::integer, $8,
+                 now() + ($7::integer * interval '1 millisecond'))
          returning id as "attemptId"`,
         [
           input.ownerId,

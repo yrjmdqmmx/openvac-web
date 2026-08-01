@@ -105,6 +105,9 @@ describe("PostgresModelingRepository validation attempt ledger", () => {
       30_000,
       expect.stringMatching(/^[a-f0-9-]{36}$/u)
     ]);
+    expect(sql.calls[4]?.query).toContain(
+      "$7::integer * interval '1 millisecond'"
+    );
 
     const rateClause = sql.calls[3]!.query.slice(
       sql.calls[3]!.query.indexOf("count(*)::int"),
@@ -424,6 +427,7 @@ describe("PostgresModelingRepository validation attempt ledger", () => {
     expect(reclaim?.query).toContain(
       "consumed_compute_ms = consumed_compute_ms + reserved_compute_ms"
     );
+    expect(reclaim?.query).toContain("$3::integer * interval '1 millisecond'");
     expect(reclaim?.parameters).toEqual([
       ATTEMPT_ID,
       result.leaseToken,

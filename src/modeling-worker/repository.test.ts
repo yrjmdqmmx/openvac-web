@@ -346,6 +346,9 @@ describe("PostgresModelingWorkerRepository", () => {
     expect(planInsertIndex).toBeGreaterThan(-1);
     expect(artifactInsertIndex).toBeGreaterThan(planInsertIndex);
     expect(jobUpdateIndex).toBeGreaterThan(artifactInsertIndex);
+    const artifactInsert = calls[artifactInsertIndex]!;
+    expect(artifactInsert.query).toContain("$11::timestamptz");
+    expect(artifactInsert.parameters[10]).toBe("2026-08-31T00:00:00.000Z");
     const jobUpdate = calls[jobUpdateIndex]!;
     expect(jobUpdate.query).toContain("plan_id = $4::uuid");
     expect(jobUpdate.parameters[3]).toBe(PLAN_ID);

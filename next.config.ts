@@ -2,6 +2,13 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // Keep provider SDKs external so their runtime constructors and prototype
+  // methods survive the standalone build (notably ali-oss signed URLs).
+  serverExternalPackages: [
+    "ali-oss",
+    "@alicloud/docmind-api20220711",
+    "@alicloud/tea-util"
+  ],
   poweredByHeader: false,
   reactStrictMode: true,
   experimental: {

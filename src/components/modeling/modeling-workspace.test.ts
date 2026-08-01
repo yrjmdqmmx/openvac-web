@@ -390,6 +390,12 @@ describe("modeling workspace manual and AI flows", () => {
           operation.kind === "add" && operation.collection === "sketches"
       )
     ).toBe(true);
+    await waitFor(() =>
+      expect(screen.getByTestId("viewport")).toHaveAttribute(
+        "data-preview-url",
+        "/api/modeling/artifacts/artifact-preview/download"
+      )
+    );
     expect(
       submittedBatch?.operations.some(
         (operation) =>
@@ -532,7 +538,7 @@ describe("modeling workspace manual and AI flows", () => {
       () =>
         expect(screen.getByTestId("viewport")).toHaveAttribute(
           "data-preview-url",
-          expect.stringContaining("artifact-ai-preview")
+          "/api/modeling/artifacts/artifact-ai-preview/download"
         ),
       { timeout: 4_000 }
     );
