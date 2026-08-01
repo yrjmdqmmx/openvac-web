@@ -5,6 +5,20 @@ on:
     paths:
       - .github/workflows/offline-image.yml
   workflow_dispatch:
+    inputs:
+      preload_staging:
+        description: Preload the verified modeling archive on staging without activation
+        required: true
+        type: boolean
+        default: false
+      release_modeling_digest:
+        description: Exact GHCR modeling index digest to attach after preload
+        required: false
+        type: string
+      release_modeling_config_digest:
+        description: Exact linux/amd64 image config digest expected after docker load
+        required: false
+        type: string
 
 permissions: {}
 
@@ -92,3 +106,170 @@ jobs:
             ${{ runner.temp }}/openvac-postgres-pgvector.tar.zst.sha256
           if-no-files-found: error
           retention-days: 1
+
+  preload_staging:
+    needs: image
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.preload_staging }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: read
+    environment:
+      name: staging
+    steps:
+      - name: Download verified modeling archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: openvac-modeling-image-${{ github.sha }}-linux-amd64
+          path: ${{ runner.temp }}/openvac-modeling-preload
+      - name: Configure SSH
+        env:
+          ECS_SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
+          ECS_KNOWN_HOSTS: ${{ secrets.ECS_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$ECS_SSH_KEY" > "$HOME/.ssh/openvac"
+          chmod 600 "$HOME/.ssh/openvac"
+          printf '%s\n' "$ECS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+      - name: Stream, verify, and attach immutable modeling image
+        env:
+          ECS_HOST: ${{ secrets.ECS_HOST }}
+          ECS_USER: ${{ secrets.ECS_USER }}
+          GHCR_PULL_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
+          RELEASE_MODELING_DIGEST: ${{ inputs.release_modeling_digest }}
+          RELEASE_MODELING_CONFIG_DIGEST: ${{ inputs.release_modeling_config_digest }}
+        run: |
+          set -Eeuo pipefail
+          validate_digest() {
+            value="$1"
+            label="$2"
+            case "$value" in
+              sha256:*) ;;
+              *) echo "$label must use sha256" >&2; exit 64 ;;
+            esac
+            digest="${value#sha256:}"
+            case "$digest" in
+              ""|*[!0-9a-f]*)
+                echo "$label must be lowercase hexadecimal" >&2
+                exit 64
+                ;;
+            esac
+            if [ "${#digest}" -ne 64 ]; then
+              echo "$label must contain 64 hexadecimal characters" >&2
+              exit 64
+            fi
+          }
+          validate_digest "$RELEASE_MODELING_DIGEST" "Release modeling digest"
+          validate_digest "$RELEASE_MODELING_CONFIG_DIGEST" "Modeling config digest"
+          case "$GHCR_USERNAME" in
+            ""|-*|*[!A-Za-z0-9-]*)
+              echo "GitHub actor is not a safe GHCR username" >&2
+              exit 64
+              ;;
+          esac
+          test -n "$GHCR_PULL_TOKEN"
+
+          archive_dir="$RUNNER_TEMP/openvac-modeling-preload"
+          archive="$archive_dir/openvac-modeling-image.tar.zst"
+          checksum="$archive.sha256"
+          test -f "$archive" && test ! -L "$archive"
+          test -f "$checksum" && test ! -L "$checksum"
+          (cd "$archive_dir" && sha256sum --check "$(basename "$checksum")")
+
+          loaded_tag="openvac-modeling-staging:$GITHUB_SHA"
+          image_repository="ghcr.io/${GITHUB_REPOSITORY,,}"
+          release_modeling_image="$image_repository@$RELEASE_MODELING_DIGEST"
+          remote_stage="/tmp/openvac-preload-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          token_file="$RUNNER_TEMP/openvac-preload-ghcr-token"
+          (umask 077; printf '%s' "$GHCR_PULL_TOKEN" > "$token_file")
+          chmod 600 "$token_file"
+
+          cleanup_preload() {
+            rm -f -- "$token_file"
+            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+              "$ECS_USER@$ECS_HOST" \
+              "case '$remote_stage' in /tmp/openvac-preload-*) rm -rf -- '$remote_stage' ;; esac" \
+              >/dev/null 2>&1 || true
+          }
+          trap cleanup_preload EXIT HUP INT TERM
+
+          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+            "$ECS_USER@$ECS_HOST" "install -d -m 700 '$remote_stage'"
+          scp -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+            "$token_file" "$ECS_USER@$ECS_HOST:$remote_stage/openvac-ghcr-token"
+
+          echo "Streaming checksum-verified modeling archive to staging Docker"
+          zstd --decompress --stdout "$archive" |
+            dd bs=4M status=progress |
+            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+              -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+              "$ECS_USER@$ECS_HOST" docker load
+
+          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+            "$ECS_USER@$ECS_HOST" sh -s -- \
+            "$remote_stage" "$GHCR_USERNAME" "$loaded_tag" \
+            "$RELEASE_MODELING_CONFIG_DIGEST" "$release_modeling_image" <<'REMOTE_VERIFY'
+          set -eu
+          if [ "$#" -ne 5 ]; then
+            exit 64
+          fi
+          remote_stage="$1"
+          ghcr_username="$2"
+          loaded_tag="$3"
+          expected_config_digest="$4"
+          release_modeling_image="$5"
+          case "$remote_stage" in
+            /tmp/openvac-preload-*) ;;
+            *) exit 64 ;;
+          esac
+          case "$release_modeling_image" in
+            ghcr.io/*@sha256:*) ;;
+            *) exit 64 ;;
+          esac
+          loaded_id="$(docker image inspect --format '{{.Id}}' "$loaded_tag")"
+          if [ "$loaded_id" != "$expected_config_digest" ]; then
+            echo "Loaded archive config digest does not match the release manifest" >&2
+            exit 1
+          fi
+
+          token_file="$remote_stage/openvac-ghcr-token"
+          [ -f "$token_file" ] && [ ! -L "$token_file" ] || exit 64
+          [ "$(stat -c '%a' "$token_file")" = 600 ] || exit 64
+          docker_config="$remote_stage/docker-config"
+          install -d -m 700 "$docker_config"
+          DOCKER_CONFIG="$docker_config" docker login ghcr.io \
+            --username "$ghcr_username" --password-stdin <"$token_file"
+          rm -f -- "$token_file"
+
+          run_with_heartbeat() {
+            "$@" &
+            operation_pid="$!"
+            while kill -0 "$operation_pid" 2>/dev/null; do
+              echo "OpenVac immutable digest attachment is still running" >&2
+              sleep 30
+            done
+            wait "$operation_pid"
+          }
+          run_with_heartbeat env DOCKER_CONFIG="$docker_config" \
+            docker pull "$release_modeling_image"
+          resolved_id="$(docker image inspect --format '{{.Id}}' "$release_modeling_image")"
+          if [ "$resolved_id" != "$expected_config_digest" ]; then
+            echo "Pulled digest resolves to an unexpected image config" >&2
+            exit 1
+          fi
+          echo "Verified preloaded modeling image $release_modeling_image"
+          REMOTE_VERIFY
+
+          cleanup_preload
+          trap - EXIT HUP INT TERM
+          {
+            echo "### Staging modeling image preload"
+            echo
+            echo "- Archive SHA-256: verified"
+            echo "- Image config: \`$RELEASE_MODELING_CONFIG_DIGEST\`"
+            echo "- Registry digest: \`$RELEASE_MODELING_DIGEST\`"
+            echo "- Service activation: not performed"
+          } >>"$GITHUB_STEP_SUMMARY"
