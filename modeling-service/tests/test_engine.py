@@ -300,6 +300,7 @@ def test_template_two_point_horizontal_and_fixed_rectangle_solve_authoritatively
     assert "未作为证据" in diagnostics[0].message
 
 
+@pytest.mark.timeout(90)
 def test_strict_template_style_pump_build_solves_sketch_before_real_brep(
     tmp_path: Path,
 ) -> None:
@@ -317,6 +318,7 @@ def test_strict_template_style_pump_build_solves_sketch_before_real_brep(
     assert "PUMP_GEOMETRY_VALID" in codes
 
 
+@pytest.mark.timeout(90)
 def test_structured_typescript_template_metadata_routes_to_pump_builder(
     tmp_path: Path,
 ) -> None:

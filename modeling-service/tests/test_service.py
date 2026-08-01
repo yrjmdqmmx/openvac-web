@@ -36,6 +36,7 @@ def test_required_internal_token_fails_closed_when_unconfigured(monkeypatch) -> 
     assert response.json()["detail"] == "service token is not configured"
 
 
+@pytest.mark.timeout(90)
 def test_pump_validation_is_deterministic() -> None:
     response = client.post(
         "/v1/pumps/validate",
