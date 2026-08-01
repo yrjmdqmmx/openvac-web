@@ -5,6 +5,7 @@ import hashlib
 import importlib.metadata
 import json
 import shutil
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -24,7 +25,7 @@ from fastapi.responses import FileResponse
 from .isolation import (
     IsolatedExecutionError,
     IsolatedExecutionTimeout,
-    run_isolated_async,
+    ReusableIsolatedExecutor,
 )
 from .models import (
     BuildRequest,
@@ -38,19 +39,34 @@ from .models import (
 )
 from .settings import settings
 
+# CadQuery/OCP and SolveSpace are intentionally single-flight in this service.
+# The container is pinned to one Uvicorn worker, so this semaphore covers every
+# sketch/build/validation/import request in the process, including direct
+# interactive validation calls that bypass the background worker's DB lock.
+_kernel_semaphore = asyncio.Semaphore(1)
+_kernel_executor = ReusableIsolatedExecutor()
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    # Load SolveSpace, VTK, CadQuery and OCCT before readiness is exposed. This
+    # keeps the first two-second sketch request from paying a multi-second cold
+    # start on the constrained production host.
+    _kernel_executor.start(timeout_seconds=settings.build_timeout_seconds)
+    try:
+        yield
+    finally:
+        _kernel_executor.stop()
+
+
 app = FastAPI(
     title="OpenVac Modeling Service",
     version="0.1.0",
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
+    lifespan=_lifespan,
 )
-
-# CadQuery/OCP and SolveSpace are intentionally single-flight in this service.
-# The container is pinned to one Uvicorn worker, so this semaphore covers every
-# sketch/build/validation/import request in the process, including direct
-# interactive validation calls that bypass the background worker's DB lock.
-_kernel_semaphore = asyncio.Semaphore(1)
 
 
 async def _run_kernel_single_flight(
@@ -64,7 +80,7 @@ async def _run_kernel_single_flight(
     try:
         async with asyncio.timeout(timeout_seconds):
             async with _kernel_semaphore:
-                return await run_isolated_async(
+                return await _kernel_executor.call_async(
                     module_name,
                     function_name,
                     *args,
@@ -106,6 +122,8 @@ def ready(_: ServiceAuth) -> dict[str, str]:
         raise HTTPException(
             status_code=503, detail=f"missing runtime dependency: {exc.name}"
         ) from exc
+    if _kernel_executor.pid is None:
+        raise HTTPException(status_code=503, detail="isolated kernel process is not ready")
     return {
         "status": "ready",
         "cadquery": cadquery_version,

@@ -39,6 +39,8 @@ RUN python -m pip install --no-cache-dir --no-deps . \
 
 RUN chown -R openvac:openvac /app
 
+ENV XDG_CACHE_HOME=/tmp/openvac-cache
+
 USER openvac
 EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=5s --retries=5 \

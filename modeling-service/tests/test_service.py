@@ -36,6 +36,18 @@ def test_required_internal_token_fails_closed_when_unconfigured(monkeypatch) -> 
     assert response.json()["detail"] == "service token is not configured"
 
 
+def test_lifespan_preloads_and_stops_the_isolated_kernel() -> None:
+    main_module._kernel_executor.stop()
+    assert main_module._kernel_executor.pid is None
+
+    with TestClient(app) as lifespan_client:
+        response = lifespan_client.get("/ready")
+        assert response.status_code == 200
+        assert main_module._kernel_executor.pid is not None
+
+    assert main_module._kernel_executor.pid is None
+
+
 @pytest.mark.timeout(90)
 def test_pump_validation_is_deterministic() -> None:
     response = client.post(

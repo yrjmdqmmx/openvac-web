@@ -15,6 +15,12 @@ def _slvs():
     return slvs
 
 
+def preload_solver() -> None:
+    """Load the native SolveSpace binding in the isolated kernel process."""
+
+    _slvs()
+
+
 def solve_sketch_payload(payload: dict[str, Any]) -> SketchSolveResult:
     started = time.perf_counter()
     request = SketchSolveRequest.model_validate(payload)

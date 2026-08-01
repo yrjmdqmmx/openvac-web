@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from .isolation import run_isolated
+from .isolation import ReusableIsolatedExecutor
 
 
 PROTOCOL_VERSION = "openvac.modeling.v1"
@@ -236,54 +236,58 @@ def run_benchmarks(
     if iterations < 1:
         raise ValueError("iterations must be positive")
     results: dict[str, Any] = {}
+    with ReusableIsolatedExecutor() as executor:
+        startup_ms = executor.start(timeout_seconds=30)
 
-    if case in {"all", "sketch"}:
-        durations = _measure(
-            iterations,
-            lambda _index: run_isolated(
-                "app.sketch_solver",
-                "solve_sketch_payload",
-                sketch_benchmark_payload(),
-                timeout_seconds=2,
-            ),
-        )
-        results["sketch_100_entities_200_constraints"] = _summary(durations, 250)
+        if case in {"all", "sketch"}:
+            durations = _measure(
+                iterations,
+                lambda _index: executor.call(
+                    "app.sketch_solver",
+                    "solve_sketch_payload",
+                    sketch_benchmark_payload(),
+                    timeout_seconds=2,
+                ),
+            )
+            results["sketch_100_entities_200_constraints"] = _summary(durations, 250)
 
-    if case in {"all", "feature"}:
-        durations = _measure(
-            iterations,
-            lambda index: run_isolated(
-                "app.engine",
-                "build_to_artifacts",
-                f"feature-benchmark-{index}",
-                feature_benchmark_document(),
-                [],
-                artifact_root,
-                False,
-                timeout_seconds=30,
-            ),
-        )
-        results["common_feature_rebuild"] = _summary(durations, 5_000)
+        if case in {"all", "feature"}:
+            durations = _measure(
+                iterations,
+                lambda index: executor.call(
+                    "app.engine",
+                    "build_to_artifacts",
+                    f"feature-benchmark-{index}",
+                    feature_benchmark_document(),
+                    [],
+                    artifact_root,
+                    False,
+                    timeout_seconds=30,
+                ),
+            )
+            results["common_feature_rebuild"] = _summary(durations, 5_000)
 
-    if case in {"all", "pump"}:
-        durations = _measure(
-            iterations,
-            lambda index: run_isolated(
-                "app.engine",
-                "build_to_artifacts",
-                f"pump-benchmark-{index}",
-                pump_benchmark_document(),
-                [],
-                artifact_root,
-                True,
-                timeout_seconds=180,
-            ),
-        )
-        results["complete_original_pump"] = _summary(durations, 60_000)
+        if case in {"all", "pump"}:
+            durations = _measure(
+                iterations,
+                lambda index: executor.call(
+                    "app.engine",
+                    "build_to_artifacts",
+                    f"pump-benchmark-{index}",
+                    pump_benchmark_document(),
+                    [],
+                    artifact_root,
+                    True,
+                    timeout_seconds=180,
+                ),
+            )
+            results["complete_original_pump"] = _summary(durations, 60_000)
 
     return {
         "iterations": iterations,
         "includes_process_isolation": True,
+        "execution_model": "serial_reusable_process",
+        "kernel_startup_ms": round(startup_ms, 3),
         "results": results,
         "passed": all(item["passed"] for item in results.values()),
     }
