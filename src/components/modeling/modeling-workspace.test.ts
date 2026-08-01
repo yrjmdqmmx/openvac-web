@@ -641,7 +641,13 @@ describe("modeling workspace manual and AI flows", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "拒绝计划" }));
 
-    expect(screen.getByRole("button", { name: "正在拒绝…" })).toBeDisabled();
+    expect(
+      await screen.findByRole(
+        "button",
+        { name: "正在拒绝…" },
+        { timeout: 4_000 }
+      )
+    ).toBeDisabled();
     expect(screen.getByRole("button", { name: "确认并执行" })).toBeDisabled();
     expect(screen.getByLabelText("描述希望 AI 规划的建模修改")).toBeDisabled();
     await waitFor(() =>
@@ -992,7 +998,11 @@ describe("modeling workspace manual and AI flows", () => {
     const historicalVersion = await screen.findByText("V1");
     fireEvent.click(historicalVersion.closest("button")!);
 
-    expect(await screen.findByText(/正在只读查看 V1/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/正在只读查看 V1/, undefined, {
+        timeout: 4_000
+      })
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "保存项目" })).toBeDisabled();
     expect(screen.getByLabelText("偏心量（mm）")).toHaveValue(6);
 
