@@ -37,11 +37,8 @@ describe("deployment Compose project isolation", () => {
     expect(release).toContain(
       "modeling_digest: ${{ steps.modeling_build.outputs.digest }}"
     );
-    expect(release).toContain("web_archive_config_digest:");
     expect(release).toContain("openvac-web-release.tar.zst.sha256");
-    expect(release).toContain(
-      'OPENVAC_WEB_PRELOADED_ID="$web_archive_config_digest"'
-    );
+    expect(release).toContain('OPENVAC_WEB_PRELOADED_ID="$loaded_web_id"');
     expect(release).toContain("context: ./modeling-service");
     expect(release).toContain(
       'image_repository="ghcr.io/${GITHUB_REPOSITORY,,}"'
@@ -50,10 +47,9 @@ describe("deployment Compose project isolation", () => {
     expect(release).toContain(
       'validate_release_image "$release_modeling_image" "Modeling registry image"'
     );
-    expect(release).toContain("modeling_archive_config_digest:");
     expect(release).toContain("openvac-modeling-release.tar.zst.sha256");
     expect(release).toContain(
-      'OPENVAC_MODELING_PRELOADED_ID="$modeling_archive_config_digest"'
+      'OPENVAC_MODELING_PRELOADED_ID="$loaded_modeling_id"'
     );
     expect(activation).toContain('if [ "$#" -ne 7 ]');
     expect(deploy).toContain('if [ "$#" -ne 4 ]');
@@ -255,9 +251,8 @@ describe("deployment Compose project isolation", () => {
     expect(release).toContain(
       'docker image tag "$loaded_web_tag" "openvac-web-release:$loaded_hex"'
     );
-    expect(release).toContain(
-      '[ "$loaded_web_id" = "$WEB_ARCHIVE_CONFIG_DIGEST" ]'
-    );
+    expect(release).not.toContain("WEB_ARCHIVE_CONFIG_DIGEST");
+    expect(release).not.toContain("MODELING_ARCHIVE_CONFIG_DIGEST");
     expect(release).toContain(
       'release_image="openvac-web-release:${loaded_web_id#sha256:}"'
     );

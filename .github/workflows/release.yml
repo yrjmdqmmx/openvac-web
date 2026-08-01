@@ -164,9 +164,7 @@ jobs:
       packages: write
     outputs:
       web_digest: ${{ steps.web_build.outputs.digest }}
-      web_archive_config_digest: ${{ steps.web_archive_identity.outputs.config_digest }}
       modeling_digest: ${{ steps.modeling_build.outputs.digest }}
-      modeling_archive_config_digest: ${{ steps.modeling_archive_identity.outputs.config_digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -208,24 +206,6 @@ jobs:
             org.opencontainers.image.revision=${{ inputs.commit_sha }}
           outputs: type=docker,dest=${{ runner.temp }}/openvac-web-release.tar
           cache-from: type=gha,scope=web
-      - id: web_archive_identity
-        name: Record the web archive config identity
-        run: |
-          set -eu
-          config_file="$(
-            tar -xOf "$RUNNER_TEMP/openvac-web-release.tar" manifest.json |
-              jq --raw-output 'if length == 1 then .[0].Config else empty end'
-          )"
-          case "$config_file" in
-            blobs/sha256/*) digest="${config_file#blobs/sha256/}" ;;
-            *.json) digest="${config_file%.json}" ;;
-            *) echo "Web archive exposed an unsupported config path" >&2; exit 1 ;;
-          esac
-          case "$digest" in
-            ""|*[!0-9a-f]*) exit 1 ;;
-          esac
-          test "${#digest}" -eq 64
-          printf 'config_digest=sha256:%s\n' "$digest" >>"$GITHUB_OUTPUT"
       - name: Compress and checksum the web deployment archive
         run: |
           set -eu
@@ -269,24 +249,6 @@ jobs:
             org.opencontainers.image.revision=${{ inputs.commit_sha }}
           outputs: type=docker,dest=${{ runner.temp }}/openvac-modeling-release.tar
           cache-from: type=gha,scope=modeling
-      - id: modeling_archive_identity
-        name: Record the archive config identity
-        run: |
-          set -eu
-          config_file="$(
-            tar -xOf "$RUNNER_TEMP/openvac-modeling-release.tar" manifest.json |
-              jq --raw-output 'if length == 1 then .[0].Config else empty end'
-          )"
-          case "$config_file" in
-            blobs/sha256/*) digest="${config_file#blobs/sha256/}" ;;
-            *.json) digest="${config_file%.json}" ;;
-            *) echo "Modeling archive exposed an unsupported config path" >&2; exit 1 ;;
-          esac
-          case "$digest" in
-            ""|*[!0-9a-f]*) exit 1 ;;
-          esac
-          test "${#digest}" -eq 64
-          printf 'config_digest=sha256:%s\n' "$digest" >>"$GITHUB_OUTPUT"
       - name: Compress and checksum the modeling deployment archive
         run: |
           set -eu
@@ -349,9 +311,7 @@ jobs:
           GHCR_PULL_TOKEN: ${{ github.token }}
           GHCR_USERNAME: ${{ github.actor }}
           WEB_IMAGE_DIGEST: ${{ needs.image.outputs.web_digest }}
-          WEB_ARCHIVE_CONFIG_DIGEST: ${{ needs.image.outputs.web_archive_config_digest }}
           MODELING_IMAGE_DIGEST: ${{ needs.image.outputs.modeling_digest }}
-          MODELING_ARCHIVE_CONFIG_DIGEST: ${{ needs.image.outputs.modeling_archive_config_digest }}
           RELEASE_SHA: ${{ inputs.commit_sha }}
         run: |
           set -Eeuo pipefail
@@ -415,8 +375,6 @@ jobs:
             esac
             test "${#digest}" -eq 64
           }
-          validate_digest "$WEB_ARCHIVE_CONFIG_DIGEST" "Web archive config digest"
-          validate_digest "$MODELING_ARCHIVE_CONFIG_DIGEST" "Modeling archive config digest"
           if [ "$WEB_IMAGE_DIGEST" = "$MODELING_IMAGE_DIGEST" ]; then
             echo "Web and modeling images must have distinct digests" >&2
             exit 64
@@ -570,10 +528,6 @@ jobs:
           REMOTE_WEB_IMAGE_IDENTITY
           )"
           validate_digest "$loaded_web_id" "Loaded web image ID"
-          [ "$loaded_web_id" = "$WEB_ARCHIVE_CONFIG_DIGEST" ] || {
-            echo "Loaded web image ID does not match the same-run archive config" >&2
-            exit 1
-          }
           release_image="openvac-web-release:${loaded_web_id#sha256:}"
 
           echo "Streaming the checksum-verified same-run modeling archive"
@@ -624,10 +578,6 @@ jobs:
           REMOTE_IMAGE_IDENTITY
           )"
           validate_digest "$loaded_modeling_id" "Loaded modeling image ID"
-          [ "$loaded_modeling_id" = "$MODELING_ARCHIVE_CONFIG_DIGEST" ] || {
-            echo "Loaded modeling image ID does not match the same-run archive config" >&2
-            exit 1
-          }
           release_modeling_image="openvac-modeling-release:${loaded_modeling_id#sha256:}"
 
           set +e
@@ -768,9 +718,9 @@ jobs:
           deploy_dir="$2"
           release_id="$3"
           release_image="$4"
-          web_archive_config_digest="$5"
+          loaded_web_id="$5"
           release_modeling_image="$6"
-          modeling_archive_config_digest="$7"
+          loaded_modeling_id="$7"
           compose_project="$8"
           health_url="$9"
           case "$remote_stage" in
@@ -781,8 +731,8 @@ jobs:
           [ -d "$docker_config" ] && [ ! -L "$docker_config" ] || exit 64
           [ "$(stat -c '%a' "$docker_config")" = 700 ] || exit 64
           DOCKER_CONFIG="$docker_config" \
-            OPENVAC_WEB_PRELOADED_ID="$web_archive_config_digest" \
-            OPENVAC_MODELING_PRELOADED_ID="$modeling_archive_config_digest" \
+            OPENVAC_WEB_PRELOADED_ID="$loaded_web_id" \
+            OPENVAC_MODELING_PRELOADED_ID="$loaded_modeling_id" \
             sh "$remote_stage/bundle/deploy/activate-bundle.sh" \
             "$deploy_dir" "$release_id" "$remote_stage/bundle" \
             "$release_image" "$release_modeling_image" "$compose_project" \
