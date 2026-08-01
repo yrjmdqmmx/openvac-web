@@ -14,6 +14,11 @@ type Snapshot = {
     }
   >;
   enums: Record<string, { values: string[] }>;
+  views: Record<string, unknown>;
+};
+
+type Journal = {
+  entries: Array<{ idx: number; tag: string }>;
 };
 
 function source(path: string) {
@@ -123,5 +128,40 @@ describe("append-only migration history", () => {
         `CREATE TABLE "${table.replace("public.", "")}"`
       );
     }
+  });
+
+  it("appends a fail-closed single-source consultation rollback view", () => {
+    const modeling = snapshot(6);
+    const compatibility = snapshot(7);
+    const migration = source("drizzle/0007_consultation_rollback_compat.sql");
+    const journal = JSON.parse(source("drizzle/meta/_journal.json")) as Journal;
+
+    expect(compatibility.prevId).toBe(modeling.id);
+    expect(compatibility.tables).toEqual(modeling.tables);
+    expect(compatibility.enums).toEqual(modeling.enums);
+    expect(compatibility.views).toEqual({});
+    expect(journal.entries.at(-1)).toMatchObject({
+      idx: 7,
+      tag: "0007_consultation_rollback_compat"
+    });
+
+    expect(migration).toContain(
+      'CREATE VIEW "public"."consultation"\nWITH (security_invoker = true)'
+    );
+    expect(migration).toContain('FROM "public"."problem_report" AS report');
+    expect(migration).toContain("INSTEAD OF INSERT OR UPDATE");
+    expect(migration).toContain(
+      'BEFORE INSERT OR UPDATE OF "status" ON "public"."problem_report"'
+    );
+    expect(migration).toContain(
+      "refusing to replace existing public.consultation relation"
+    );
+    expect(migration).not.toMatch(
+      /CREATE\s+TABLE\s+(?:"public"\.)?"consultation"/iu
+    );
+    expect(migration).not.toMatch(
+      /DROP\s+(?:TABLE|VIEW)\s+(?:IF\s+EXISTS\s+)?(?:"public"\.)?"consultation"/iu
+    );
+    expect(migration).not.toContain("CREATE OR REPLACE VIEW");
   });
 });

@@ -12,8 +12,11 @@ import {
 } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ConversationSummary } from "@/types/chat";
-import { ChatWorkspace } from "./chat-workspace";
+import type { ChatMessage, ConversationSummary } from "@/types/chat";
+import {
+  ChatWorkspace,
+  problemReportDescriptionForMessage
+} from "./chat-workspace";
 
 const firstConversation: ConversationSummary = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -79,6 +82,33 @@ afterEach(() => {
 });
 
 describe("ChatWorkspace conversation history", () => {
+  it("prefills a report with the user question preceding the selected answer", () => {
+    const messages: ChatMessage[] = [
+      { id: "question-1", role: "user", content: "第一轮问题" },
+      {
+        id: "answer-1",
+        role: "assistant",
+        content: "第一轮回答",
+        status: "completed"
+      },
+      { id: "question-2", role: "user", content: "第二轮问题" },
+      {
+        id: "answer-2",
+        role: "assistant",
+        content: "第二轮回答",
+        status: "completed"
+      }
+    ];
+
+    expect(problemReportDescriptionForMessage(messages, "answer-1")).toBe(
+      "第一轮问题"
+    );
+    expect(problemReportDescriptionForMessage(messages, "answer-2")).toBe(
+      "第二轮问题"
+    );
+    expect(problemReportDescriptionForMessage(messages)).toBe("第二轮问题");
+  });
+
   it("debounces server search and ignores a stale response", async () => {
     const olderSearch = deferred<Response>();
     const newerSearch = deferred<Response>();

@@ -77,4 +77,30 @@ describe("ExpertAnswer modeling cards", () => {
       screen.queryByRole("region", { name: "建模项目与制品" })
     ).not.toBeInTheDocument();
   });
+
+  it("does not attach per-message feedback actions to a failed local answer", () => {
+    render(
+      createElement(ExpertAnswer, {
+        message: {
+          id: "assistant-local-only",
+          role: "assistant",
+          content: "本次回答未完成。",
+          status: "error"
+        },
+        modelingEnabled: false,
+        onFeedback: vi.fn(),
+        onProblemReport: vi.fn()
+      })
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "问题反馈" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "回答有帮助" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "复制回答" })
+    ).toBeInTheDocument();
+  });
 });

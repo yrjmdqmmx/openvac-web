@@ -201,6 +201,17 @@ describe("expert answer prompt", () => {
   });
 
   it.each([
+    "请立即停机并隔离能源，联系设备厂家。不可继续运行。",
+    "请立即停机并隔离能源，联系设备厂家。建议不要继续运行。",
+    "请立即停机并隔离能源，联系设备厂家。建议不要保持设备运行。"
+  ])("accepts explicit prohibitions on continued operation: %s", (answer) => {
+    expect(validateHighRiskAnswerBoundaries(answer)).toEqual({
+      valid: true,
+      missing: []
+    });
+  });
+
+  it.each([
     "不要停机，保持设备运行。不要隔离能源。请联系厂家。",
     "停机后不要断开电源，请联系厂家。",
     "禁止停止运行，切断电源并联系专业人员。",

@@ -24,7 +24,7 @@ async function applyMigration(database: Sql, path: string) {
 }
 
 describeDatabase("migration upgrade compatibility", () => {
-  it("upgrades an old-0002 database by applying 0003 through 0006", async () => {
+  it("upgrades a pre-0002 database through rollback-compatible 0007", async () => {
     const configuredUrl = new URL(
       process.env.DATABASE_URL ??
         "postgres://openvac:openvac@127.0.0.1:5432/openvac"
@@ -57,6 +57,7 @@ describeDatabase("migration upgrade compatibility", () => {
       await applyMigration(target, "0004_famous_daimon_hellstrom.sql");
       await applyMigration(target, "0005_sharp_lady_deathstrike.sql");
       await applyMigration(target, "0006_sour_roulette.sql");
+      await applyMigration(target, "0007_consultation_rollback_compat.sql");
 
       const modelingTables = await target<Array<{ table_name: string }>>`
         select table_name
@@ -151,6 +152,8 @@ describeDatabase("migration upgrade compatibility", () => {
         "model_attempt"
       ]);
 
+      await verifyConsultationRollbackCompatibility(target, legacyUserId);
+
       const userId = `pending-${randomUUID()}`;
       await target`
         insert into "user" (id, updated_at, deletion_requested_at)
@@ -166,6 +169,12 @@ describeDatabase("migration upgrade compatibility", () => {
           )
         `
       ).rejects.toMatchObject({ code: "23514" });
+
+      await target`drop view consultation`;
+      await target`create table consultation (id integer primary key)`;
+      await expect(
+        applyMigration(target, "0007_consultation_rollback_compat.sql")
+      ).rejects.toThrow(/refusing to replace existing public\.consultation/u);
     } finally {
       if (target) {
         await target.end({ timeout: 5 });
@@ -181,6 +190,486 @@ describeDatabase("migration upgrade compatibility", () => {
     }
   });
 });
+
+async function verifyConsultationRollbackCompatibility(
+  database: Sql,
+  legacyUserId: string
+) {
+  const relations = await database<
+    Array<{ relname: string; relkind: string; reloptions: string[] }>
+  >`
+    select
+      relation.relname,
+      relation.relkind,
+      coalesce(relation.reloptions, array[]::text[]) as reloptions
+    from pg_catalog.pg_class as relation
+    join pg_catalog.pg_namespace as namespace
+      on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'public'
+      and relation.relname in ('consultation', 'problem_report')
+    order by relation.relname
+  `;
+  expect(relations).toEqual([
+    {
+      relname: "consultation",
+      relkind: "v",
+      reloptions: expect.arrayContaining(["security_invoker=true"])
+    },
+    { relname: "problem_report", relkind: "r", reloptions: [] }
+  ]);
+
+  // These are the exact columns and predicates used by the old user list.
+  const legacyUserList = await database<
+    Array<{
+      id: string;
+      conversation_id: string | null;
+      company_name: string;
+      problem: string;
+      status: string;
+      created_at: Date;
+      updated_at: Date;
+    }>
+  >`
+    select
+      id::text,
+      conversation_id::text,
+      company_name,
+      problem,
+      status,
+      created_at,
+      updated_at
+    from consultation
+    where user_id = ${legacyUserId}
+      and status = 'submitted'
+    order by created_at desc
+    limit 20 offset 0
+  `;
+  expect(legacyUserList).toHaveLength(3);
+  expect(legacyUserList.every((row) => row.company_name === "")).toBe(true);
+  expect(legacyUserList.map((row) => row.problem).sort()).toEqual([
+    "Legacy application insert",
+    "Legacy issue one",
+    "Legacy issue two"
+  ]);
+  const legacyConversationId = legacyUserList.find(
+    (row) => row.conversation_id !== null
+  )?.conversation_id;
+  if (!legacyConversationId) {
+    throw new Error("legacy migration fixture did not retain a conversation");
+  }
+
+  const [{ value: legacyUserCount }] = await database<Array<{ value: number }>>`
+    select count(*)::integer as value
+    from consultation
+    where user_id = ${legacyUserId}
+      and status = 'submitted'
+  `;
+  expect(legacyUserCount).toBe(3);
+
+  // The old admin list performs SELECT * and searches company_name OR problem.
+  const oldAdminList = await database<
+    Array<{
+      id: string;
+      contact_name: string;
+      company_name: string;
+      problem: string;
+      status: string;
+    }>
+  >`
+    select *
+    from consultation
+    where company_name ilike ${"%Legacy issue%"}
+      or problem ilike ${"%Legacy issue%"}
+    order by created_at desc
+    limit 20 offset 0
+  `;
+  expect(oldAdminList).toHaveLength(2);
+  expect(
+    oldAdminList.every(
+      (row) => row.contact_name === "" && row.company_name === ""
+    )
+  ).toBe(true);
+
+  const currentInsertVisibleToRollback = await database<
+    Array<{ status: string }>
+  >`
+    select status
+    from consultation
+    where problem = 'Legacy application insert'
+  `;
+  expect(currentInsertVisibleToRollback).toEqual([{ status: "submitted" }]);
+
+  const consultationId = randomUUID();
+  const assignedUserId = `compat-admin-${randomUUID()}`;
+  const contactName = "Rollback Secret Contact";
+  const companyName = "Rollback Secret Company";
+  const contactValue = "rollback-secret@example.com";
+  const conversationSummary = "Rollback compatibility summary";
+  const longProblem = `Rollback compatibility ${"x".repeat(4_900)}`;
+  const createdAt = new Date("2026-08-01T06:00:00.000Z");
+  await database`insert into "user" (id) values (${assignedUserId})`;
+
+  // This mirrors origin/main createConsultation, including its RETURNING list.
+  const [created] = await database<
+    Array<{ id: string; status: string; created_at: Date }>
+  >`
+    insert into consultation (
+      id,
+      user_id,
+      conversation_id,
+      contact_name,
+      company_name,
+      contact_method,
+      contact_value,
+      problem,
+      conversation_summary,
+      confirmed_at,
+      status,
+      created_at,
+      updated_at
+    ) values (
+      ${consultationId},
+      ${legacyUserId},
+      ${legacyConversationId},
+      ${contactName},
+      ${companyName},
+      'email',
+      ${contactValue},
+      ${longProblem},
+      ${conversationSummary},
+      ${createdAt},
+      'submitted',
+      ${createdAt},
+      ${createdAt}
+    )
+    returning id::text, status, created_at
+  `;
+  expect(created).toMatchObject({
+    id: consultationId,
+    status: "submitted",
+    created_at: createdAt
+  });
+
+  const [canonical] = await database<
+    Array<{
+      category: string;
+      description_length: number;
+      summary: string;
+      legacy_description: string;
+      context_text: string;
+      contact_type: string;
+      contact_value: string;
+      consent_to_contact: boolean;
+      include_context: boolean;
+      status: string;
+      client_request_id: string;
+      retention_seconds: number;
+    }>
+  >`
+    select
+      category,
+      char_length(description)::integer as description_length,
+      context ->> 'summary' as summary,
+      context ->> 'legacyDescription' as legacy_description,
+      context::text as context_text,
+      contact_type,
+      contact_value,
+      consent_to_contact,
+      include_context,
+      status,
+      client_request_id::text,
+      extract(epoch from (retention_until - created_at))::integer
+        as retention_seconds
+    from problem_report
+    where id = ${consultationId}
+  `;
+  expect(canonical).toMatchObject({
+    category: "other",
+    description_length: 3_000,
+    summary: conversationSummary,
+    legacy_description: longProblem,
+    contact_type: "email",
+    contact_value: contactValue,
+    consent_to_contact: true,
+    include_context: true,
+    status: "new",
+    retention_seconds: 180 * 24 * 60 * 60
+  });
+  expect(canonical?.client_request_id).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+  );
+  expect(canonical?.context_text).not.toContain(contactName);
+  expect(canonical?.context_text).not.toContain(companyName);
+  expect(canonical?.context_text).not.toContain(contactValue);
+
+  const [legacyCreatedView] = await database<
+    Array<{
+      contact_name: string;
+      company_name: string;
+      contact_method: string;
+      contact_value: string;
+      problem: string;
+      conversation_summary: string;
+      assigned_to: string | null;
+      status: string;
+    }>
+  >`
+    select
+      contact_name,
+      company_name,
+      contact_method,
+      contact_value,
+      problem,
+      conversation_summary,
+      assigned_to,
+      status
+    from consultation
+    where id = ${consultationId}
+  `;
+  expect(legacyCreatedView).toEqual({
+    contact_name: "",
+    company_name: "",
+    contact_method: "email",
+    contact_value: contactValue,
+    problem: longProblem,
+    conversation_summary: conversationSummary,
+    assigned_to: null,
+    status: "submitted"
+  });
+
+  const resolvedAt = new Date("2026-08-02T06:00:00.000Z");
+  // This mirrors origin/main setConsultationStatus, including RETURNING *.
+  const [resolved] = await database<
+    Array<{
+      status: string;
+      assigned_to: string | null;
+      admin_note: string | null;
+      resolved_at: Date | null;
+    }>
+  >`
+    update consultation
+    set
+      status = 'resolved',
+      assigned_to = ${assignedUserId},
+      admin_note = 'legacy resolution',
+      resolved_at = ${resolvedAt},
+      updated_at = ${resolvedAt}
+    where id = ${consultationId}
+    returning *
+  `;
+  expect(resolved).toMatchObject({
+    status: "resolved",
+    assigned_to: null,
+    admin_note: "legacy resolution",
+    resolved_at: resolvedAt
+  });
+
+  const [resolvedCanonical] = await database<
+    Array<{
+      status: string;
+      compatibility_status: string;
+      closed_at: Date;
+      purge_seconds: number;
+    }>
+  >`
+    select
+      status,
+      context ->> '_openvacConsultationStatus' as compatibility_status,
+      closed_at,
+      extract(epoch from (contact_purge_at - closed_at))::integer
+        as purge_seconds
+    from problem_report
+    where id = ${consultationId}
+  `;
+  expect(resolvedCanonical).toEqual({
+    status: "closed",
+    compatibility_status: "resolved",
+    closed_at: resolvedAt,
+    purge_seconds: 30 * 24 * 60 * 60
+  });
+  const resolvedList = await database<Array<{ id: string }>>`
+    select id::text
+    from consultation
+    where status = 'resolved'
+      and id = ${consultationId}
+  `;
+  expect(resolvedList).toEqual([{ id: consultationId }]);
+
+  // Repeating a legacy close must not postpone the PII purge window. Legacy
+  // clients commonly retry status writes with a fresh resolved_at value.
+  const repeatedCloseAt = new Date("2026-08-03T05:00:00.000Z");
+  const [repeatedClose] = await database<
+    Array<{ status: string; resolved_at: Date }>
+  >`
+    update consultation
+    set
+      status = 'closed',
+      admin_note = 'legacy close retry',
+      resolved_at = ${repeatedCloseAt},
+      updated_at = ${repeatedCloseAt}
+    where id = ${consultationId}
+    returning status, resolved_at
+  `;
+  expect(repeatedClose).toEqual({
+    status: "closed",
+    resolved_at: resolvedAt
+  });
+  const [repeatedCloseCanonical] = await database<
+    Array<{
+      closed_at: Date;
+      contact_purge_at: Date;
+    }>
+  >`
+    select closed_at, contact_purge_at
+    from problem_report
+    where id = ${consultationId}
+  `;
+  expect(repeatedCloseCanonical).toEqual({
+    closed_at: resolvedAt,
+    contact_purge_at: new Date(resolvedAt.getTime() + 30 * 24 * 60 * 60 * 1000)
+  });
+
+  // Repair pre-fix rows that were already closed without a purge deadline,
+  // without allowing the retry's later resolved_at to extend retention.
+  await database`
+    update problem_report
+    set contact_purge_at = null
+    where id = ${consultationId}
+  `;
+  const repairAttemptAt = new Date("2026-08-03T05:30:00.000Z");
+  await database`
+    update consultation
+    set
+      status = 'resolved',
+      resolved_at = ${repairAttemptAt},
+      updated_at = ${repairAttemptAt}
+    where id = ${consultationId}
+  `;
+  const [repairedCloseCanonical] = await database<
+    Array<{ closed_at: Date; contact_purge_at: Date }>
+  >`
+    select closed_at, contact_purge_at
+    from problem_report
+    where id = ${consultationId}
+  `;
+  expect(repairedCloseCanonical).toEqual({
+    closed_at: resolvedAt,
+    contact_purge_at: new Date(resolvedAt.getTime() + 30 * 24 * 60 * 60 * 1000)
+  });
+
+  // A current-app status write normalizes any stale rollback-only marker.
+  const currentClosedAt = new Date("2026-08-03T06:00:00.000Z");
+  await database`
+    update problem_report
+    set status = 'closed', updated_at = ${currentClosedAt}
+    where id = ${consultationId}
+  `;
+  const [normalizedCurrentStatus] = await database<Array<{ status: string }>>`
+    select status from consultation where id = ${consultationId}
+  `;
+  expect(normalizedCurrentStatus?.status).toBe("closed");
+
+  const reopenedAt = new Date("2026-08-04T06:00:00.000Z");
+  const [reopened] = await database<
+    Array<{ status: string; resolved_at: Date | null }>
+  >`
+    update consultation
+    set
+      status = 'contacting',
+      assigned_to = null,
+      admin_note = null,
+      resolved_at = null,
+      updated_at = ${reopenedAt}
+    where id = ${consultationId}
+    returning *
+  `;
+  expect(reopened).toMatchObject({ status: "contacting", resolved_at: null });
+  const [reopenedCanonical] = await database<
+    Array<{
+      status: string;
+      compatibility_status: string;
+      closed_at: Date | null;
+      contact_purge_at: Date | null;
+    }>
+  >`
+    select
+      status,
+      context ->> '_openvacConsultationStatus' as compatibility_status,
+      closed_at,
+      contact_purge_at
+    from problem_report
+    where id = ${consultationId}
+  `;
+  expect(reopenedCanonical).toEqual({
+    status: "reviewing",
+    compatibility_status: "contacting",
+    closed_at: null,
+    contact_purge_at: null
+  });
+
+  const reclosedAt = new Date("2026-08-05T06:00:00.000Z");
+  const [reclosed] = await database<
+    Array<{ status: string; resolved_at: Date }>
+  >`
+    update consultation
+    set
+      status = 'closed',
+      assigned_to = null,
+      admin_note = 'closed again',
+      resolved_at = ${reclosedAt},
+      updated_at = ${reclosedAt}
+    where id = ${consultationId}
+    returning *
+  `;
+  expect(reclosed).toMatchObject({ status: "closed", resolved_at: reclosedAt });
+  const [reclosedCanonical] = await database<
+    Array<{ closed_at: Date; purge_seconds: number }>
+  >`
+    select
+      closed_at,
+      extract(epoch from (contact_purge_at - closed_at))::integer
+        as purge_seconds
+    from problem_report
+    where id = ${consultationId}
+  `;
+  expect(reclosedCanonical).toEqual({
+    closed_at: reclosedAt,
+    purge_seconds: 30 * 24 * 60 * 60
+  });
+
+  await database`
+    update problem_report
+    set contact_type = null, contact_value = null
+    where id = ${consultationId}
+  `;
+  const [purgedView] = await database<
+    Array<{
+      contact_name: string;
+      company_name: string;
+      contact_method: string;
+      contact_value: string;
+      context_text: string;
+    }>
+  >`
+    select
+      contact_name,
+      company_name,
+      contact_method,
+      contact_value,
+      context::text as context_text
+    from consultation
+    where id = ${consultationId}
+  `;
+  expect(purgedView).toMatchObject({
+    contact_name: "",
+    company_name: "",
+    contact_method: "",
+    contact_value: ""
+  });
+  expect(purgedView?.context_text).not.toContain(contactName);
+  expect(purgedView?.context_text).not.toContain(companyName);
+  expect(purgedView?.context_text).not.toContain(contactValue);
+}
 
 async function createPre0002Schema(database: Sql) {
   await database.unsafe(`

@@ -12,7 +12,10 @@ type NotificationOptions = {
   recipient?: string;
   appUrl?: string;
   provider?: Pick<EmailProvider, "sendTransactional">;
+  timeoutMs?: number;
 };
+
+const DEFAULT_NOTIFICATION_TIMEOUT_MS = 1_500;
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => {
@@ -66,13 +69,38 @@ export async function sendProblemReportNotification(
 </ul>
 <p><a href="${escapeHtml(url)}">打开问题反馈后台</a></p>`;
 
+  const timeoutMs = options.timeoutMs ?? DEFAULT_NOTIFICATION_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError("Problem-report notification timeout must be positive");
+  }
   const provider = options.provider ?? getEmailProvider();
-  await provider.sendTransactional({
-    to: recipient,
-    subject: `[OpenVac] 新问题反馈 ${input.id}`,
-    text,
-    html,
-    tag: "problem-report-notification"
-  });
+  await withDeadline(
+    provider.sendTransactional({
+      to: recipient,
+      subject: `[OpenVac] 新问题反馈 ${input.id}`,
+      text,
+      html,
+      tag: "problem-report-notification"
+    }),
+    timeoutMs
+  );
   return true;
+}
+
+function withDeadline<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error("Problem-report notification exceeded its deadline"));
+    }, timeoutMs);
+    operation.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 }

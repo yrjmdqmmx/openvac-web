@@ -48,7 +48,7 @@ import {
   type GovernedKnowledgeSource
 } from "@/server/knowledge/source-policy";
 import {
-  problemReportContactPurgeAt,
+  problemReportClosureTransition,
   problemReportRetentionUntil
 } from "@/server/problem-reports/retention";
 import { storedProblemReportAssociations } from "@/server/problem-reports/context-policy";
@@ -100,6 +100,50 @@ function auditValues(
     },
     createdAt: new Date()
   };
+}
+
+export function serializeProblemReportContextMessages(
+  recentMessages: ReadonlyArray<{
+    id: string;
+    role: string;
+    content: string;
+    sequence: number;
+    createdAt: Date;
+  }>
+) {
+  return [...recentMessages]
+    .sort((left, right) => left.sequence - right.sequence)
+    .map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      createdAt: message.createdAt.toISOString()
+    }));
+}
+
+export function existingKnowledgeEmbeddingMatchesReview(input: {
+  ingestionMode: unknown;
+  reviewedContentHash: unknown;
+  nextContentHash: string;
+}): boolean {
+  return (
+    input.ingestionMode === "full_text" &&
+    typeof input.reviewedContentHash === "string" &&
+    input.reviewedContentHash.toLowerCase() ===
+      input.nextContentHash.toLowerCase()
+  );
+}
+
+export function hasCompleteKnowledgeEmbeddingSet(input: {
+  totalChunks: number;
+  embeddedChunks: number;
+}): boolean {
+  return (
+    Number.isSafeInteger(input.totalChunks) &&
+    Number.isSafeInteger(input.embeddedChunks) &&
+    input.totalChunks > 0 &&
+    input.embeddedChunks === input.totalChunks
+  );
 }
 
 function pageResult<T>(
@@ -1506,23 +1550,19 @@ export const apiStore: ApiStore = {
             id: messages.id,
             role: messages.role,
             content: messages.content,
+            sequence: messages.sequence,
             createdAt: messages.createdAt
           })
           .from(messages)
           .where(eq(messages.conversationId, ownedConversation.id))
-          .orderBy(desc(messages.createdAt), desc(messages.id))
+          .orderBy(desc(messages.sequence))
           .limit(8);
 
         context = {
           conversationId: ownedConversation.id,
           title: ownedConversation.title,
           summary: ownedConversation.summary,
-          messages: recentMessages.reverse().map((message) => ({
-            id: message.id,
-            role: message.role,
-            content: message.content,
-            createdAt: message.createdAt.toISOString()
-          })),
+          messages: serializeProblemReportContextMessages(recentMessages),
           capturedAt: now.toISOString()
         };
       }
@@ -1850,14 +1890,33 @@ export const apiStore: ApiStore = {
   async setProblemReportStatus(problemReportId, input, audit) {
     return db.transaction(async (tx) => {
       const now = new Date();
+      const [existing] = await tx
+        .select({
+          status: problemReports.status,
+          closedAt: problemReports.closedAt,
+          contactPurgeAt: problemReports.contactPurgeAt
+        })
+        .from(problemReports)
+        .where(eq(problemReports.id, problemReportId))
+        .limit(1)
+        .for("update");
+      if (!existing) {
+        return null;
+      }
+      const closure = problemReportClosureTransition({
+        previousStatus: existing.status,
+        previousClosedAt: existing.closedAt,
+        previousContactPurgeAt: existing.contactPurgeAt,
+        nextStatus: input.status,
+        now
+      });
       const [updated] = await tx
         .update(problemReports)
         .set({
           status: input.status,
           adminNote: input.note ?? null,
-          closedAt: input.status === "closed" ? now : null,
-          contactPurgeAt:
-            input.status === "closed" ? problemReportContactPurgeAt(now) : null,
+          closedAt: closure.closedAt,
+          contactPurgeAt: closure.contactPurgeAt,
           updatedAt: now
         })
         .where(eq(problemReports.id, problemReportId))
@@ -2217,18 +2276,27 @@ export const apiStore: ApiStore = {
         );
       }
       const existingReview = recordValue(version.metadata.review);
-      const [existingChunkResult] =
-        input.decision === "approved" &&
-        transition.task &&
-        version.metadata.embeddingStatus === "completed" &&
-        existingReview.contentHash === transition.contentHash
-          ? await tx
-              .select({ value: count() })
-              .from(knowledgeChunks)
-              .where(eq(knowledgeChunks.versionId, version.id))
-          : [];
+      const existingEmbeddingMatchesReview =
+        existingKnowledgeEmbeddingMatchesReview({
+          ingestionMode: version.citationMetadata.ingestionMode,
+          reviewedContentHash: existingReview.contentHash,
+          nextContentHash: transition.contentHash
+        });
+      const [existingChunkResult] = existingEmbeddingMatchesReview
+        ? await tx
+            .select({
+              total: count(),
+              embedded: sql<number>`count(*) filter (where ${knowledgeChunks.embedding} is not null and ${knowledgeChunks.embeddedAt} is not null)`
+            })
+            .from(knowledgeChunks)
+            .where(eq(knowledgeChunks.versionId, version.id))
+        : [];
       const preserveCompletedEmbedding =
-        Number(existingChunkResult?.value ?? 0) > 0;
+        existingEmbeddingMatchesReview &&
+        hasCompleteKnowledgeEmbeddingSet({
+          totalChunks: Number(existingChunkResult?.total ?? 0),
+          embeddedChunks: Number(existingChunkResult?.embedded ?? 0)
+        });
       const embeddingStatus = preserveCompletedEmbedding
         ? "completed"
         : transition.embeddingStatus;

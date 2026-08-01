@@ -52,40 +52,45 @@ export function ProblemReportDialog({
     const form = new FormData(event.currentTarget);
     const contactType = String(form.get("contactType") ?? "").trim();
     const contactValue = String(form.get("contactValue") ?? "").trim();
-    const response = await fetch("/api/problem-reports", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        clientRequestId,
-        conversationId,
-        messageId,
-        category: form.get("category"),
-        description: form.get("description"),
-        includeContext: form.get("includeContext") === "on",
-        contactType: contactType || undefined,
-        contactValue: contactValue || undefined,
-        consentToContact: form.get("consentToContact") === "on"
-      })
-    });
-    setBusy(false);
-    if (response.ok) {
-      const payload = (await response.json()) as {
-        reportId?: string;
-        receivedAt?: string;
-      };
-      if (payload.reportId && payload.receivedAt) {
-        setSubmitted({
-          reportId: payload.reportId,
-          receivedAt: payload.receivedAt
-        });
+    try {
+      const response = await fetch("/api/problem-reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientRequestId,
+          conversationId,
+          messageId,
+          category: form.get("category"),
+          description: form.get("description"),
+          includeContext: form.get("includeContext") === "on",
+          contactType: contactType || undefined,
+          contactValue: contactValue || undefined,
+          consentToContact: form.get("consentToContact") === "on"
+        })
+      });
+      if (response.ok) {
+        const payload = (await response.json()) as {
+          reportId?: string;
+          receivedAt?: string;
+        };
+        if (payload.reportId && payload.receivedAt) {
+          setSubmitted({
+            reportId: payload.reportId,
+            receivedAt: payload.receivedAt
+          });
+        } else {
+          setError("反馈已保存，但回执信息读取失败。请勿重复提交。");
+        }
       } else {
-        setError("反馈已保存，但回执信息读取失败。请勿重复提交。");
+        const payload = (await response.json().catch(() => ({}))) as {
+          error?: { message?: string };
+        };
+        setError(payload.error?.message ?? "问题反馈提交失败，请稍后再试。");
       }
-    } else {
-      const payload = (await response.json().catch(() => ({}))) as {
-        error?: { message?: string };
-      };
-      setError(payload.error?.message ?? "问题反馈提交失败，请稍后再试。");
+    } catch {
+      setError("问题反馈提交失败，请稍后再试。");
+    } finally {
+      setBusy(false);
     }
   }
 

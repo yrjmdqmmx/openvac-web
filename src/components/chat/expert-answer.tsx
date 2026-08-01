@@ -267,36 +267,40 @@ export function ExpertAnswer({
               <Copy className="h-4 w-4" />
             )}
           </button>
-          {(
-            [
-              ["up", ThumbsUp, "回答有帮助"],
-              ["down", ThumbsDown, "回答有问题"],
-              ["report", Flag, "举报回答"]
-            ] as const
-          ).map(([rating, Icon, label]) => (
-            <button
-              key={rating}
-              type="button"
-              onClick={async () => {
-                await onFeedback(message.id, rating);
-                setFeedback(rating);
-              }}
-              className={`grid h-9 w-9 place-items-center rounded-full hover:bg-[var(--surface)] ${
-                feedback === rating ? "text-[var(--accent)]" : ""
-              }`}
-              aria-label={label}
-            >
-              <Icon className="h-4 w-4" />
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={() => onProblemReport(message.id)}
-            className="ml-2 inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--border-strong)] px-3 text-sm hover:bg-[var(--surface)]"
-          >
-            <MessageSquareWarning className="h-4 w-4" />
-            问题反馈
-          </button>
+          {message.status === "completed" ? (
+            <>
+              {(
+                [
+                  ["up", ThumbsUp, "回答有帮助"],
+                  ["down", ThumbsDown, "回答有问题"],
+                  ["report", Flag, "举报回答"]
+                ] as const
+              ).map(([rating, Icon, label]) => (
+                <button
+                  key={rating}
+                  type="button"
+                  onClick={async () => {
+                    await onFeedback(message.id, rating);
+                    setFeedback(rating);
+                  }}
+                  className={`grid h-9 w-9 place-items-center rounded-full hover:bg-[var(--surface)] ${
+                    feedback === rating ? "text-[var(--accent)]" : ""
+                  }`}
+                  aria-label={label}
+                >
+                  <Icon className="h-4 w-4" />
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => onProblemReport(message.id)}
+                className="ml-2 inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--border-strong)] px-3 text-sm hover:bg-[var(--surface)]"
+              >
+                <MessageSquareWarning className="h-4 w-4" />
+                问题反馈
+              </button>
+            </>
+          ) : null}
         </div>
       )}
     </article>

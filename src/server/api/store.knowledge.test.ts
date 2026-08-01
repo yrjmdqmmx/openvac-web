@@ -6,6 +6,8 @@ import {
   assertKnowledgePublicationGate,
   buildKnowledgeReviewTransition,
   effectiveKnowledgeReviewStatus,
+  existingKnowledgeEmbeddingMatchesReview,
+  hasCompleteKnowledgeEmbeddingSet,
   invalidateKnowledgeReviewAfterHashChange,
   knowledgeEvidenceMetadataChanged,
   sha256KnowledgeContent,
@@ -163,6 +165,33 @@ describe("knowledge manual review transition", () => {
         note: "缺少停机与能源隔离边界。"
       }
     });
+  });
+
+  it("keeps completed full-text embeddings reusable across review decisions", () => {
+    expect(
+      existingKnowledgeEmbeddingMatchesReview({
+        ingestionMode: "full_text",
+        reviewedContentHash: "A".repeat(64),
+        nextContentHash: "a".repeat(64)
+      })
+    ).toBe(true);
+    expect(
+      existingKnowledgeEmbeddingMatchesReview({
+        ingestionMode: "full_text",
+        reviewedContentHash: "b".repeat(64),
+        nextContentHash: "a".repeat(64)
+      })
+    ).toBe(false);
+
+    expect(
+      hasCompleteKnowledgeEmbeddingSet({ totalChunks: 3, embeddedChunks: 3 })
+    ).toBe(true);
+    expect(
+      hasCompleteKnowledgeEmbeddingSet({ totalChunks: 3, embeddedChunks: 1 })
+    ).toBe(false);
+    expect(
+      hasCompleteKnowledgeEmbeddingSet({ totalChunks: 0, embeddedChunks: 0 })
+    ).toBe(false);
   });
 });
 

@@ -13,6 +13,28 @@ export function problemReportContactPurgeAt(closedAt: Date): Date {
   return new Date(closedAt.getTime() + 30 * DAY_MS);
 }
 
+export function problemReportClosureTransition(input: {
+  previousStatus: string;
+  previousClosedAt: Date | null;
+  previousContactPurgeAt: Date | null;
+  nextStatus: string;
+  now: Date;
+}): { closedAt: Date | null; contactPurgeAt: Date | null } {
+  if (input.nextStatus !== "closed") {
+    return { closedAt: null, contactPurgeAt: null };
+  }
+
+  const closedAt =
+    input.previousStatus === "closed" && input.previousClosedAt
+      ? input.previousClosedAt
+      : input.now;
+  const contactPurgeAt =
+    input.previousStatus === "closed" && input.previousContactPurgeAt
+      ? input.previousContactPurgeAt
+      : problemReportContactPurgeAt(closedAt);
+  return { closedAt, contactPurgeAt };
+}
+
 export async function cleanupExpiredProblemReportData(
   now = new Date()
 ): Promise<{ contactsPurged: number; reportsDeleted: number }> {

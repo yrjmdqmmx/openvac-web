@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { sendProblemReportNotification } from "./notification";
 
@@ -7,6 +7,10 @@ const report = {
   category: "citation_problem" as const,
   createdAt: new Date("2026-08-01T00:00:00.000Z")
 };
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("problem report product-owner notification", () => {
   it("sends only the minimal report metadata to the configured recipient", async () => {
@@ -44,5 +48,23 @@ describe("problem report product-owner notification", () => {
       })
     ).resolves.toBe(false);
     expect(sendTransactional).not.toHaveBeenCalled();
+  });
+
+  it("bounds a hung provider so the persisted-report response can continue", async () => {
+    vi.useFakeTimers();
+    const sendTransactional = vi.fn(() => new Promise<never>(() => undefined));
+    const notification = sendProblemReportNotification(report, {
+      recipient: "owner@example.com",
+      provider: { sendTransactional },
+      timeoutMs: 25
+    });
+    const rejection = expect(notification).rejects.toThrow(
+      "Problem-report notification exceeded its deadline"
+    );
+
+    await vi.advanceTimersByTimeAsync(25);
+
+    await rejection;
+    expect(sendTransactional).toHaveBeenCalledOnce();
   });
 });

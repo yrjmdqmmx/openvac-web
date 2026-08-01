@@ -101,6 +101,7 @@ const HIGH_RISK_DANGEROUS_ACTION_PATTERN = new RegExp(
   [
     // Restarting or resuming operation after an asserted stop.
     String.raw`(?:重新|再次|再度|恢复|继续)(?:自行|直接|立即|尝试)?(?:启动|起动|开机|运行)`,
+    String.raw`(?:保持|维持|持续)(?:(?:设备|机器|泵|真空泵|系统)(?:的)?)?(?:运行|启动)`,
     String.raw`(?:随后|然后|之后|接着|再)(?:自行|直接|立即|尝试)?(?:启动|起动|开机|运行)(?:设备|机器|泵|真空泵|系统)?`,
     String.raw`(?:重启|复机)(?:设备|机器|泵|真空泵|系统)?`,
     // Re-energizing equipment after an asserted energy isolation.
@@ -243,11 +244,7 @@ export function validateHighRiskAnswerBoundaries(answer: string): {
     /(?:(?:不要|不得|不可|无需|不用|不必|切勿|禁止|避免|拒绝|不建议|没必要|没有必要).{0,8}(?:隔离|切断|断开|断电|断气)(?:.{0,12}(?:能源|电源|气源|介质源|热源))?|(?:可以|可)(?:先)?不.{0,8}(?:隔离|切断|断开|断电|断气)(?:.{0,12}(?:能源|电源|气源|介质源|热源))?|(?:隔离|切断|断开|断电|断气)(?:.{0,12}(?:能源|电源|气源|介质源|热源))?.{0,8}(?:可以不|可不|不建议|没必要|没有必要|非必要|不需要|会损坏|会导致损坏)|\b(?:no need|need not|do not need|don't need|not necessary|unnecessary|do not recommend|don't recommend|can skip|may skip).{0,20}(?:isolate|isolation|disconnect|disconnection|de-energize|deenergize).{0,12}(?:energy|power|electricity|gas|media|heat)?\b|\b(?:isolation|disconnection|disconnecting|de-energizing|deenergizing|(?:energy|power|electricity|gas|media|heat).{0,12}(?:isolation|disconnection)).{0,20}(?:is not necessary|is unnecessary|is not recommended|can be skipped)\b)/iu.test(
       normalizedForIsolationRejection
     );
-  const unsafeContinuation =
-    hasUnsafeHighRiskAction(normalized) ||
-    /(?:可以|可|建议|尝试|先).{0,8}(?:继续运行|继续启动|带电拆修|绕过联锁)|(?:保持|维持|持续).{0,8}(?:运行|启动)|(?:无需|不用|不必).{0,8}(?:停机|停止运行|隔离能源|断电)/u.test(
-      normalized
-    );
+  const unsafeContinuation = hasUnsafeHighRiskAction(normalized);
   const rejectsExternalProfessional =
     REJECTS_EXTERNAL_PROFESSIONAL.test(normalized) ||
     REJECTS_EXTERNAL_PROFESSIONAL_REVERSED.test(normalized);

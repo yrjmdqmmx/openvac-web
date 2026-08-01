@@ -70,4 +70,28 @@ describe("ProblemReportDialog", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("2026/8/1 08:00:00")).toBeInTheDocument();
   });
+
+  it("recovers the form when the request fails before receiving a response", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("offline"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      createElement(ProblemReportDialog, {
+        open: true,
+        description: "离线时仍需保留的反馈内容。",
+        onClose: () => undefined
+      })
+    );
+
+    const submit = screen.getByRole("button", { name: "提交问题反馈" });
+    fireEvent.click(submit);
+
+    expect(
+      await screen.findByText("问题反馈提交失败，请稍后再试。")
+    ).toHaveAttribute("role", "alert");
+    expect(submit).toBeEnabled();
+    expect(screen.getByRole("textbox", { name: "问题描述" })).toHaveValue(
+      "离线时仍需保留的反馈内容。"
+    );
+  });
 });

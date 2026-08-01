@@ -96,6 +96,24 @@ function makeLocalId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
 }
 
+export function problemReportDescriptionForMessage(
+  messages: ChatMessage[],
+  messageId?: string
+): string {
+  const answerIndex = messageId
+    ? messages.findIndex(
+        (message) => message.id === messageId && message.role === "assistant"
+      )
+    : messages.length;
+  const searchFrom = answerIndex >= 0 ? answerIndex - 1 : messages.length - 1;
+
+  for (let index = searchFrom; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user") return message.content;
+  }
+  return "";
+}
+
 export function ChatWorkspace({
   userId,
   userName,
@@ -539,11 +557,9 @@ export function ChatWorkspace({
     }
   }
 
-  const latestProblem = useMemo(
-    () =>
-      [...messages].reverse().find((message) => message.role === "user")
-        ?.content ?? "",
-    [messages]
+  const problemReportDescription = useMemo(
+    () => problemReportDescriptionForMessage(messages, problemReportMessageId),
+    [messages, problemReportMessageId]
   );
   return (
     <main className="flex h-dvh min-h-[640px] overflow-hidden bg-white">
@@ -852,7 +868,7 @@ export function ChatWorkspace({
         open={problemReportOpen}
         conversationId={conversationId}
         messageId={problemReportMessageId}
-        description={latestProblem}
+        description={problemReportDescription}
         onClose={() => setProblemReportOpen(false)}
       />
     </main>
