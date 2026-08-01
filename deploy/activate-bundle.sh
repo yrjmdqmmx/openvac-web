@@ -52,8 +52,22 @@ validate_release_image() {
     fail "$label must contain a 64-character SHA-256 digest"
 }
 
-validate_release_image "$release_image" "web release image"
-web_image_digest="${release_image##*@sha256:}"
+if [ -n "${OPENVAC_WEB_PRELOADED_ID:-}" ]; then
+  case "$OPENVAC_WEB_PRELOADED_ID" in
+    sha256:*) web_image_digest="${OPENVAC_WEB_PRELOADED_ID#sha256:}" ;;
+    *) fail "preloaded web image ID must use sha256" ;;
+  esac
+  case "$web_image_digest" in
+    ""|*[!0-9a-f]*) fail "preloaded web image ID must be lowercase hexadecimal" ;;
+  esac
+  [ "${#web_image_digest}" -eq 64 ] ||
+    fail "preloaded web image ID must contain 64 hexadecimal characters"
+  [ "$release_image" = "openvac-web-release:$web_image_digest" ] ||
+    fail "preloaded web reference must be content-addressed by its image ID"
+else
+  validate_release_image "$release_image" "web release image"
+  web_image_digest="${release_image##*@sha256:}"
+fi
 if [ -n "${OPENVAC_MODELING_PRELOADED_ID:-}" ]; then
   case "$OPENVAC_MODELING_PRELOADED_ID" in
     sha256:*) modeling_image_digest="${OPENVAC_MODELING_PRELOADED_ID#sha256:}" ;;

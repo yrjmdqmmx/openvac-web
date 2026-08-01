@@ -100,7 +100,8 @@ function runActivationWithImages(
   bundle: string,
   releaseId: string,
   webImage: string,
-  modelingImage = `ghcr.io/example/openvac@sha256:${"b".repeat(64)}`
+  modelingImage = `ghcr.io/example/openvac@sha256:${"b".repeat(64)}`,
+  extraEnv: Record<string, string> = {}
 ) {
   return spawnSync(
     "sh",
@@ -118,7 +119,8 @@ function runActivationWithImages(
       encoding: "utf8",
       env: {
         ...process.env,
-        OPENVAC_ACTIVATION_TEST_ROOT: deployRoot
+        OPENVAC_ACTIVATION_TEST_ROOT: deployRoot,
+        ...extraEnv
       }
     }
   );
@@ -253,6 +255,52 @@ describe("deployment bundle activation", () => {
 
     expect(result.status).toBe(64);
     expect(result.stderr).toContain("must have distinct digests");
+    expect(() => readFileSync(join(deployRoot, "current-release"))).toThrow();
+  });
+
+  it("accepts a content-addressed preloaded web image", () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    mkdirSync(deployRoot);
+    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+    const bundle = createBundle(root);
+    const webDigest = "c".repeat(64);
+
+    const result = runActivationWithImages(
+      deployRoot,
+      bundle,
+      "3".repeat(40),
+      `openvac-web-release:${webDigest}`,
+      `ghcr.io/example/openvac@sha256:${"b".repeat(64)}`,
+      { OPENVAC_WEB_PRELOADED_ID: `sha256:${webDigest}` }
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(deployRoot, "current-release"), "utf8")).toBe(
+      `${"3".repeat(40)}\n`
+    );
+  });
+
+  it("rejects a preloaded web tag that does not match its image ID", () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    mkdirSync(deployRoot);
+    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+    const bundle = createBundle(root);
+
+    const result = runActivationWithImages(
+      deployRoot,
+      bundle,
+      "4".repeat(40),
+      `openvac-web-release:${"c".repeat(64)}`,
+      `ghcr.io/example/openvac@sha256:${"b".repeat(64)}`,
+      { OPENVAC_WEB_PRELOADED_ID: `sha256:${"d".repeat(64)}` }
+    );
+
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain(
+      "preloaded web reference must be content-addressed by its image ID"
+    );
     expect(() => readFileSync(join(deployRoot, "current-release"))).toThrow();
   });
 
