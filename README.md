@@ -5,7 +5,7 @@ maintenance teams, and procurement staff. Users describe a pump, operating
 condition, or fault in plain language; OpenVac answers with explicit
 assumptions, traceable sources, missing inputs, and a safe next step.
 
-The V1 product boundary is intentionally narrow:
+The released Q&A product boundary is intentionally narrow:
 
 - evidence-grounded vacuum Q&A with expandable citations;
 - conversation history, feedback, reports, and confirmed human-consultation
@@ -17,9 +17,11 @@ The V1 product boundary is intentionally narrow:
 - role-based operations for users, conversations, sources, prompts, budgets,
   consultations, and audit logs.
 
-V1 does **not** make final engineering decisions, expose a deterministic pump
-calculator, display live inventory or prices, process payments, accept end-user
-file uploads, or provide a model picker.
+The `codex/openvac-modeling-v1` branch adds a deterministic CAD workbench behind
+the fail-closed `MODELING_ENABLED` flag. It is development-stage code until the
+CAD, interoperability, and original rotary-vane-pump acceptance gates are run
+on the target Debian host; it must not be described as production-ready before
+those results exist.
 
 ## Architecture
 
@@ -30,10 +32,13 @@ file uploads, or provide a model picker.
 - Alibaba Cloud adapters for embeddings, web search, document parsing,
   transactional mail, and private object storage
 - a Node worker for OCR, review-gated ingestion, chunking, and embeddings
-- Docker Compose for `web`, `worker`, `migrate`, and `postgres`
+- an isolated Python 3.12 CadQuery/OCP service and serial modeling worker
+- Docker Compose for `web`, both workers, `modeling-service`, `migrate`, and
+  `postgres`
 
 See [architecture](docs/architecture.md), [knowledge governance](docs/knowledge-governance.md),
-[security](docs/security.md), and [deployment](docs/deployment.md).
+[modeling V1](docs/modeling-v1.md), [security](docs/security.md), and
+[deployment](docs/deployment.md).
 
 ## Local development
 
@@ -68,9 +73,15 @@ pnpm test
 pnpm build
 pnpm test:e2e
 pnpm worker
+pnpm modeling:worker
 pnpm eval
 pnpm eval:core
 ```
+
+The modeling service has its own pinned Python environment and test suite. See
+[`modeling-service/README.md`](modeling-service/README.md). Keep
+`MODELING_ENABLED=false` in production until every required acceptance gate in
+[`docs/modeling-v1.md`](docs/modeling-v1.md) is evidenced.
 
 Knowledge Phase 1 uses only tracked, rights-reviewed records. The local
 `知识库/` directory is intentionally ignored by both Git and Docker and must not

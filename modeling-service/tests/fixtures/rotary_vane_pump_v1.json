@@ -1,0 +1,1017 @@
+{
+  "version": "openvac.modeling.v1",
+  "id": "5ab05cde-1d6c-5c44-8a17-883101859875",
+  "revision": 0,
+  "revisionId": "9de393de-3e60-58e5-85d4-6110e785d39c",
+  "name": "Single-stage double-vane rotary pump",
+  "unitSystem": "mm-deg",
+  "parameters": [
+    {
+      "id": "27b38f48-ade1-50c6-8609-a369a74bd04b",
+      "semanticRef": "pump.parameter.chamber-diameter",
+      "name": "chamberDiameter",
+      "label": "Chamber diameter",
+      "parameterType": "length",
+      "unit": "mm",
+      "value": 100,
+      "minimum": 1,
+      "maximum": 100000,
+      "source": "template",
+      "editable": true
+    },
+    {
+      "id": "51c6aa1a-f580-55fc-b8d8-ceda2bd479cc",
+      "semanticRef": "pump.parameter.rotor-diameter",
+      "name": "rotorDiameter",
+      "label": "Rotor diameter",
+      "parameterType": "length",
+      "unit": "mm",
+      "value": 80,
+      "minimum": 1,
+      "maximum": 100000,
+      "source": "template",
+      "editable": true
+    },
+    {
+      "id": "c45923f8-ab80-598b-905e-b86b50e9d70e",
+      "semanticRef": "pump.parameter.eccentricity",
+      "name": "eccentricity",
+      "label": "Rotor eccentricity",
+      "parameterType": "length",
+      "unit": "mm",
+      "value": 6,
+      "minimum": 0.001,
+      "maximum": 100000,
+      "source": "template",
+      "editable": true
+    },
+    {
+      "id": "24492fe6-0b7c-5861-b354-d9fc05a397a6",
+      "semanticRef": "pump.parameter.axial-width",
+      "name": "axialWidth",
+      "label": "Axial width",
+      "parameterType": "length",
+      "unit": "mm",
+      "value": 60,
+      "minimum": 1,
+      "maximum": 100000,
+      "source": "template",
+      "editable": true
+    },
+    {
+      "id": "b5fc1af4-6380-594d-aaac-1a62a4d90d16",
+      "semanticRef": "pump.parameter.vane-count",
+      "name": "vaneCount",
+      "label": "Vane count",
+      "parameterType": "integer",
+      "unit": "count",
+      "value": 2,
+      "minimum": 2,
+      "maximum": 2,
+      "source": "template",
+      "editable": false
+    },
+    {
+      "id": "c34edf08-18d6-5bf4-a3f2-85132d05b4a9",
+      "semanticRef": "pump.parameter.vane-thickness",
+      "name": "vaneThickness",
+      "label": "Vane thickness",
+      "parameterType": "length",
+      "unit": "mm",
+      "value": 4,
+      "minimum": 0.001,
+      "maximum": 100000,
+      "source": "template",
+      "editable": true
+    },
+    {
+      "id": "4cb35b50-a474-52aa-af3f-a06c0b06b2e1",
+      "semanticRef": "pump.parameter.vane-height",
+      "name": "vaneHeight",
+      "label": "Vane radial height",
+      "parameterType": "length",
+      "unit": "mm",
+      "value": 26,
+      "minimum": 0.001,
+      "maximum": 100000,
+      "source": "template",
+      "editable": true
+    },
+    {
+      "id": "a6471077-58b0-5893-8f1c-dc1f0ce914cf",
+      "semanticRef": "pump.parameter.shaft-diameter",
+      "name": "shaftDiameter",
+      "label": "Shaft diameter",
+      "parameterType": "length",
+      "unit": "mm",
+      "value": 20,
+      "minimum": 0.001,
+      "maximum": 100000,
+      "source": "template",
+      "editable": true
+    },
+    {
+      "id": "7181c3de-963d-54db-b501-545cb16ab655",
+      "semanticRef": "pump.parameter.inlet-width",
+      "name": "inletWidth",
+      "label": "Inlet width",
+      "parameterType": "length",
+      "unit": "mm",
+      "value": 18,
+      "minimum": 0.001,
+      "maximum": 100000,
+      "source": "template",
+      "editable": true
+    },
+    {
+      "id": "01cebb53-4744-5a96-bb90-0525ef3d8924",
+      "semanticRef": "pump.parameter.outlet-width",
+      "name": "outletWidth",
+      "label": "Outlet width",
+      "parameterType": "length",
+      "unit": "mm",
+      "value": 16,
+      "minimum": 0.001,
+      "maximum": 100000,
+      "source": "template",
+      "editable": true
+    },
+    {
+      "id": "c4984c3c-9cec-5d34-8d8b-2ad5a08a65aa",
+      "semanticRef": "pump.parameter.cover-outer-diameter",
+      "name": "coverOuterDiameter",
+      "label": "Cover outer diameter",
+      "parameterType": "length",
+      "unit": "mm",
+      "value": 118,
+      "minimum": 0.001,
+      "maximum": 200000,
+      "source": "derived",
+      "editable": false
+    },
+    {
+      "id": "c3905b5d-80e0-5d2a-9cbb-4b98c8dc9016",
+      "semanticRef": "pump.parameter.cover-thickness",
+      "name": "coverThickness",
+      "label": "Cover thickness",
+      "parameterType": "length",
+      "unit": "mm",
+      "value": 6.75,
+      "minimum": 0.001,
+      "maximum": 200000,
+      "source": "derived",
+      "editable": false
+    },
+    {
+      "id": "ce7b5235-d5c1-515a-988b-f250181eb268",
+      "semanticRef": "pump.parameter.cover-bore-diameter",
+      "name": "coverBoreDiameter",
+      "label": "Cover shaft-clearance bore diameter",
+      "parameterType": "length",
+      "unit": "mm",
+      "value": 22,
+      "minimum": 0.001,
+      "maximum": 200000,
+      "source": "derived",
+      "editable": false
+    }
+  ],
+  "sketches": [
+    {
+      "id": "a2cbd95a-37fe-533c-a720-dbe78f162d5d",
+      "semanticRef": "pump.sketch.cross-section",
+      "name": "Pump cross-section",
+      "plane": "xy",
+      "entities": [
+        {
+          "id": "108180bd-9702-56e6-ba0c-b17c9f509efe",
+          "semanticRef": "pump.sketch.cross-section.chamber-center",
+          "construction": true,
+          "entityKind": "point",
+          "x": 0,
+          "y": 0
+        },
+        {
+          "id": "5b96e7f3-1184-52d2-baf9-6fdc232a2eff",
+          "semanticRef": "pump.sketch.cross-section.rotor-center",
+          "construction": true,
+          "entityKind": "point",
+          "x": 6,
+          "y": 0
+        },
+        {
+          "id": "c1abf5cb-c4b9-5a3a-843a-f70f2e05fb67",
+          "semanticRef": "pump.sketch.cross-section.chamber-circle",
+          "construction": false,
+          "entityKind": "circle",
+          "centerPointRef": {
+            "id": "108180bd-9702-56e6-ba0c-b17c9f509efe",
+            "semanticRef": "pump.sketch.cross-section.chamber-center"
+          },
+          "diameterParameterRef": {
+            "id": "27b38f48-ade1-50c6-8609-a369a74bd04b",
+            "semanticRef": "pump.parameter.chamber-diameter"
+          }
+        },
+        {
+          "id": "45d29580-739e-55bf-8155-4ad450cd4cff",
+          "semanticRef": "pump.sketch.cross-section.rotor-circle",
+          "construction": false,
+          "entityKind": "circle",
+          "centerPointRef": {
+            "id": "5b96e7f3-1184-52d2-baf9-6fdc232a2eff",
+            "semanticRef": "pump.sketch.cross-section.rotor-center"
+          },
+          "diameterParameterRef": {
+            "id": "51c6aa1a-f580-55fc-b8d8-ceda2bd479cc",
+            "semanticRef": "pump.parameter.rotor-diameter"
+          }
+        },
+        {
+          "id": "21c70819-8fe0-5b62-87ab-a2bd04d60396",
+          "semanticRef": "pump.sketch.cross-section.shaft-circle",
+          "construction": false,
+          "entityKind": "circle",
+          "centerPointRef": {
+            "id": "5b96e7f3-1184-52d2-baf9-6fdc232a2eff",
+            "semanticRef": "pump.sketch.cross-section.rotor-center"
+          },
+          "diameterParameterRef": {
+            "id": "a6471077-58b0-5893-8f1c-dc1f0ce914cf",
+            "semanticRef": "pump.parameter.shaft-diameter"
+          }
+        },
+        {
+          "id": "5fa1d306-ad37-5a51-bac4-db25e9a70c2c",
+          "semanticRef": "pump.sketch.cross-section.vane-profile",
+          "construction": false,
+          "entityKind": "rectangle",
+          "centerPointRef": {
+            "id": "5b96e7f3-1184-52d2-baf9-6fdc232a2eff",
+            "semanticRef": "pump.sketch.cross-section.rotor-center"
+          },
+          "widthParameterRef": {
+            "id": "c34edf08-18d6-5bf4-a3f2-85132d05b4a9",
+            "semanticRef": "pump.parameter.vane-thickness"
+          },
+          "heightParameterRef": {
+            "id": "4cb35b50-a474-52aa-af3f-a06c0b06b2e1",
+            "semanticRef": "pump.parameter.vane-height"
+          },
+          "rotationDegrees": 0
+        }
+      ],
+      "constraints": [
+        {
+          "id": "4e011927-0718-5097-ab67-6f01b87d58c0",
+          "semanticRef": "pump.constraint.chamber-center-fixed",
+          "name": "Fix chamber center",
+          "constraintKind": "fixed",
+          "targetRefs": [
+            {
+              "id": "108180bd-9702-56e6-ba0c-b17c9f509efe",
+              "semanticRef": "pump.sketch.cross-section.chamber-center"
+            }
+          ],
+          "status": "satisfied"
+        },
+        {
+          "id": "ebaee217-a378-5ee4-93c6-b0e5b7805e3f",
+          "semanticRef": "pump.constraint.centers-horizontal",
+          "name": "Align centers horizontally",
+          "constraintKind": "horizontal",
+          "targetRefs": [
+            {
+              "id": "108180bd-9702-56e6-ba0c-b17c9f509efe",
+              "semanticRef": "pump.sketch.cross-section.chamber-center"
+            },
+            {
+              "id": "5b96e7f3-1184-52d2-baf9-6fdc232a2eff",
+              "semanticRef": "pump.sketch.cross-section.rotor-center"
+            }
+          ],
+          "status": "satisfied"
+        },
+        {
+          "id": "b643959c-32c8-50e9-8c60-e6e43e4e3a47",
+          "semanticRef": "pump.constraint.rotor-eccentricity",
+          "name": "Set rotor eccentricity",
+          "constraintKind": "distance",
+          "targetRefs": [
+            {
+              "id": "108180bd-9702-56e6-ba0c-b17c9f509efe",
+              "semanticRef": "pump.sketch.cross-section.chamber-center"
+            },
+            {
+              "id": "5b96e7f3-1184-52d2-baf9-6fdc232a2eff",
+              "semanticRef": "pump.sketch.cross-section.rotor-center"
+            }
+          ],
+          "parameterRef": {
+            "id": "c45923f8-ab80-598b-905e-b86b50e9d70e",
+            "semanticRef": "pump.parameter.eccentricity"
+          },
+          "status": "satisfied"
+        },
+        {
+          "id": "d8cb3231-365b-51ab-8ea9-20c609774192",
+          "semanticRef": "pump.constraint.chamber-diameter",
+          "name": "Set chamber diameter",
+          "constraintKind": "diameter",
+          "targetRefs": [
+            {
+              "id": "c1abf5cb-c4b9-5a3a-843a-f70f2e05fb67",
+              "semanticRef": "pump.sketch.cross-section.chamber-circle"
+            }
+          ],
+          "parameterRef": {
+            "id": "27b38f48-ade1-50c6-8609-a369a74bd04b",
+            "semanticRef": "pump.parameter.chamber-diameter"
+          },
+          "status": "satisfied"
+        },
+        {
+          "id": "33dbd1bf-a268-54e6-bebd-4da1c93b4ca1",
+          "semanticRef": "pump.constraint.rotor-diameter",
+          "name": "Set rotor diameter",
+          "constraintKind": "diameter",
+          "targetRefs": [
+            {
+              "id": "45d29580-739e-55bf-8155-4ad450cd4cff",
+              "semanticRef": "pump.sketch.cross-section.rotor-circle"
+            }
+          ],
+          "parameterRef": {
+            "id": "51c6aa1a-f580-55fc-b8d8-ceda2bd479cc",
+            "semanticRef": "pump.parameter.rotor-diameter"
+          },
+          "status": "satisfied"
+        },
+        {
+          "id": "81245c64-2401-5c69-9fd2-73baaa135e3f",
+          "semanticRef": "pump.constraint.shaft-diameter",
+          "name": "Set shaft diameter",
+          "constraintKind": "diameter",
+          "targetRefs": [
+            {
+              "id": "21c70819-8fe0-5b62-87ab-a2bd04d60396",
+              "semanticRef": "pump.sketch.cross-section.shaft-circle"
+            }
+          ],
+          "parameterRef": {
+            "id": "a6471077-58b0-5893-8f1c-dc1f0ce914cf",
+            "semanticRef": "pump.parameter.shaft-diameter"
+          },
+          "status": "satisfied"
+        },
+        {
+          "id": "7c1c0b2e-59cb-5ac8-b0fa-f5fb72f6fde2",
+          "semanticRef": "pump.constraint.vane-profile-fixed",
+          "name": "Fix vane profile orientation",
+          "constraintKind": "fixed",
+          "targetRefs": [
+            {
+              "id": "5fa1d306-ad37-5a51-bac4-db25e9a70c2c",
+              "semanticRef": "pump.sketch.cross-section.vane-profile"
+            }
+          ],
+          "status": "satisfied"
+        }
+      ],
+      "solveStatus": "fully_constrained",
+      "suppressed": false
+    },
+    {
+      "id": "5c7da32b-5d69-59fc-a6d8-acc10f7aa4b0",
+      "semanticRef": "pump.sketch.front-cover-profile",
+      "name": "Front cover annular profile",
+      "plane": "xy",
+      "entities": [
+        {
+          "id": "a3025fd9-cfc5-5ad7-89b7-13a8afd64176",
+          "semanticRef": "pump.sketch.front-cover-profile.outer-center",
+          "construction": true,
+          "entityKind": "point",
+          "x": 0,
+          "y": 0
+        },
+        {
+          "id": "ab4f051d-1701-5ea3-bc60-cdaf6dca3088",
+          "semanticRef": "pump.sketch.front-cover-profile.bore-center",
+          "construction": true,
+          "entityKind": "point",
+          "x": 6,
+          "y": 0
+        },
+        {
+          "id": "ef35ad6a-1cad-5465-971f-3f2576d64339",
+          "semanticRef": "pump.sketch.front-cover-profile.outer-circle",
+          "construction": false,
+          "entityKind": "circle",
+          "centerPointRef": {
+            "id": "a3025fd9-cfc5-5ad7-89b7-13a8afd64176",
+            "semanticRef": "pump.sketch.front-cover-profile.outer-center"
+          },
+          "diameterParameterRef": {
+            "id": "c4984c3c-9cec-5d34-8d8b-2ad5a08a65aa",
+            "semanticRef": "pump.parameter.cover-outer-diameter"
+          }
+        },
+        {
+          "id": "b6f905a4-130b-5cbd-a655-7c4eac0c4298",
+          "semanticRef": "pump.sketch.front-cover-profile.shaft-clearance-circle",
+          "construction": false,
+          "entityKind": "circle",
+          "centerPointRef": {
+            "id": "ab4f051d-1701-5ea3-bc60-cdaf6dca3088",
+            "semanticRef": "pump.sketch.front-cover-profile.bore-center"
+          },
+          "diameterParameterRef": {
+            "id": "ce7b5235-d5c1-515a-988b-f250181eb268",
+            "semanticRef": "pump.parameter.cover-bore-diameter"
+          }
+        }
+      ],
+      "constraints": [
+        {
+          "id": "184f5692-b27a-5a3b-b836-47b057e62d4b",
+          "semanticRef": "pump.constraint.front-cover-outer-center-fixed",
+          "name": "Fix front cover outer center",
+          "constraintKind": "fixed",
+          "targetRefs": [
+            {
+              "id": "a3025fd9-cfc5-5ad7-89b7-13a8afd64176",
+              "semanticRef": "pump.sketch.front-cover-profile.outer-center"
+            }
+          ],
+          "status": "satisfied"
+        },
+        {
+          "id": "ff6109a2-e763-5a40-a34d-43db47cfe2af",
+          "semanticRef": "pump.constraint.front-cover-centers-horizontal",
+          "name": "Align front cover centers horizontally",
+          "constraintKind": "horizontal",
+          "targetRefs": [
+            {
+              "id": "a3025fd9-cfc5-5ad7-89b7-13a8afd64176",
+              "semanticRef": "pump.sketch.front-cover-profile.outer-center"
+            },
+            {
+              "id": "ab4f051d-1701-5ea3-bc60-cdaf6dca3088",
+              "semanticRef": "pump.sketch.front-cover-profile.bore-center"
+            }
+          ],
+          "status": "satisfied"
+        },
+        {
+          "id": "ad11ff51-beb2-58f4-b588-6ffcef5ed9a7",
+          "semanticRef": "pump.constraint.front-cover-bore-eccentricity",
+          "name": "Set front cover bore eccentricity",
+          "constraintKind": "distance",
+          "targetRefs": [
+            {
+              "id": "a3025fd9-cfc5-5ad7-89b7-13a8afd64176",
+              "semanticRef": "pump.sketch.front-cover-profile.outer-center"
+            },
+            {
+              "id": "ab4f051d-1701-5ea3-bc60-cdaf6dca3088",
+              "semanticRef": "pump.sketch.front-cover-profile.bore-center"
+            }
+          ],
+          "parameterRef": {
+            "id": "c45923f8-ab80-598b-905e-b86b50e9d70e",
+            "semanticRef": "pump.parameter.eccentricity"
+          },
+          "status": "satisfied"
+        },
+        {
+          "id": "e97da4fd-e2b8-5f55-85b8-ed434be77828",
+          "semanticRef": "pump.constraint.front-cover-outer-diameter",
+          "name": "Set front cover outer diameter",
+          "constraintKind": "diameter",
+          "targetRefs": [
+            {
+              "id": "ef35ad6a-1cad-5465-971f-3f2576d64339",
+              "semanticRef": "pump.sketch.front-cover-profile.outer-circle"
+            }
+          ],
+          "parameterRef": {
+            "id": "c4984c3c-9cec-5d34-8d8b-2ad5a08a65aa",
+            "semanticRef": "pump.parameter.cover-outer-diameter"
+          },
+          "status": "satisfied"
+        },
+        {
+          "id": "7cc54713-075e-54bc-b9ed-2ed04b54a98e",
+          "semanticRef": "pump.constraint.front-cover-bore-diameter",
+          "name": "Set front cover bore diameter",
+          "constraintKind": "diameter",
+          "targetRefs": [
+            {
+              "id": "b6f905a4-130b-5cbd-a655-7c4eac0c4298",
+              "semanticRef": "pump.sketch.front-cover-profile.shaft-clearance-circle"
+            }
+          ],
+          "parameterRef": {
+            "id": "ce7b5235-d5c1-515a-988b-f250181eb268",
+            "semanticRef": "pump.parameter.cover-bore-diameter"
+          },
+          "status": "satisfied"
+        }
+      ],
+      "solveStatus": "fully_constrained",
+      "suppressed": false
+    },
+    {
+      "id": "aa2cfd68-b8a9-59fe-ba59-5391cdfc1720",
+      "semanticRef": "pump.sketch.rear-cover-profile",
+      "name": "Rear cover annular profile",
+      "plane": "xy",
+      "entities": [
+        {
+          "id": "1b62ecd5-31fd-55be-85c4-bbb5e549e1e6",
+          "semanticRef": "pump.sketch.rear-cover-profile.outer-center",
+          "construction": true,
+          "entityKind": "point",
+          "x": 0,
+          "y": 0
+        },
+        {
+          "id": "fa364e5b-1ed7-5358-a4d3-7a3da17222d0",
+          "semanticRef": "pump.sketch.rear-cover-profile.bore-center",
+          "construction": true,
+          "entityKind": "point",
+          "x": 6,
+          "y": 0
+        },
+        {
+          "id": "d94f0136-fcff-56ce-af50-6fb7563d14e5",
+          "semanticRef": "pump.sketch.rear-cover-profile.outer-circle",
+          "construction": false,
+          "entityKind": "circle",
+          "centerPointRef": {
+            "id": "1b62ecd5-31fd-55be-85c4-bbb5e549e1e6",
+            "semanticRef": "pump.sketch.rear-cover-profile.outer-center"
+          },
+          "diameterParameterRef": {
+            "id": "c4984c3c-9cec-5d34-8d8b-2ad5a08a65aa",
+            "semanticRef": "pump.parameter.cover-outer-diameter"
+          }
+        },
+        {
+          "id": "17470f9d-db42-522a-93d5-c28dd6fe40cc",
+          "semanticRef": "pump.sketch.rear-cover-profile.shaft-clearance-circle",
+          "construction": false,
+          "entityKind": "circle",
+          "centerPointRef": {
+            "id": "fa364e5b-1ed7-5358-a4d3-7a3da17222d0",
+            "semanticRef": "pump.sketch.rear-cover-profile.bore-center"
+          },
+          "diameterParameterRef": {
+            "id": "ce7b5235-d5c1-515a-988b-f250181eb268",
+            "semanticRef": "pump.parameter.cover-bore-diameter"
+          }
+        }
+      ],
+      "constraints": [
+        {
+          "id": "4ffa16dd-f966-5be7-8a4c-c71e24f1a9ec",
+          "semanticRef": "pump.constraint.rear-cover-outer-center-fixed",
+          "name": "Fix rear cover outer center",
+          "constraintKind": "fixed",
+          "targetRefs": [
+            {
+              "id": "1b62ecd5-31fd-55be-85c4-bbb5e549e1e6",
+              "semanticRef": "pump.sketch.rear-cover-profile.outer-center"
+            }
+          ],
+          "status": "satisfied"
+        },
+        {
+          "id": "8e610a6b-e022-5d20-8763-d8c50107282a",
+          "semanticRef": "pump.constraint.rear-cover-centers-horizontal",
+          "name": "Align rear cover centers horizontally",
+          "constraintKind": "horizontal",
+          "targetRefs": [
+            {
+              "id": "1b62ecd5-31fd-55be-85c4-bbb5e549e1e6",
+              "semanticRef": "pump.sketch.rear-cover-profile.outer-center"
+            },
+            {
+              "id": "fa364e5b-1ed7-5358-a4d3-7a3da17222d0",
+              "semanticRef": "pump.sketch.rear-cover-profile.bore-center"
+            }
+          ],
+          "status": "satisfied"
+        },
+        {
+          "id": "8d00ca39-69d1-5277-987c-1cdb6ec03a5d",
+          "semanticRef": "pump.constraint.rear-cover-bore-eccentricity",
+          "name": "Set rear cover bore eccentricity",
+          "constraintKind": "distance",
+          "targetRefs": [
+            {
+              "id": "1b62ecd5-31fd-55be-85c4-bbb5e549e1e6",
+              "semanticRef": "pump.sketch.rear-cover-profile.outer-center"
+            },
+            {
+              "id": "fa364e5b-1ed7-5358-a4d3-7a3da17222d0",
+              "semanticRef": "pump.sketch.rear-cover-profile.bore-center"
+            }
+          ],
+          "parameterRef": {
+            "id": "c45923f8-ab80-598b-905e-b86b50e9d70e",
+            "semanticRef": "pump.parameter.eccentricity"
+          },
+          "status": "satisfied"
+        },
+        {
+          "id": "a08a5d8d-9a05-5a50-a823-9d339164d7cc",
+          "semanticRef": "pump.constraint.rear-cover-outer-diameter",
+          "name": "Set rear cover outer diameter",
+          "constraintKind": "diameter",
+          "targetRefs": [
+            {
+              "id": "d94f0136-fcff-56ce-af50-6fb7563d14e5",
+              "semanticRef": "pump.sketch.rear-cover-profile.outer-circle"
+            }
+          ],
+          "parameterRef": {
+            "id": "c4984c3c-9cec-5d34-8d8b-2ad5a08a65aa",
+            "semanticRef": "pump.parameter.cover-outer-diameter"
+          },
+          "status": "satisfied"
+        },
+        {
+          "id": "fe2dab59-ba26-52dd-973a-96661ee21c33",
+          "semanticRef": "pump.constraint.rear-cover-bore-diameter",
+          "name": "Set rear cover bore diameter",
+          "constraintKind": "diameter",
+          "targetRefs": [
+            {
+              "id": "17470f9d-db42-522a-93d5-c28dd6fe40cc",
+              "semanticRef": "pump.sketch.rear-cover-profile.shaft-clearance-circle"
+            }
+          ],
+          "parameterRef": {
+            "id": "ce7b5235-d5c1-515a-988b-f250181eb268",
+            "semanticRef": "pump.parameter.cover-bore-diameter"
+          },
+          "status": "satisfied"
+        }
+      ],
+      "solveStatus": "fully_constrained",
+      "suppressed": false
+    }
+  ],
+  "features": [
+    {
+      "id": "d96a1b68-b5c3-5bd6-a400-c90c8faa3187",
+      "semanticRef": "pump.feature.chamber-volume",
+      "name": "Chamber reference volume",
+      "suppressed": false,
+      "featureKind": "extrude",
+      "profileRefs": [
+        {
+          "id": "c1abf5cb-c4b9-5a3a-843a-f70f2e05fb67",
+          "semanticRef": "pump.sketch.cross-section.chamber-circle"
+        }
+      ],
+      "distanceParameterRef": {
+        "id": "24492fe6-0b7c-5861-b354-d9fc05a397a6",
+        "semanticRef": "pump.parameter.axial-width"
+      },
+      "direction": "symmetric",
+      "operation": "new_body"
+    },
+    {
+      "id": "c297636b-4c0f-505c-88dc-998f95d711bc",
+      "semanticRef": "pump.feature.rotor",
+      "name": "Rotor",
+      "suppressed": false,
+      "featureKind": "extrude",
+      "profileRefs": [
+        {
+          "id": "45d29580-739e-55bf-8155-4ad450cd4cff",
+          "semanticRef": "pump.sketch.cross-section.rotor-circle"
+        }
+      ],
+      "distanceParameterRef": {
+        "id": "24492fe6-0b7c-5861-b354-d9fc05a397a6",
+        "semanticRef": "pump.parameter.axial-width"
+      },
+      "direction": "symmetric",
+      "operation": "new_body"
+    },
+    {
+      "id": "1d93a2be-df28-55eb-8ca9-0a44e894e215",
+      "semanticRef": "pump.feature.shaft",
+      "name": "Shaft",
+      "suppressed": false,
+      "featureKind": "extrude",
+      "profileRefs": [
+        {
+          "id": "21c70819-8fe0-5b62-87ab-a2bd04d60396",
+          "semanticRef": "pump.sketch.cross-section.shaft-circle"
+        }
+      ],
+      "distanceParameterRef": {
+        "id": "24492fe6-0b7c-5861-b354-d9fc05a397a6",
+        "semanticRef": "pump.parameter.axial-width"
+      },
+      "direction": "symmetric",
+      "operation": "new_body"
+    },
+    {
+      "id": "c0f4e603-7d6a-5370-9911-964a008876c4",
+      "semanticRef": "pump.feature.vane",
+      "name": "Master vane",
+      "suppressed": false,
+      "featureKind": "extrude",
+      "profileRefs": [
+        {
+          "id": "5fa1d306-ad37-5a51-bac4-db25e9a70c2c",
+          "semanticRef": "pump.sketch.cross-section.vane-profile"
+        }
+      ],
+      "distanceParameterRef": {
+        "id": "24492fe6-0b7c-5861-b354-d9fc05a397a6",
+        "semanticRef": "pump.parameter.axial-width"
+      },
+      "direction": "symmetric",
+      "operation": "new_body"
+    },
+    {
+      "id": "08eede47-6c3a-5537-bd63-6a139702565a",
+      "semanticRef": "pump.feature.vane-pattern",
+      "name": "Double-vane pattern",
+      "suppressed": false,
+      "featureKind": "circular_pattern",
+      "sourceFeatureRef": {
+        "id": "c0f4e603-7d6a-5370-9911-964a008876c4",
+        "semanticRef": "pump.feature.vane"
+      },
+      "axisOrigin": [6, 0, 0],
+      "axisDirection": [0, 0, 1],
+      "countParameterRef": {
+        "id": "b5fc1af4-6380-594d-aaac-1a62a4d90d16",
+        "semanticRef": "pump.parameter.vane-count"
+      },
+      "totalAngleDegrees": 360
+    },
+    {
+      "id": "1620614f-efa2-5874-8a11-6e5080bea513",
+      "semanticRef": "pump.feature.inlet-port",
+      "name": "Inlet port",
+      "suppressed": false,
+      "featureKind": "port",
+      "role": "inlet",
+      "chamberProfileRef": {
+        "id": "c1abf5cb-c4b9-5a3a-843a-f70f2e05fb67",
+        "semanticRef": "pump.sketch.cross-section.chamber-circle"
+      },
+      "widthParameterRef": {
+        "id": "7181c3de-963d-54db-b501-545cb16ab655",
+        "semanticRef": "pump.parameter.inlet-width"
+      },
+      "axialWidthParameterRef": {
+        "id": "24492fe6-0b7c-5861-b354-d9fc05a397a6",
+        "semanticRef": "pump.parameter.axial-width"
+      },
+      "centerAngleDegrees": 225,
+      "operation": "cut"
+    },
+    {
+      "id": "4ad330aa-145a-5a8a-a761-ddbef9fc0d21",
+      "semanticRef": "pump.feature.outlet-port",
+      "name": "Outlet port",
+      "suppressed": false,
+      "featureKind": "port",
+      "role": "outlet",
+      "chamberProfileRef": {
+        "id": "c1abf5cb-c4b9-5a3a-843a-f70f2e05fb67",
+        "semanticRef": "pump.sketch.cross-section.chamber-circle"
+      },
+      "widthParameterRef": {
+        "id": "01cebb53-4744-5a96-bb90-0525ef3d8924",
+        "semanticRef": "pump.parameter.outlet-width"
+      },
+      "axialWidthParameterRef": {
+        "id": "24492fe6-0b7c-5861-b354-d9fc05a397a6",
+        "semanticRef": "pump.parameter.axial-width"
+      },
+      "centerAngleDegrees": 45,
+      "operation": "cut"
+    },
+    {
+      "id": "78948cb6-6de0-5c23-b525-58eb135a9381",
+      "semanticRef": "pump.feature.front-cover",
+      "name": "Front cover",
+      "suppressed": false,
+      "featureKind": "extrude",
+      "profileRefs": [
+        {
+          "id": "ef35ad6a-1cad-5465-971f-3f2576d64339",
+          "semanticRef": "pump.sketch.front-cover-profile.outer-circle"
+        },
+        {
+          "id": "b6f905a4-130b-5cbd-a655-7c4eac0c4298",
+          "semanticRef": "pump.sketch.front-cover-profile.shaft-clearance-circle"
+        }
+      ],
+      "distanceParameterRef": {
+        "id": "c3905b5d-80e0-5d2a-9cbb-4b98c8dc9016",
+        "semanticRef": "pump.parameter.cover-thickness"
+      },
+      "direction": "reverse",
+      "operation": "new_body"
+    },
+    {
+      "id": "c4e88009-35a3-5503-b26e-6375a25892b2",
+      "semanticRef": "pump.feature.rear-cover",
+      "name": "Rear cover",
+      "suppressed": false,
+      "featureKind": "extrude",
+      "profileRefs": [
+        {
+          "id": "d94f0136-fcff-56ce-af50-6fb7563d14e5",
+          "semanticRef": "pump.sketch.rear-cover-profile.outer-circle"
+        },
+        {
+          "id": "17470f9d-db42-522a-93d5-c28dd6fe40cc",
+          "semanticRef": "pump.sketch.rear-cover-profile.shaft-clearance-circle"
+        }
+      ],
+      "distanceParameterRef": {
+        "id": "c3905b5d-80e0-5d2a-9cbb-4b98c8dc9016",
+        "semanticRef": "pump.parameter.cover-thickness"
+      },
+      "direction": "normal",
+      "operation": "new_body"
+    }
+  ],
+  "components": [
+    {
+      "id": "9e12ec83-e886-5902-ac76-758ee9afcc9f",
+      "semanticRef": "pump.component.chamber-and-ports",
+      "name": "Chamber and ports",
+      "featureRefs": [
+        {
+          "id": "d96a1b68-b5c3-5bd6-a400-c90c8faa3187",
+          "semanticRef": "pump.feature.chamber-volume"
+        },
+        {
+          "id": "1620614f-efa2-5874-8a11-6e5080bea513",
+          "semanticRef": "pump.feature.inlet-port"
+        },
+        {
+          "id": "4ad330aa-145a-5a8a-a761-ddbef9fc0d21",
+          "semanticRef": "pump.feature.outlet-port"
+        }
+      ],
+      "transform": {
+        "translationMm": [0, 0, 0],
+        "rotationDegrees": [0, 0, 0]
+      },
+      "suppressed": false
+    },
+    {
+      "id": "9ab27a5b-fe28-5803-8f8f-5eb84e3ebf33",
+      "semanticRef": "pump.component.rotating-group",
+      "name": "Rotating group",
+      "featureRefs": [
+        {
+          "id": "c297636b-4c0f-505c-88dc-998f95d711bc",
+          "semanticRef": "pump.feature.rotor"
+        },
+        {
+          "id": "1d93a2be-df28-55eb-8ca9-0a44e894e215",
+          "semanticRef": "pump.feature.shaft"
+        },
+        {
+          "id": "08eede47-6c3a-5537-bd63-6a139702565a",
+          "semanticRef": "pump.feature.vane-pattern"
+        }
+      ],
+      "transform": {
+        "translationMm": [6, 0, 0],
+        "rotationDegrees": [0, 0, 0]
+      },
+      "suppressed": false
+    },
+    {
+      "id": "697f7e7e-0463-5762-a0bc-41cd06b320fc",
+      "semanticRef": "pump.component.front-cover",
+      "name": "Front cover",
+      "featureRefs": [
+        {
+          "id": "78948cb6-6de0-5c23-b525-58eb135a9381",
+          "semanticRef": "pump.feature.front-cover"
+        }
+      ],
+      "transform": {
+        "translationMm": [0, 0, 0],
+        "rotationDegrees": [0, 0, 0]
+      },
+      "suppressed": false
+    },
+    {
+      "id": "3aeff854-c43b-55e6-bfac-0981932d41b4",
+      "semanticRef": "pump.component.rear-cover",
+      "name": "Rear cover",
+      "featureRefs": [
+        {
+          "id": "c4e88009-35a3-5503-b26e-6375a25892b2",
+          "semanticRef": "pump.feature.rear-cover"
+        }
+      ],
+      "transform": {
+        "translationMm": [0, 0, 60],
+        "rotationDegrees": [0, 0, 0]
+      },
+      "suppressed": false
+    }
+  ],
+  "assemblyConstraints": [
+    {
+      "id": "fcd0b41e-15f8-5e91-b486-c85aafaec1cc",
+      "semanticRef": "pump.assembly.chamber-fixed",
+      "name": "Fix chamber",
+      "constraintKind": "fixed",
+      "componentRefs": [
+        {
+          "id": "9e12ec83-e886-5902-ac76-758ee9afcc9f",
+          "semanticRef": "pump.component.chamber-and-ports"
+        }
+      ],
+      "status": "satisfied"
+    },
+    {
+      "id": "23eb3623-36ea-5598-bbf2-501a39dd9327",
+      "semanticRef": "pump.assembly.rotor-eccentric-offset",
+      "name": "Set rotating-group eccentricity",
+      "constraintKind": "distance",
+      "componentRefs": [
+        {
+          "id": "9e12ec83-e886-5902-ac76-758ee9afcc9f",
+          "semanticRef": "pump.component.chamber-and-ports"
+        },
+        {
+          "id": "9ab27a5b-fe28-5803-8f8f-5eb84e3ebf33",
+          "semanticRef": "pump.component.rotating-group"
+        }
+      ],
+      "parameterRef": {
+        "id": "c45923f8-ab80-598b-905e-b86b50e9d70e",
+        "semanticRef": "pump.parameter.eccentricity"
+      },
+      "status": "satisfied"
+    },
+    {
+      "id": "9b4c0b09-a806-594a-8da4-e6f9c7ffa902",
+      "semanticRef": "pump.assembly.front-cover-to-chamber",
+      "name": "Mate front cover to chamber front datum",
+      "constraintKind": "coincident",
+      "componentRefs": [
+        {
+          "id": "9e12ec83-e886-5902-ac76-758ee9afcc9f",
+          "semanticRef": "pump.component.chamber-and-ports"
+        },
+        {
+          "id": "697f7e7e-0463-5762-a0bc-41cd06b320fc",
+          "semanticRef": "pump.component.front-cover"
+        }
+      ],
+      "status": "satisfied"
+    },
+    {
+      "id": "7f5ad139-77a5-550d-aa77-7aa74ed9244a",
+      "semanticRef": "pump.assembly.rear-cover-axial-offset",
+      "name": "Offset rear cover to chamber rear datum",
+      "constraintKind": "distance",
+      "componentRefs": [
+        {
+          "id": "9e12ec83-e886-5902-ac76-758ee9afcc9f",
+          "semanticRef": "pump.component.chamber-and-ports"
+        },
+        {
+          "id": "3aeff854-c43b-55e6-bfac-0981932d41b4",
+          "semanticRef": "pump.component.rear-cover"
+        }
+      ],
+      "parameterRef": {
+        "id": "24492fe6-0b7c-5861-b354-d9fc05a397a6",
+        "semanticRef": "pump.parameter.axial-width"
+      },
+      "status": "satisfied"
+    }
+  ],
+  "metadata": {
+    "description": "Original OpenVac V1 idealized single-stage, double-vane rotary pump template.",
+    "template": {
+      "templateId": "template.rotary-vane-pump.single-stage-double-vane",
+      "templateVersion": "1.0.0"
+    },
+    "tags": ["pump.rotary-vane", "pump.single-stage", "pump.double-vane"]
+  }
+}

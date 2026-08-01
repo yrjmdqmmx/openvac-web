@@ -3,6 +3,7 @@
 import {
   BookOpen,
   CircleStop,
+  Cuboid,
   HelpCircle,
   LoaderCircle,
   PanelLeftOpen,
@@ -39,10 +40,12 @@ function makeLocalId(prefix: string) {
 
 export function ChatWorkspace({
   userId,
-  userName
+  userName,
+  modelingEnabled = false
 }: {
   userId: string;
   userName: string;
+  modelingEnabled?: boolean;
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [conversationId, setConversationId] = useState<string>();
@@ -415,6 +418,15 @@ export function ChatWorkspace({
               <BookOpen className="h-4 w-4" />
               知识来源
             </Link>
+            {modelingEnabled ? (
+              <Link
+                href="/modeling"
+                className="hidden items-center gap-2 text-[var(--muted)] hover:text-[var(--ink)] sm:flex"
+              >
+                <Cuboid className="h-4 w-4" />
+                智能建模
+              </Link>
+            ) : null}
             <Link
               href="/help"
               aria-label="帮助"
@@ -437,6 +449,24 @@ export function ChatWorkspace({
               <p className="mt-4 max-w-xl text-sm leading-7 text-[var(--muted)]">
                 请尽量提供泵型、介质、入口压力、目标压力、抽速、温度和故障现象。证据不足时，我会先追问。
               </p>
+              {modelingEnabled ? (
+                <Link
+                  href="/modeling"
+                  className="mt-7 flex max-w-md items-center gap-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:border-[var(--border-strong)]"
+                >
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white text-[var(--accent)]">
+                    <Cuboid className="h-5 w-5" />
+                  </span>
+                  <span>
+                    <strong className="block text-sm font-medium">
+                      打开智能建模工作台
+                    </strong>
+                    <span className="mt-1 block text-xs leading-5 text-[var(--muted)]">
+                      手工建模与自然语言计划使用同一个确定性 CAD 内核
+                    </span>
+                  </span>
+                </Link>
+              ) : null}
             </div>
           ) : (
             <div className="px-5 pt-8 sm:px-8">
@@ -454,6 +484,7 @@ export function ChatWorkspace({
                   <ExpertAnswer
                     key={message.id}
                     message={message}
+                    modelingEnabled={modelingEnabled}
                     onConsult={() => setConsultOpen(true)}
                     onFeedback={async (messageId, rating) => {
                       const reporting = rating === "report";

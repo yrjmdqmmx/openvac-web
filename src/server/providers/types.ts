@@ -167,12 +167,54 @@ export interface StoredObject {
   url?: string;
 }
 
+export interface CreatePrivateUploadUrlRequest {
+  key: string;
+  contentType: string;
+  contentLength: number;
+  checksumSha256: string;
+  metadata?: Record<string, string>;
+  expiresSeconds?: number;
+}
+
+export interface PrivateUploadUrl {
+  key: string;
+  method: "PUT";
+  url: string;
+  requiredHeaders: Record<string, string>;
+  expiresAt: string;
+}
+
+export interface PrivateObjectStat {
+  key: string;
+  sizeBytes: number;
+  etag?: string;
+  contentType?: string;
+  metadata: Record<string, string>;
+  lastModified?: string;
+}
+
 export interface ObjectStorage {
   readonly id: string;
   putPrivate(request: PutObjectRequest): Promise<StoredObject>;
   getPrivate(key: string): Promise<Uint8Array>;
+  /** Idempotently removes one private object. A missing key is success. */
+  deletePrivate(key: string): Promise<void>;
   createPrivateDownloadUrl(
     key: string,
     expiresSeconds?: number
   ): Promise<string>;
+  /**
+   * Optional for backwards-compatible providers. Callers must fail closed when
+   * a private, header-bound upload URL is required and this capability is
+   * absent.
+   */
+  createPrivateUploadUrl?(
+    request: CreatePrivateUploadUrlRequest
+  ): Promise<PrivateUploadUrl>;
+  /**
+   * Optional for backwards-compatible providers. This must describe the
+   * object stored by the provider; callers must not trust client-supplied
+   * length or metadata in its place.
+   */
+  statPrivate?(key: string): Promise<PrivateObjectStat>;
 }

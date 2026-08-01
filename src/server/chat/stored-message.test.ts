@@ -91,4 +91,75 @@ describe("stored chat message serialization", () => {
       })
     ).toBeNull();
   });
+
+  it("restores only bounded modeling card fields and removes expired cards", () => {
+    expect(
+      serializeStoredMessage(
+        {
+          id: "message-modeling",
+          role: "assistant",
+          status: "completed",
+          content: "打开建模项目",
+          metadata: {
+            modelingCards: [
+              {
+                kind: "project",
+                projectId: "11111111-1111-4111-8111-111111111111",
+                title: "原创旋片泵",
+                href: "https://evil.example/steal"
+              },
+              {
+                kind: "artifact",
+                artifactId: "22222222-2222-4222-8222-222222222222",
+                projectId: "11111111-1111-4111-8111-111111111111",
+                title: "pump.step",
+                projectTitle: "原创旋片泵",
+                format: "STEP",
+                sizeBytes: 1024,
+                expiresAt: "2000-01-01T00:00:00.000Z",
+                objectKey: "private/secret.step"
+              },
+              {
+                kind: "project",
+                projectId: "not-a-uuid",
+                title: "无效项目"
+              }
+            ]
+          }
+        },
+        []
+      )
+    ).toMatchObject({
+      meta: {
+        modelingCards: [
+          {
+            kind: "project",
+            projectId: "11111111-1111-4111-8111-111111111111",
+            title: "原创旋片泵"
+          }
+        ]
+      }
+    });
+    const serialized = serializeStoredMessage(
+      {
+        id: "message-modeling",
+        role: "assistant",
+        status: "completed",
+        content: "打开建模项目",
+        metadata: {
+          modelingCards: [
+            {
+              kind: "project",
+              projectId: "11111111-1111-4111-8111-111111111111",
+              title: "原创旋片泵",
+              href: "https://evil.example/steal"
+            }
+          ]
+        }
+      },
+      []
+    );
+    expect(JSON.stringify(serialized)).not.toContain("evil.example");
+    expect(JSON.stringify(serialized)).not.toContain("objectKey");
+  });
 });

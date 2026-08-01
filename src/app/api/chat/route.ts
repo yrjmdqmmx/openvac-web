@@ -13,7 +13,11 @@ import { auth } from "@/server/auth";
 import { collectEvidence } from "@/server/chat/evidence";
 import { citationSourcePolicy } from "@/server/chat/citation-policy";
 import { buildNoEvidenceAnswer } from "@/server/chat/fallback-answer";
-import { serializeStoredCitation } from "@/server/chat/stored-message";
+import { resolveAuthorizedModelingCards } from "@/server/chat/modeling-cards";
+import {
+  serializeStoredCitation,
+  serializeStoredModelingCards
+} from "@/server/chat/stored-message";
 import { db } from "@/server/db";
 import {
   citations,
@@ -255,11 +259,16 @@ export async function POST(request: Request) {
           evidenceResult.evidence,
           citationValidation.usedCitationNumbers
         );
+        const modelingCards = await resolveAuthorizedModelingCards({
+          ownerId: session.user.id,
+          texts: [parsed.data.message, answer]
+        });
         const meta: AnswerMeta = {
           riskLevel: prompt.risk.level,
           missingInputs: inferMissingInputs(parsed.data.message),
           webSearched: evidenceResult.webSearched,
-          citations: citedEvidence.map((item) => item.citation)
+          citations: citedEvidence.map((item) => item.citation),
+          ...(modelingCards.length ? { modelingCards } : {})
         };
         const bufferedCitations = meta.citations.map(serializeCitation);
 
@@ -449,7 +458,10 @@ async function completeTurn(input: {
         metadata: {
           riskLevel: input.meta.riskLevel,
           missingInputs: input.meta.missingInputs,
-          webSearched: input.meta.webSearched
+          webSearched: input.meta.webSearched,
+          ...(input.meta.modelingCards?.length
+            ? { modelingCards: input.meta.modelingCards }
+            : {})
         }
       })
       .where(eq(messages.id, input.turn.assistantMessageId));
@@ -606,6 +618,9 @@ function replayResponse(
         const replayCitations = replay.citations
           .map((citation) => serializeStoredCitation(citation))
           .filter((citation) => citation !== null);
+        const replayModelingCards = serializeStoredModelingCards(
+          replay.metadata.modelingCards
+        );
         replayCitations.forEach((citation) =>
           emit({ type: "citation", citation })
         );
@@ -617,7 +632,10 @@ function replayResponse(
             riskLevel: replay.metadata.riskLevel ?? "low",
             missingInputs: replay.metadata.missingInputs ?? [],
             webSearched: replay.metadata.webSearched ?? false,
-            citations: replayCitations
+            citations: replayCitations,
+            ...(replayModelingCards.length
+              ? { modelingCards: replayModelingCards }
+              : {})
           }
         });
         controller.close();

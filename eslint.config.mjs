@@ -9,6 +9,9 @@ export default defineConfig([
     ".next/**",
     "coverage/**",
     "dist/**",
+    "**/.venv/**",
+    "**/.pytest_cache/**",
+    "**/*.egg-info/**",
     "playwright-report/**",
     "test-results/**",
     "next-env.d.ts"

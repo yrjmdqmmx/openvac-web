@@ -42,6 +42,25 @@ x-app-environment: &app-environment
   ALIBABA_WEB_SEARCH_ALLOWED_DOMAINS: ${ALIBABA_WEB_SEARCH_ALLOWED_DOMAINS:-cds.cern.ch,nist.gov,hse.gov.uk,iso.org,leybold.com,leybold.cn,pfeiffer-vacuum.com,edwardsvacuum.com,buschvacuum.com,atlascopco.com}
   MODEL_MAX_OUTPUT_TOKENS: ${MODEL_MAX_OUTPUT_TOKENS:-4096}
   WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+  MODELING_ENABLED: ${MODELING_ENABLED:-false}
+  MODELING_SERVICE_URL: http://modeling-service:8080
+  MODELING_SERVICE_TOKEN: ${MODELING_SERVICE_TOKEN:-}
+  MODELING_GLOBAL_CONCURRENCY: ${MODELING_GLOBAL_CONCURRENCY:-1}
+  MODELING_QUEUE_CAPACITY: ${MODELING_QUEUE_CAPACITY:-20}
+  MODELING_MAX_USER_RUNNING: ${MODELING_MAX_USER_RUNNING:-1}
+  MODELING_MAX_USER_QUEUED: ${MODELING_MAX_USER_QUEUED:-2}
+  MODELING_DAILY_COMPUTE_SECONDS: ${MODELING_DAILY_COMPUTE_SECONDS:-1200}
+  MODELING_DAILY_EXPORT_LIMIT: ${MODELING_DAILY_EXPORT_LIMIT:-10}
+  MODELING_OPERATION_RATE_PER_MINUTE: ${MODELING_OPERATION_RATE_PER_MINUTE:-30}
+  MODELING_MAX_STEP_BYTES: ${MODELING_MAX_STEP_BYTES:-52428800}
+  MODELING_INTERACTIVE_TIMEOUT_MS: ${MODELING_INTERACTIVE_TIMEOUT_MS:-30000}
+  MODELING_JOB_TIMEOUT_MS: ${MODELING_JOB_TIMEOUT_MS:-180000}
+  MODELING_PREVIEW_RETENTION_DAYS: ${MODELING_PREVIEW_RETENTION_DAYS:-30}
+  MODELING_EXPORT_RETENTION_DAYS: ${MODELING_EXPORT_RETENTION_DAYS:-7}
+  MODELING_ARTIFACT_CLEANUP_INTERVAL_MS: ${MODELING_ARTIFACT_CLEANUP_INTERVAL_MS:-60000}
+  MODELING_ARTIFACT_CLEANUP_LEASE_MS: ${MODELING_ARTIFACT_CLEANUP_LEASE_MS:-60000}
+  MODELING_ARTIFACT_CLEANUP_RETRY_MS: ${MODELING_ARTIFACT_CLEANUP_RETRY_MS:-60000}
+  MODELING_ARTIFACT_CLEANUP_BATCH_SIZE: ${MODELING_ARTIFACT_CLEANUP_BATCH_SIZE:-20}
   ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-}
   CONSULTATION_NOTIFICATION_EMAIL: ${CONSULTATION_NOTIFICATION_EMAIL:-}
   GEN_AI_FILING_NUMBER: ${GEN_AI_FILING_NUMBER:-}
@@ -121,6 +140,64 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    networks:
+      - backend
+      - edge
+
+  modeling-service:
+    profiles: ["modeling"]
+    image: ${OPENVAC_MODELING_IMAGE:-openvac-modeling-service:local}
+    build:
+      context: ./modeling-service
+    restart: unless-stopped
+    environment:
+      MODELING_SERVICE_TOKEN: ${MODELING_SERVICE_TOKEN:-}
+      MODELING_REQUIRE_SERVICE_TOKEN: "true"
+      MODELING_ARTIFACT_ROOT: /tmp/openvac-modeling/artifacts
+      MODELING_BUILD_TIMEOUT_SECONDS: ${MODELING_BUILD_TIMEOUT_SECONDS:-180}
+      MODELING_INTERACTIVE_TIMEOUT_SECONDS: ${MODELING_INTERACTIVE_TIMEOUT_SECONDS:-30}
+      MODELING_SKETCH_TIMEOUT_SECONDS: ${MODELING_SKETCH_TIMEOUT_SECONDS:-2}
+      MODELING_MAX_STEP_BYTES: ${MODELING_MAX_STEP_BYTES:-52428800}
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g,uid=10001,gid=10001,mode=1770
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 4g
+    cpus: 2.0
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+    networks:
+      - backend
+
+  modeling-worker:
+    profiles: ["modeling"]
+    image: ${OPENVAC_IMAGE:-openvac-web:local}
+    build:
+      context: .
+      target: web
+    command: ["pnpm", "modeling:worker"]
+    restart: unless-stopped
+    environment: *app-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      modeling-service:
+        condition: service_healthy
+    stop_grace_period: 30s
     networks:
       - backend
       - edge
