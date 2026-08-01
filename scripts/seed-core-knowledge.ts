@@ -119,7 +119,8 @@ try {
           .select({
             id: knowledgeVersions.id,
             contentHash: knowledgeVersions.contentHash,
-            version: knowledgeVersions.version
+            version: knowledgeVersions.version,
+            metadata: knowledgeVersions.metadata
           })
           .from(knowledgeVersions)
           .where(eq(knowledgeVersions.id, existingDocument.currentVersionId))
@@ -139,6 +140,7 @@ try {
         : Number(latestVersion?.value ?? 0) + 1;
 
     if (currentVersion?.contentHash === contentHash) {
+      const currentMetadata = currentVersion.metadata ?? {};
       await tx
         .update(knowledgeVersions)
         .set({
@@ -146,17 +148,18 @@ try {
           content: canonicalContent,
           citationMetadata: core.citation,
           metadata: {
+            ...currentMetadata,
             reviewStatus: "approved",
-            embeddingStatus: "not_configured",
+            embeddingStatus:
+              typeof currentMetadata.embeddingStatus === "string"
+                ? currentMetadata.embeddingStatus
+                : "not_configured",
             seedVersion: 1
           },
           publishedAt: now,
           updatedAt: now
         })
         .where(eq(knowledgeVersions.id, versionId));
-      await tx
-        .delete(knowledgeChunks)
-        .where(eq(knowledgeChunks.versionId, versionId));
     } else {
       await tx.insert(knowledgeVersions).values({
         id: versionId,
@@ -176,25 +179,25 @@ try {
         createdAt: now,
         updatedAt: now
       });
-    }
 
-    await tx.insert(knowledgeChunks).values(
-      core.chunks.map((chunk, index) => ({
-        id: randomUUID(),
-        versionId,
-        chunkIndex: index,
-        content: `${chunk.content}\n关键词：${chunk.keywords.join("、")}`,
-        pageStart: chunk.pageStart,
-        pageEnd: chunk.pageEnd,
-        sectionPath: chunk.sectionPath,
-        metadata: {
-          keywords: chunk.keywords,
-          curatedTranslation: true,
-          sourceLanguage: "en"
-        },
-        createdAt: now
-      }))
-    );
+      await tx.insert(knowledgeChunks).values(
+        core.chunks.map((chunk, index) => ({
+          id: randomUUID(),
+          versionId,
+          chunkIndex: index,
+          content: `${chunk.content}\n关键词：${chunk.keywords.join("、")}`,
+          pageStart: chunk.pageStart,
+          pageEnd: chunk.pageEnd,
+          sectionPath: chunk.sectionPath,
+          metadata: {
+            keywords: chunk.keywords,
+            curatedTranslation: true,
+            sourceLanguage: "en"
+          },
+          createdAt: now
+        }))
+      );
+    }
 
     await tx
       .update(knowledgeDocuments)

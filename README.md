@@ -69,7 +69,14 @@ pnpm build
 pnpm test:e2e
 pnpm worker
 pnpm eval
+pnpm eval:core
 ```
+
+Knowledge Phase 1 uses only tracked, rights-reviewed records. The local
+`知识库/` directory is intentionally ignored by both Git and Docker and must not
+be uploaded. After seeding the reviewed CERN core on a configured environment,
+run `pnpm knowledge:embed-published` and then `pnpm eval:core:live` to verify the
+real Top-5 hybrid retrieval path.
 
 Database changes are generated and applied with:
 

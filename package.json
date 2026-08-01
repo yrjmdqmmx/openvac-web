@@ -27,6 +27,9 @@
     "db:studio": "drizzle-kit studio",
     "knowledge:seed": "tsx scripts/seed-sources.ts",
     "knowledge:seed-core": "tsx scripts/seed-core-knowledge.ts",
+    "knowledge:embed-published": "tsx scripts/embed-published-knowledge.ts",
+    "eval:core": "tsx scripts/eval-core-retrieval.ts",
+    "eval:core:live": "tsx scripts/eval-core-retrieval.ts --live",
     "eval": "tsx scripts/run-evals.ts",
     "smoke:deepseek": "tsx scripts/smoke-deepseek.ts"
   },

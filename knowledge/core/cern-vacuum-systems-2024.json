@@ -26,7 +26,8 @@
     "fetchedAt": "2026-07-31T16:19:00.000Z",
     "reviewedAt": "2026-07-31T16:19:00.000Z",
     "reviewMethod": "official-pdf-text-and-page-review",
-    "licenseClass": "open"
+    "licenseClass": "open",
+    "ingestionMode": "full_text"
   },
   "chunks": [
     {

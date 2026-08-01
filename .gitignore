@@ -19,3 +19,7 @@ backups/
 /concepts/
 /openvac-chat-workspace-v1-concept.png
 /openvac-chat-workspace-v1-concept-v2.png
+
+# Rights-pending local manuals and books. These files must never enter Git,
+# Docker build contexts, or the public repository.
+/知识库/
