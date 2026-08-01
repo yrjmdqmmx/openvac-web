@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { and, eq, inArray } from "drizzle-orm";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { db, sqlClient } from "@/server/db";
 import {
@@ -31,6 +31,33 @@ const describeDatabase =
 
 const createdUserIds = new Set<string>();
 const createdAuditIds = new Set<string>();
+const sentinelOwnerId = "security-integration-sentinel-owner";
+
+beforeAll(async () => {
+  if (process.env.RUN_DATABASE_TESTS !== "true") {
+    return;
+  }
+
+  await db
+    .insert(users)
+    .values({
+      id: sentinelOwnerId,
+      name: "Security integration sentinel owner",
+      email: `${sentinelOwnerId}@example.com`,
+      emailVerified: true
+    })
+    .onConflictDoNothing({ target: users.id });
+  await db
+    .insert(adminRoles)
+    .values({
+      userId: sentinelOwnerId,
+      role: "owner",
+      createdBy: sentinelOwnerId
+    })
+    .onConflictDoNothing({
+      target: [adminRoles.userId, adminRoles.role]
+    });
+});
 
 function audit(userId: string, requestId = randomUUID()): AuditContext {
   return {
@@ -71,20 +98,22 @@ function reportInput(clientRequestId = randomUUID()): ProblemReportInput {
 }
 
 afterEach(async () => {
-  const auditIds = [...createdAuditIds];
-  if (auditIds.length > 0) {
-    await db.delete(auditLogs).where(inArray(auditLogs.id, auditIds));
-  }
+  try {
+    const auditIds = [...createdAuditIds];
+    if (auditIds.length > 0) {
+      await db.delete(auditLogs).where(inArray(auditLogs.id, auditIds));
+    }
 
-  const userIds = [...createdUserIds];
-  if (userIds.length > 0) {
-    await db.delete(auditLogs).where(inArray(auditLogs.actorUserId, userIds));
-    await db.delete(adminRoles).where(inArray(adminRoles.userId, userIds));
-    await db.delete(users).where(inArray(users.id, userIds));
+    const userIds = [...createdUserIds];
+    if (userIds.length > 0) {
+      await db.delete(auditLogs).where(inArray(auditLogs.actorUserId, userIds));
+      await db.delete(adminRoles).where(inArray(adminRoles.userId, userIds));
+      await db.delete(users).where(inArray(users.id, userIds));
+    }
+  } finally {
+    createdAuditIds.clear();
+    createdUserIds.clear();
   }
-
-  createdAuditIds.clear();
-  createdUserIds.clear();
 });
 
 describeDatabase("problem-report database security boundaries", () => {
