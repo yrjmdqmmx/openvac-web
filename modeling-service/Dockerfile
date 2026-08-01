@@ -18,9 +18,24 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY pyproject.toml ./
+
+# Keep the large binary CAD dependencies in separate image layers. The ECS
+# release host can then cache and retry each immutable blob independently
+# instead of restarting one roughly 500 MiB Python dependency layer.
+RUN python -m pip install --no-cache-dir "cadquery-ocp==7.9.3.1.1"
+RUN python -m pip install --no-cache-dir "vtk==9.6.2"
+RUN python -m pip install --no-cache-dir "cadquery==2.8.0"
+RUN python -m pip install --no-cache-dir \
+      "fastapi==0.116.1" \
+      "pydantic==2.11.7" \
+      "python-multipart==0.0.20" \
+      "slvs==3.2" \
+      "uvicorn[standard]==0.35.0"
+
 COPY app ./app
 COPY tests/fixtures/rotary_vane_pump_v1.json ./tests/fixtures/rotary_vane_pump_v1.json
-RUN python -m pip install --no-cache-dir .
+RUN python -m pip install --no-cache-dir --no-deps . \
+    && python -m pip check
 
 RUN chown -R openvac:openvac /app
 
