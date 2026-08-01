@@ -1,5 +1,8 @@
 __pycache__
 .pytest_cache
 .venv
-tests
+tests/*
+!tests/fixtures
+tests/fixtures/*
+!tests/fixtures/rotary_vane_pump_v1.json
 *.pyc
