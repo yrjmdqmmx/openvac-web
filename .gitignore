@@ -13,6 +13,7 @@ modeling-service/build/
 coverage/
 playwright-report/
 test-results/
+.artifacts/
 .env
 .env.local
 .env.*.local

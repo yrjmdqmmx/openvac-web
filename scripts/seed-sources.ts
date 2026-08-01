@@ -2,12 +2,26 @@ import manifest from "../knowledge/source-manifest.json";
 import { eq } from "drizzle-orm";
 import { db } from "../src/server/db";
 import { knowledgeSources } from "../src/server/db/schema";
+import { mergeSeedSourceMetadata } from "../src/server/knowledge/source-metadata";
 
 type SourceManifestItem = (typeof manifest)[number];
+type RightsDecision = {
+  status: string;
+  scope: string;
+  basis?: string;
+  evidenceUrl?: string;
+  appliesToRecordUrl: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+};
+type GovernedSourceManifestItem = SourceManifestItem & {
+  rightsReviewed?: boolean;
+  rightsDecision?: RightsDecision;
+};
 
-for (const source of manifest as SourceManifestItem[]) {
+for (const source of manifest as GovernedSourceManifestItem[]) {
   const existing = await db
-    .select({ id: knowledgeSources.id })
+    .select({ id: knowledgeSources.id, metadata: knowledgeSources.metadata })
     .from(knowledgeSources)
     .where(eq(knowledgeSources.canonicalUrl, source.canonicalUrl))
     .limit(1);
@@ -23,12 +37,14 @@ for (const source of manifest as SourceManifestItem[]) {
     trustLevel: source.trustLevel,
     enabled: source.enabled,
     notes: source.notes,
-    metadata: {
+    metadata: mergeSeedSourceMetadata(existing[0]?.metadata, {
       sourceKey: source.sourceKey,
       seededBy: "knowledge/source-manifest.json",
-      rightsReviewed:
-        "rightsReviewed" in source ? source.rightsReviewed === true : false
-    },
+      rightsReviewed: source.rightsReviewed === true,
+      ...(source.rightsDecision
+        ? { rightsDecision: source.rightsDecision }
+        : {})
+    }),
     updatedAt: new Date()
   } as typeof knowledgeSources.$inferInsert;
 

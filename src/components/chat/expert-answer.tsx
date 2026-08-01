@@ -10,9 +10,9 @@ import {
   Download,
   FileText,
   Flag,
+  MessageSquareWarning,
   ThumbsDown,
-  ThumbsUp,
-  UserRoundSearch
+  ThumbsUp
 } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
@@ -185,7 +185,7 @@ function formatBytes(bytes: number): string {
 export function ExpertAnswer({
   message,
   onFeedback,
-  onConsult,
+  onProblemReport,
   modelingEnabled = false
 }: {
   message: ChatMessage;
@@ -193,7 +193,7 @@ export function ExpertAnswer({
     messageId: string,
     rating: "up" | "down" | "report"
   ) => Promise<void>;
-  onConsult: () => void;
+  onProblemReport: (messageId: string) => void;
   modelingEnabled?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
@@ -291,11 +291,11 @@ export function ExpertAnswer({
           ))}
           <button
             type="button"
-            onClick={onConsult}
+            onClick={() => onProblemReport(message.id)}
             className="ml-2 inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--border-strong)] px-3 text-sm hover:bg-[var(--surface)]"
           >
-            <UserRoundSearch className="h-4 w-4" />
-            咨询真空专家
+            <MessageSquareWarning className="h-4 w-4" />
+            问题反馈
           </button>
         </div>
       )}

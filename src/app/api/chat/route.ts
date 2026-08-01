@@ -4,6 +4,7 @@ import {
   buildExpertPrompt,
   hasRequiredAnswerSections,
   selectCitationPrefix,
+  validateHighRiskAnswerBoundaries,
   validateCitations,
   type AnswerMeta,
   type Citation,
@@ -27,6 +28,14 @@ import {
   user
 } from "@/server/db/schema";
 import { getModelProvider, type ModelUsage } from "@/server/providers";
+import {
+  completeModelInvocation,
+  failModelInvocation,
+  loadActiveRuntimePrompt,
+  ModelRuntimeError,
+  startModelInvocation,
+  type InvocationHandle
+} from "@/server/operations/model-runtime";
 import {
   commitQuota,
   QuotaExceededError,
@@ -77,7 +86,7 @@ export async function POST(request: Request) {
     return jsonError(
       403,
       "ACCOUNT_SUSPENDED",
-      account.banReason || "账户当前无法使用，请联系支持人员。"
+      account.banReason || "账户当前无法使用。"
     );
   }
 
@@ -142,6 +151,7 @@ export async function POST(request: Request) {
     );
   }
 
+  const modelProvider = getModelProvider();
   let turn: PersistedTurn;
   try {
     turn = await createPendingTurn({
@@ -149,7 +159,7 @@ export async function POST(request: Request) {
       conversationId: parsed.data.conversationId,
       question: parsed.data.message,
       clientRequestId: parsed.data.clientRequestId,
-      model: getModelProvider().model
+      model: modelProvider.model
     });
   } catch (error) {
     await releaseQuota({
@@ -197,6 +207,8 @@ export async function POST(request: Request) {
       const startedAt = Date.now();
       let answer = "";
       let usage: ModelUsage | undefined;
+      let invocation: InvocationHandle | undefined;
+      let invocationSettled = false;
 
       try {
         send({
@@ -217,13 +229,15 @@ export async function POST(request: Request) {
             })
         });
 
+        const activePrompt = await loadActiveRuntimePrompt();
         const prompt = buildExpertPrompt({
           question: parsed.data.message,
           evidence: evidenceResult.evidence,
           conversationContext: await loadConversationContext(
             turn.conversationId,
             turn.userMessageId
-          )
+          ),
+          operatorInstructions: activePrompt?.content
         });
         send({
           type: "status",
@@ -237,23 +251,51 @@ export async function POST(request: Request) {
             risk: prompt.risk
           });
         } else {
-          for await (const event of getModelProvider().stream({
+          const maximumOutputTokens = parseMaximumOutputTokens();
+          invocation = await startModelInvocation({
+            userId: session.user.id,
+            conversationId: turn.conversationId,
+            messageId: turn.assistantMessageId,
+            clientRequestId: parsed.data.clientRequestId,
+            provider: modelProvider.id,
+            model: modelProvider.model,
+            messages: prompt.messages,
+            maximumOutputTokens,
+            promptVersionId: activePrompt?.id,
+            evidenceSourceIds: evidenceResult.evidence.map(
+              (item) => item.citation.sourceId
+            ),
+            webSearched: evidenceResult.webSearched
+          });
+          let providerRequestId: string | undefined;
+          let finishReason: string | undefined;
+          for await (const event of modelProvider.stream({
             messages: prompt.messages,
             temperature: 0.1,
-            maxOutputTokens: parseMaximumOutputTokens(),
+            maxOutputTokens: maximumOutputTokens,
             signal: request.signal
           })) {
             if (event.type === "text-delta") {
               answer += event.text;
             } else if (event.type === "finish") {
               usage = event.usage;
+              providerRequestId = event.providerRequestId;
+              finishReason = event.finishReason;
             }
           }
+          await completeModelInvocation({
+            handle: invocation,
+            usage,
+            providerRequestId,
+            finishReason
+          });
+          invocationSettled = true;
         }
 
         const citationValidation = validateAnswer(
           answer,
-          evidenceResult.evidence
+          evidenceResult.evidence,
+          prompt.risk.level
         );
         const citedEvidence = selectCitationPrefix(
           evidenceResult.evidence,
@@ -283,7 +325,18 @@ export async function POST(request: Request) {
           meta,
           evidence: citedEvidence,
           usage,
-          latencyMs: Date.now() - startedAt
+          latencyMs: Date.now() - startedAt,
+          runtime: {
+            provider: modelProvider.id,
+            model: modelProvider.model,
+            promptVersionId: activePrompt?.id ?? null,
+            promptVersion: activePrompt?.version ?? null,
+            sourceVersions: citedEvidence.map((item) => ({
+              sourceId: item.citation.sourceId,
+              fetchedAt: new Date(item.citation.fetchedAt).toISOString(),
+              pageOrSection: item.citation.pageOrSection ?? null
+            }))
+          }
         });
         const committedReservation = await commitQuota({
           leaseId: reservation.leaseId,
@@ -314,6 +367,14 @@ export async function POST(request: Request) {
         });
       } catch (error) {
         const cancelled = request.signal.aborted;
+        if (invocation && !invocationSettled) {
+          await failModelInvocation({
+            handle: invocation,
+            status: cancelled ? "cancelled" : "failed",
+            errorCode: cancelled ? "CLIENT_CANCELLED" : errorCode(error),
+            errorMessage: safeErrorMessage(error)
+          }).catch(() => undefined);
+        }
         await failTurn(
           turn.assistantMessageId,
           cancelled ? "cancelled" : "failed",
@@ -330,7 +391,7 @@ export async function POST(request: Request) {
           code: cancelled ? "CANCELLED" : errorCode(error),
           message: cancelled
             ? "已取消回答，本次不会扣除额度。"
-            : "本次回答未能通过证据或引用校验，额度已归还。"
+            : userFacingFailureMessage(error)
         });
       } finally {
         clearInterval(heartbeat);
@@ -444,6 +505,17 @@ async function completeTurn(input: {
   evidence: GroundingEvidence[];
   usage?: ModelUsage;
   latencyMs: number;
+  runtime: {
+    provider: string;
+    model: string;
+    promptVersionId: string | null;
+    promptVersion: number | null;
+    sourceVersions: Array<{
+      sourceId: string;
+      fetchedAt: string;
+      pageOrSection: string | null;
+    }>;
+  };
 }) {
   await db.transaction(async (tx) => {
     await tx
@@ -461,7 +533,8 @@ async function completeTurn(input: {
           webSearched: input.meta.webSearched,
           ...(input.meta.modelingCards?.length
             ? { modelingCards: input.meta.modelingCards }
-            : {})
+            : {}),
+          ...input.runtime
         }
       })
       .where(eq(messages.id, input.turn.assistantMessageId));
@@ -650,7 +723,11 @@ function replayResponse(
   );
 }
 
-function validateAnswer(answer: string, evidence: GroundingEvidence[]) {
+function validateAnswer(
+  answer: string,
+  evidence: GroundingEvidence[],
+  riskLevel: AnswerMeta["riskLevel"]
+) {
   if (!hasRequiredAnswerSections(answer)) {
     throw new InvalidAnswerError("模型回答未满足 OpenVac 的五段结构。");
   }
@@ -660,6 +737,14 @@ function validateAnswer(answer: string, evidence: GroundingEvidence[]) {
   });
   if (!result.valid) {
     throw new InvalidAnswerError(`引用校验失败：${result.errors.join(" ")}`);
+  }
+  if (riskLevel === "high") {
+    const safety = validateHighRiskAnswerBoundaries(answer);
+    if (!safety.valid) {
+      throw new InvalidAnswerError(
+        `高风险回答缺少安全边界：${safety.missing.join(", ")}。`
+      );
+    }
   }
   return result;
 }
@@ -731,7 +816,23 @@ function errorCode(error: unknown) {
 
 function safeErrorMessage(error: unknown) {
   if (error instanceof InvalidAnswerError) return error.message;
+  if (error instanceof ModelRuntimeError) return error.message;
   return "Provider or persistence operation failed.";
+}
+
+function userFacingFailureMessage(error: unknown) {
+  if (error instanceof ModelRuntimeError) {
+    if (error.code === "MODEL_DISABLED") {
+      return "回答模型当前已停用，本次额度已归还。";
+    }
+    if (error.code.includes("BUDGET")) {
+      return "系统当前已触发模型预算保护，本次额度已归还，请稍后再试。";
+    }
+    if (error.code === "MODEL_PRICING_UNCONFIGURED") {
+      return "模型成本配置尚未完成，本次额度已归还。";
+    }
+  }
+  return "本次回答未能通过证据、引用或系统校验，额度已归还。";
 }
 
 function jsonError(status: number, code: string, message: string) {

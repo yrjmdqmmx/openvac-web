@@ -3,36 +3,55 @@ import { describe, expect, it } from "vitest";
 import {
   adminRoleMutationSchema,
   budgetsSchema,
-  consultationSchema,
   knowledgeDraftSchema,
   knowledgeDraftUpdateSchema,
+  problemReportSchema,
+  knowledgeReviewSchema,
   sourceSchema,
   sourceUpdateSchema,
   userBanSchema
 } from "./schemas";
 
 describe("API validation schemas", () => {
-  it("requires explicit consultation confirmation", () => {
+  it("validates problem-report context and contact consent independently", () => {
     const base = {
-      confirmed: false,
-      contactName: "王工",
-      companyName: "示例真空",
-      contactMethod: "phone",
-      contactValue: "13800000000",
-      problem: "旋片泵在启动阶段出现持续异响，需要工程师确认。",
-      conversationSummary: "用户已经检查油位和电源，问题仍然存在。"
+      category: "answer_incorrect" as const,
+      description: "回答中的极限压力单位不正确。"
     };
 
-    expect(consultationSchema.safeParse(base).success).toBe(false);
+    expect(problemReportSchema.parse(base)).toMatchObject({
+      includeContext: false,
+      consentToContact: false
+    });
     expect(
-      consultationSchema.safeParse({ ...base, confirmed: true }).success
+      problemReportSchema.safeParse({
+        ...base,
+        contactType: "email",
+        contactValue: "engineer@example.com"
+      }).success
+    ).toBe(false);
+    expect(
+      problemReportSchema.safeParse({
+        ...base,
+        contactType: "email",
+        contactValue: "engineer@example.com",
+        consentToContact: true
+      }).success
     ).toBe(true);
     expect(
-      consultationSchema.safeParse({
+      problemReportSchema.safeParse({ ...base, includeContext: true }).success
+    ).toBe(false);
+    expect(
+      problemReportSchema.safeParse({
         ...base,
-        confirmed: true,
-        contactMethod: "email",
-        contactValue: "not-an-email"
+        includeContext: true,
+        conversationId: "d607d4d6-82df-4f1b-a5d4-7d80277e327d"
+      }).success
+    ).toBe(true);
+    expect(
+      problemReportSchema.safeParse({
+        ...base,
+        description: "x".repeat(3001)
       }).success
     ).toBe(false);
   });
@@ -47,7 +66,10 @@ describe("API validation schemas", () => {
 
   it("accepts only absolute source whitelist URLs", () => {
     const base = {
+      kind: "manual",
       name: "CERN Document Server",
+      publisher: "CERN",
+      canonicalUrl: "https://cds.cern.ch/record/2929324?ln=en",
       sourceTier: "open_license",
       licensePolicy: "逐份核验开放许可",
       enabled: true
@@ -60,6 +82,19 @@ describe("API validation schemas", () => {
       sourceSchema.safeParse({ ...base, baseUrl: "https://cds.cern.ch/" })
         .success
     ).toBe(true);
+    expect(
+      sourceSchema.safeParse({
+        ...base,
+        baseUrl: "https://cds.cern.ch/",
+        rightsDecision: {
+          status: "approved",
+          scope: "full_text",
+          basis: "This exact record is published under CC BY 4.0.",
+          evidenceUrl: "https://cds.cern.ch/record/2929324?ln=en",
+          appliesToRecordUrl: "https://cds.cern.ch/record/another"
+        }
+      }).success
+    ).toBe(false);
   });
 
   it("defaults knowledge drafts to full-text ingestion for policy enforcement", () => {
@@ -79,6 +114,25 @@ describe("API validation schemas", () => {
     expect(sourceUpdateSchema.parse({ name: "新来源名" })).toEqual({
       name: "新来源名"
     });
+  });
+
+  it("requires a review note when knowledge is rejected", () => {
+    const base = {
+      versionId: "cb71f682-9bdc-4899-b7b3-c459402b192c",
+      expectedContentHash: "a".repeat(64)
+    };
+
+    expect(knowledgeReviewSchema.parse(base).decision).toBe("approved");
+    expect(
+      knowledgeReviewSchema.safeParse({ ...base, decision: "rejected" }).success
+    ).toBe(false);
+    expect(
+      knowledgeReviewSchema.safeParse({
+        ...base,
+        decision: "rejected",
+        note: "缺少来源页码，退回补充。"
+      }).success
+    ).toBe(true);
   });
 
   it("rejects duplicate model budget entries", () => {

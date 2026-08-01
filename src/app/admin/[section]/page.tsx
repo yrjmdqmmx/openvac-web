@@ -7,7 +7,7 @@ import {
 const sections: AdminSection[] = [
   "users",
   "conversations",
-  "consultations",
+  "problem-reports",
   "sources",
   "prompts",
   "models",

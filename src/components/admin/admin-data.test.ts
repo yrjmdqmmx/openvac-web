@@ -69,6 +69,9 @@ describe("admin API response normalization", () => {
   it("uses the real fields selected by each admin API", () => {
     expect(adminModuleConfigs.users.columns).toContain("dailyQuotaBonus");
     expect(adminModuleConfigs.conversations.columns).toContain("model");
+    expect(adminModuleConfigs["problem-reports"].columns).toContain(
+      "includeContext"
+    );
     expect(adminModuleConfigs.sources.columns).toContain("licensePolicy");
     expect(adminModuleConfigs.prompts.columns).toContain("key");
     expect(adminModuleConfigs.models.columns).toContain("monthlyLimitCents");

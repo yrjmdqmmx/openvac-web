@@ -5,6 +5,9 @@ import type { ApiStore, AuditContext } from "./types";
 const authMocks = vi.hoisted(() => ({
   getSession: vi.fn()
 }));
+const notificationMocks = vi.hoisted(() => ({
+  sendProblemReportNotification: vi.fn()
+}));
 
 vi.mock("@/server/auth", () => ({
   auth: {
@@ -13,21 +16,25 @@ vi.mock("@/server/auth", () => ({
     }
   }
 }));
+vi.mock("@/server/problem-reports/notification", () => notificationMocks);
 
 import {
+  handleArchiveKnowledge,
   handleGrantAdminRole,
   handleListAuditLogs,
   handleListAdminConversations,
+  handleListAdminProblemReports,
   handleListAdmins,
   handleRevokeAdminRole,
   handleReviewKnowledgeDocument,
+  handleSetProblemReportStatus,
   handleGetBudgets,
   handleUpdateBudgets
 } from "./admin";
 import { handleClearConversationData } from "./account";
-import { handleCreateConsultation } from "./consultations";
 import { handleCreateConversation } from "./conversations";
 import { handleMessageFeedback } from "./messages";
+import { handleCreateProblemReport } from "./problem-reports";
 
 function partialStore(overrides: Partial<ApiStore>): ApiStore {
   return overrides as ApiStore;
@@ -55,6 +62,8 @@ describe("API handlers", () => {
         banned: false
       }
     });
+    notificationMocks.sendProblemReportNotification.mockReset();
+    notificationMocks.sendProblemReportNotification.mockResolvedValue(true);
   });
 
   it("scopes conversation creation to the current user and passes audit context", async () => {
@@ -115,24 +124,153 @@ describe("API handlers", () => {
     );
   });
 
-  it("does not submit a consultation without explicit confirmation", async () => {
-    const createConsultation = vi.fn();
-    const store = partialStore({ createConsultation });
-    const response = await handleCreateConsultation(
-      jsonRequest("/api/consultations", {
-        confirmed: false,
-        contactName: "王工",
-        companyName: "示例真空",
-        contactMethod: "phone",
+  it("does not submit contact details without explicit contact consent", async () => {
+    const createProblemReport = vi.fn();
+    const store = partialStore({ createProblemReport });
+    const response = await handleCreateProblemReport(
+      jsonRequest("/api/problem-reports", {
+        category: "system_error",
+        description: "回答请求持续失败。",
+        contactType: "phone",
         contactValue: "13800000000",
-        problem: "旋片泵在启动阶段出现持续异响，需要工程师确认。",
-        conversationSummary: "用户已经检查油位和电源，问题仍然存在。"
+        consentToContact: false
       }),
       store
     );
 
     expect(response.status).toBe(422);
-    expect(createConsultation).not.toHaveBeenCalled();
+    expect(createProblemReport).not.toHaveBeenCalled();
+  });
+
+  it("does not infer contact details from the signed-in account", async () => {
+    const createdAt = new Date("2026-08-01T00:00:00.000Z");
+    const createProblemReport = vi.fn().mockResolvedValue({
+      id: "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+      status: "new",
+      createdAt
+    });
+    const store = partialStore({ createProblemReport });
+    const response = await handleCreateProblemReport(
+      jsonRequest("/api/problem-reports", {
+        category: "product_suggestion",
+        description: "希望增加按泵型筛选引用的能力。",
+        context: { messages: ["客户端不应决定上下文快照"] }
+      }),
+      store
+    );
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({
+      reportId: "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+      receivedAt: "2026-08-01T00:00:00.000Z"
+    });
+    expect(createProblemReport).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({
+        includeContext: false,
+        contactType: undefined,
+        contactValue: undefined,
+        consentToContact: false
+      }),
+      expect.objectContaining({
+        requestId: "request-1",
+        path: "/api/problem-reports",
+        method: "POST",
+        actor: expect.objectContaining({ id: "user-1", role: "user" })
+      })
+    );
+    expect(createProblemReport.mock.calls[0]?.[1]).not.toHaveProperty(
+      "context"
+    );
+    expect(
+      notificationMocks.sendProblemReportNotification
+    ).toHaveBeenCalledWith({
+      id: "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+      category: "product_suggestion",
+      createdAt
+    });
+    expect(
+      notificationMocks.sendProblemReportNotification.mock.calls[0]?.[0]
+    ).not.toHaveProperty("email");
+  });
+
+  it("keeps a saved problem report successful when notification mail fails", async () => {
+    notificationMocks.sendProblemReportNotification.mockRejectedValueOnce(
+      new Error("mail unavailable")
+    );
+    const createProblemReport = vi.fn().mockResolvedValue({
+      id: "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+      status: "new",
+      createdAt: new Date("2026-08-01T00:00:00.000Z")
+    });
+    const response = await handleCreateProblemReport(
+      jsonRequest("/api/problem-reports", {
+        category: "system_error",
+        description: "回答请求持续失败。"
+      }),
+      partialStore({ createProblemReport })
+    );
+
+    expect(response.status).toBe(201);
+    expect(createProblemReport).toHaveBeenCalledOnce();
+  });
+
+  it("lets support update problem-report status through an audited write", async () => {
+    const setProblemReportStatus = vi.fn().mockResolvedValue({
+      id: "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+      status: "reviewing"
+    });
+    const response = await handleSetProblemReportStatus(
+      jsonRequest(
+        "/api/admin/problem-reports/d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+        { status: "reviewing", note: "正在复核引用" },
+        "PATCH"
+      ),
+      "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+      partialStore({
+        getAdminRole: vi.fn().mockResolvedValue("support"),
+        setProblemReportStatus
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(setProblemReportStatus).toHaveBeenCalledWith(
+      "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+      { status: "reviewing", note: "正在复核引用" },
+      expect.objectContaining({
+        path: "/api/admin/problem-reports/d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+        method: "PATCH",
+        actor: expect.objectContaining({ role: "support" })
+      })
+    );
+  });
+
+  it("audits support access to the problem-report list", async () => {
+    const listAdminProblemReports = vi.fn().mockResolvedValue({
+      items: [],
+      page: 1,
+      pageSize: 20,
+      total: 0
+    });
+    const response = await handleListAdminProblemReports(
+      new Request("https://openvac.test/api/admin/problem-reports?status=new", {
+        headers: { "x-request-id": "request-1" }
+      }),
+      partialStore({
+        getAdminRole: vi.fn().mockResolvedValue("support"),
+        listAdminProblemReports
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(listAdminProblemReports).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 1, pageSize: 20, status: "new" }),
+      expect.objectContaining({
+        path: "/api/admin/problem-reports",
+        method: "GET",
+        actor: expect.objectContaining({ role: "support" })
+      })
+    );
   });
 
   it("returns an ownership-safe 404 for feedback on another user's message", async () => {
@@ -285,9 +423,42 @@ describe("API handlers", () => {
       "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
       {
         versionId: "cb71f682-9bdc-4899-b7b3-c459402b192c",
-        expectedContentHash: contentHash
+        expectedContentHash: contentHash,
+        decision: "approved"
       },
       expect.objectContaining({
+        actor: expect.objectContaining({
+          id: "user-1",
+          role: "knowledge_editor"
+        })
+      })
+    );
+  });
+
+  it("archives knowledge through the authenticated audit context", async () => {
+    const archiveKnowledgeDocument = vi.fn().mockResolvedValue({
+      id: "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+      status: "archived"
+    });
+    const store = partialStore({
+      getAdminRole: vi.fn().mockResolvedValue("knowledge_editor"),
+      archiveKnowledgeDocument
+    });
+
+    const response = await handleArchiveKnowledge(
+      jsonRequest(
+        "/api/admin/knowledge/d607d4d6-82df-4f1b-a5d4-7d80277e327d/archive",
+        {}
+      ),
+      "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+      store
+    );
+
+    expect(response.status).toBe(200);
+    expect(archiveKnowledgeDocument).toHaveBeenCalledWith(
+      "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+      expect.objectContaining({
+        path: "/api/admin/knowledge/d607d4d6-82df-4f1b-a5d4-7d80277e327d/archive",
         actor: expect.objectContaining({
           id: "user-1",
           role: "knowledge_editor"

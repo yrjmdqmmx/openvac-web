@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 
 import { sqlClient } from "@/server/db";
+import {
+  assertKnowledgeSourceAuthorized,
+  isKnowledgeSourceTier
+} from "@/server/knowledge/source-policy";
 import { ProviderError, type ParsedDocument } from "@/server/providers";
 
 import type {
@@ -240,9 +244,17 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
         SELECT
           kv.document_id,
           kv.id AS version_id,
-          kv.content
+          kv.content,
+          kv.citation_metadata,
+          ks.source_tier,
+          ks.enabled AS source_enabled,
+          ks.deleted_at AS source_deleted_at,
+          ks.canonical_url,
+          ks.publisher,
+          ks.metadata AS source_metadata
         FROM knowledge_version kv
         JOIN knowledge_document kd ON kd.id = kv.document_id
+        JOIN knowledge_source ks ON ks.id = kd.source_id
         WHERE
           kv.id = $1
           AND kv.document_id = $2
@@ -250,6 +262,9 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
           AND kv.status = 'review'
           AND kd.status = 'review'
           AND kv.content_hash = $3
+          AND kv.metadata ->> 'reviewStatus' = 'approved'
+          AND kv.metadata #>> '{review,status}' = 'approved'
+          AND kv.metadata #>> '{review,contentHash}' = $3
           AND kv.citation_metadata ->> 'ingestionMode' = 'full_text'
         LIMIT 1
       `,
@@ -264,8 +279,29 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
       !row ||
       typeof row.document_id !== "string" ||
       typeof row.version_id !== "string" ||
-      typeof row.content !== "string"
+      typeof row.content !== "string" ||
+      !isKnowledgeSourceTier(row.source_tier)
     ) {
+      return null;
+    }
+    try {
+      assertKnowledgeSourceAuthorized(
+        {
+          sourceTier: row.source_tier,
+          enabled: row.source_enabled === true,
+          deletedAt:
+            row.source_deleted_at instanceof Date ||
+            typeof row.source_deleted_at === "string"
+              ? row.source_deleted_at
+              : null,
+          canonicalUrl:
+            typeof row.canonical_url === "string" ? row.canonical_url : null,
+          publisher: typeof row.publisher === "string" ? row.publisher : null,
+          metadata: recordValue(row.source_metadata)
+        },
+        recordValue(row.citation_metadata)
+      );
+    } catch {
       return null;
     }
     return {

@@ -2,7 +2,7 @@
   "source": {
     "sourceKey": "cern-vacuum-systems-2024",
     "kind": "manual",
-    "name": "Vacuum systems",
+    "name": "II.8 — Vacuum systems",
     "publisher": "CERN",
     "canonicalUrl": "https://cds.cern.ch/record/2929324?ln=en",
     "baseUrl": "https://cds.cern.ch",
@@ -10,12 +10,21 @@
     "licensePolicy": "Creative Commons Attribution 4.0",
     "trustLevel": 100,
     "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
-    "doi": "10.23730/CYRSP-2024-003.1259"
+    "doi": "10.23730/CYRSP-2024-003.1259",
+    "rightsDecision": {
+      "status": "approved",
+      "scope": "full_text",
+      "basis": "The record and article state that this specific work is published under Creative Commons Attribution 4.0. Third-party courtesy figures remain excluded from OpenVac redistribution.",
+      "evidenceUrl": "https://e-publishing.cern.ch/index.php/CYRSP/article/view/1624",
+      "appliesToRecordUrl": "https://cds.cern.ch/record/2929324?ln=en",
+      "reviewedBy": "openvac-codex-source-review",
+      "reviewedAt": "2026-08-01T00:00:00.000Z"
+    }
   },
   "document": {
     "externalKey": "cern-2024-003-vacuum-systems",
-    "title": "Vacuum systems（OpenVac 中文知识摘编）",
-    "description": "依据 CERN 2024 年 Vacuum systems 章节人工核对并用中文改写的基础知识。",
+    "title": "II.8 — Vacuum systems（OpenVac 中文知识摘编）",
+    "description": "依据 CERN 2024 年 Vacuum systems 章节页码定位后由 OpenVac 独立整理的中文基础知识；工程定案仍需专家复核。",
     "language": "zh-CN",
     "mimeType": "application/pdf",
     "tags": ["真空基础", "真空泵", "抽速", "流导", "气载", "放气"]
@@ -26,6 +35,12 @@
     "fetchedAt": "2026-07-31T16:19:00.000Z",
     "reviewedAt": "2026-07-31T16:19:00.000Z",
     "reviewMethod": "official-pdf-text-and-page-review",
+    "officialPdfUrl": "https://e-publishing.cern.ch/index.php/CYRSP/article/download/1624/1336/7999",
+    "excerptVerification": {
+      "status": "official_pdf_page_reviewed",
+      "reviewedPdfUrl": "https://e-publishing.cern.ch/index.php/CYRSP/article/download/1624/1336/7999",
+      "printedPageRange": "1259-1338"
+    },
     "licenseClass": "open",
     "ingestionMode": "full_text"
   },
@@ -35,21 +50,42 @@
       "pageEnd": 1259,
       "sectionPath": ["II.8.1 Introduction"],
       "keywords": ["真空", "真空技术", "压力", "分子碰撞"],
-      "content": "真空并不是绝对不存在物质，而是气体分子密度和分子碰撞率低于周围环境的状态。真空科学与技术的核心目的，是降低分子与周围环境发生碰撞的频率，从而保护工艺质量。工程上应使用压力、气体组成、温度等可测量量描述真空，不能只用‘真空度高低’作模糊判断。"
+      "content": "真空并不是绝对不存在物质，而是气体分子密度和分子碰撞率低于周围环境的状态。真空科学与技术的核心目的，是降低分子与周围环境发生碰撞的频率，从而保护工艺质量。工程上应使用压力、气体组成、温度等可测量量描述真空，不能只用‘真空度高低’作模糊判断。",
+      "originalExcerptPage": 1259,
+      "originalExcerpt": "Hence, the objective of vacuum science and technology is to reduce the collision rate of molecules with the surrounding environment to preserve the quality of a process.",
+      "chineseStatement": "真空并不是绝对不存在物质，而是气体分子密度和分子碰撞率低于周围环境的状态。真空科学与技术的核心目的，是降低分子与周围环境发生碰撞的频率，从而保护工艺质量。工程上应使用压力、气体组成、温度等可测量量描述真空，不能只用‘真空度高低’作模糊判断。",
+      "applicability": "适用于解释真空技术的基本目标；不提供具体设备的验收压力或性能承诺。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "11576c116d2c4689b1ace45333e6d89d4ecd8d45c4a649680595bab87ee67653"
     },
     {
       "pageStart": 1261,
       "pageEnd": 1262,
       "sectionPath": ["II.8.2 Basic concepts", "II.8.2.1 Gas kinetic theory"],
       "keywords": ["压力", "帕", "mbar", "Torr", "分压", "单位换算"],
-      "content": "压力是气体分子作用在容器壁单位面积上的力，SI 单位是 Pa；真空工程也常用 mbar 和 Torr。常用换算为 1 mbar = 100 Pa，1 Torr 约为 133 Pa。混合气体的总压力等于各组分分压之和。比较设备参数或排查故障前，必须先统一压力单位，并区分总压与分压。"
+      "content": "压力是气体分子作用在容器壁单位面积上的力，SI 单位是 Pa；真空工程也常用 mbar 和 Torr。常用换算为 1 mbar = 100 Pa，1 Torr 约为 133 Pa。混合气体的总压力等于各组分分压之和。比较设备参数或排查故障前，必须先统一压力单位，并区分总压与分压。",
+      "originalExcerptPage": 1261,
+      "originalExcerpt": "The Pascal, Pa, is the Standard International (SI) unit",
+      "chineseStatement": "压力是气体分子作用在容器壁单位面积上的力，SI 单位是 Pa；真空工程也常用 mbar 和 Torr。常用换算为 1 mbar = 100 Pa，1 Torr 约为 133 Pa。混合气体的总压力等于各组分分压之和。比较设备参数或排查故障前，必须先统一压力单位，并区分总压与分压。",
+      "applicability": "适用于压力单位识别和换算；比较数据前仍须确认仪表显示的是总压还是分压。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "e7b1b11f99bae9a7af5efbaa1d55e1cd96edc655a458e56ebc2686779cf9b70c"
     },
     {
       "pageStart": 1262,
       "pageEnd": 1263,
       "sectionPath": ["II.8.2 Basic concepts", "II.8.2.2 Gas flow"],
       "keywords": ["平均自由程", "黏滞流", "分子流", "流态", "压力范围"],
-      "content": "气体分子的平均自由程随压力降低而增大。系统从大气压抽到高真空时，会经历湍流、黏滞层流和分子流等不同流态；进入高真空和超高真空后，分子与腔壁的碰撞通常比彼此碰撞更重要。泵型、管路流导、测量方法和抽空过程都与所处流态有关。"
+      "content": "气体分子的平均自由程随压力降低而增大。系统从大气压抽到高真空时，会经历湍流、黏滞层流和分子流等不同流态；进入高真空和超高真空后，分子与腔壁的碰撞通常比彼此碰撞更重要。泵型、管路流导、测量方法和抽空过程都与所处流态有关。",
+      "originalExcerptPage": 1263,
+      "originalExcerpt": "In the low vacuum regime, the flow is viscous and laminar. In the HV and UHV regime, the flow is molecular.",
+      "chineseStatement": "气体分子的平均自由程随压力降低而增大。系统从大气压抽到高真空时，会经历湍流、黏滞层流和分子流等不同流态；进入高真空和超高真空后，分子与腔壁的碰撞通常比彼此碰撞更重要。泵型、管路流导、测量方法和抽空过程都与所处流态有关。",
+      "applicability": "适用于按压力、气体和系统尺寸初步判断流态；具体边界会随工况和几何尺度变化。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "c76eb899bba21273c2dcca8e777bd617cf582248d8484485b1523a7ebaa59307"
     },
     {
       "pageStart": 1263,
@@ -60,28 +96,56 @@
         "Conductance"
       ],
       "keywords": ["流导", "管径", "管长", "分子流", "管路损失"],
-      "content": "流导 C 表示管路让气体通过的能力，等于气体通量 Q 与管路两端压差之比，常用单位为 L/s。在分子流条件下，长直圆管的流导随直径的三次方增加、随长度增加而降低。因此，真空管路宜尽量短而粗；只提高泵的铭牌抽速而不改善细长管路，往往不能显著改善腔体端压力。"
+      "content": "流导 C 表示管路让气体通过的能力，等于气体吞吐量（throughput）Q 与管路两端压差之比，常用单位为 L/s 或 m³/s；Q 则使用 mbar·L/s 或 Pa·m³/s 等压力—体积/时间单位。在分子流条件下，长直圆管的流导随直径的三次方增加、随长度增加而降低。因此，真空管路宜尽量短而粗；只提高泵的铭牌抽速而不改善细长管路，往往不能显著改善腔体端压力。",
+      "originalExcerptPage": 1264,
+      "originalExcerpt": "To increase the conductance of a vacuum system, it is better to have a vacuum chamber with large diameter and short length",
+      "chineseStatement": "流导 C 表示管路让气体通过的能力，等于气体吞吐量（throughput）Q 与管路两端压差之比，常用单位为 L/s 或 m³/s；Q 则使用 mbar·L/s 或 Pa·m³/s 等压力—体积/时间单位。在分子流条件下，长直圆管的流导随直径的三次方增加、随长度增加而降低。因此，真空管路宜尽量短而粗；只提高泵的铭牌抽速而不改善细长管路，往往不能显著改善腔体端压力。",
+      "applicability": "适用于分子流条件下的管路布置原则；复杂附件、过渡流和黏性流须另行核算。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "afddfd32aeed9c29aaffd31769c130ec962fd833358f0fcf00011ca12fccaa86"
     },
     {
       "pageStart": 1264,
       "pageEnd": 1265,
       "sectionPath": ["II.8.2 Basic concepts", "Pumping speed and throughput"],
       "keywords": ["抽速", "抽气速度", "气体通量", "气载", "工作压力", "Q=PS"],
-      "content": "泵的抽气速度 S 定义为泵入口处被抽走的气体通量 Q 与入口压力 P 之比，即 S = Q/P；等价地，气体通量满足 Q = P×S。稳态近似下，系统压力可理解为气载与有效抽速之比。要降低压力，可以减少漏气、放气和工艺进气形成的气载，也可以提高系统在腔体位置实际获得的有效抽速。"
+      "content": "泵的抽气速度 S 定义为泵入口处气体吞吐量 Q 与入口压力 P 之比，即 S = Q/P；等价地，Q = P×S。S 使用 L/s 或 m³/s，Q 使用 mbar·L/s 或 Pa·m³/s 等压力—体积/时间单位，不能把 Q 当成体积流量。稳态近似下，系统压力可理解为气载与有效抽速之比。要降低压力，可以减少漏气、放气和工艺进气形成的气载，也可以提高系统在腔体位置实际获得的有效抽速。",
+      "originalExcerptPage": 1264,
+      "originalExcerpt": "The pumping speed (or volumetric flow rate), S, of a pump is defined as the ratio of the flux of molecules pumped, Q, to the pressure at the pump inlet",
+      "chineseStatement": "泵的抽气速度 S 定义为泵入口处气体吞吐量 Q 与入口压力 P 之比，即 S = Q/P；等价地，Q = P×S。S 使用 L/s 或 m³/s，Q 使用 mbar·L/s 或 Pa·m³/s 等压力—体积/时间单位，不能把 Q 当成体积流量。稳态近似下，系统压力可理解为气载与有效抽速之比。要降低压力，可以减少漏气、放气和工艺进气形成的气载，也可以提高系统在腔体位置实际获得的有效抽速。",
+      "applicability": "适用于泵入口处抽速、吞吐量和压力的定义关系；非稳态抽空和具体泵曲线须另行处理。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "489b12065e8132fa28065667e538b8b784784159b308cce7d81ad07fda0d3020"
     },
     {
       "pageStart": 1265,
       "pageEnd": 1266,
       "sectionPath": ["II.8.2 Basic concepts", "Effective pumping speed"],
       "keywords": ["有效抽速", "泵口抽速", "流导限制", "腔体压力", "选泵"],
-      "content": "泵通过管路连接到真空腔体时，腔体端有效抽速 Seff 同时受泵口抽速 S 和管路流导 C 限制，二者按串联关系共同决定系统能力。当 C 远小于 S 时，Seff 接近 C，系统处于流导受限状态；此时继续换更大抽速的泵收益很小，应优先缩短管路、增大管径或调整泵的位置。"
+      "content": "泵通过管路连接到真空腔体时，腔体端有效抽速 Seff 同时受泵口抽速 S 和管路流导 C 限制，二者按串联关系共同决定系统能力。当 C 远小于 S 时，Seff 接近 C，系统处于流导受限状态；此时继续换更大抽速的泵收益很小，应优先缩短管路、增大管径或调整泵的位置。",
+      "originalExcerptPage": 1266,
+      "originalExcerpt": "The pumping speed seen at any position along a pipe is reduced by the conductance of this same pipe.",
+      "chineseStatement": "泵通过管路连接到真空腔体时，腔体端有效抽速 Seff 同时受泵口抽速 S 和管路流导 C 限制，二者按串联关系共同决定系统能力。当 C 远小于 S 时，Seff 接近 C，系统处于流导受限状态；此时继续换更大抽速的泵收益很小，应优先缩短管路、增大管径或调整泵的位置。",
+      "applicability": "适用于泵与腔体之间存在串联流导限制的系统；实际附件和不同流态必须纳入模型。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "02ce82c88126eae7d62d912c0a5f0e238ccbecc6d4d7bad4703242a740cd1908"
     },
     {
       "pageStart": 1272,
       "pageEnd": 1272,
       "sectionPath": ["II.8.3 Instrumentation", "II.8.3.3 Vacuum pumps"],
       "keywords": ["真空泵", "抽气", "捕集", "前级泵", "维持真空", "泵的作用"],
-      "content": "真空泵是从容器中移除气体分子，或在系统内捕集气体分子，以建立和维持真空的装置。没有一种泵能覆盖从大气压到超高真空的全部压力范围。按作用机理可粗分为两类：油封机械泵、涡轮分子泵等把气体输送到系统外；离子泵、低温泵和吸气剂泵等把气体捕集在系统内。实际系统常由不同泵组合完成粗抽、前级支持和高真空维持。"
+      "content": "真空泵是从容器中移除气体分子，或在系统内捕集气体分子，以建立和维持真空的装置。没有一种泵能覆盖从大气压到超高真空的全部压力范围。按作用机理可粗分为两类：油封机械泵、涡轮分子泵等把气体输送到系统外；离子泵、低温泵和吸气剂泵等把气体捕集在系统内。实际系统常由不同泵组合完成粗抽、前级支持和高真空维持。",
+      "originalExcerptPage": 1272,
+      "originalExcerpt": "Hence, a single type of pump cannot be used. Some pumps are used to evacuate the vessel and others to maintain a vacuum.",
+      "chineseStatement": "真空泵是从容器中移除气体分子，或在系统内捕集气体分子，以建立和维持真空的装置。没有一种泵能覆盖从大气压到超高真空的全部压力范围。按作用机理可粗分为两类：油封机械泵、涡轮分子泵等把气体输送到系统外；离子泵、低温泵和吸气剂泵等把气体捕集在系统内。实际系统常由不同泵组合完成粗抽、前级支持和高真空维持。",
+      "applicability": "适用于说明宽压力范围常需多类泵协作；具体组合必须依据介质、气载和厂家边界确定。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "d39698d649ea2825f000913e21d9d4b86b695113320f9609111883851b0853dc"
     },
     {
       "pageStart": 1272,
@@ -99,18 +163,339 @@
         "高真空",
         "超高真空"
       ],
-      "content": "CERN 章节给出的典型原理示例是：油封旋片泵通过吸入、封闭、压缩和排气完成粗抽，也常作为涡轮分子泵的前级；涡轮分子泵在分子流区通过高速叶片向气体分子传递动量，并需要前级泵处理出口气体；溅射离子泵没有排气口，而是在高真空范围内捕集残余气体，常用于维持真空。具体可用压力范围和性能必须以目标型号的厂家曲线与手册为准。"
+      "content": "CERN 章节给出的典型原理示例是：油封旋片泵通过吸入、封闭、压缩和排气完成粗抽，也常作为涡轮分子泵的前级；涡轮分子泵在分子流区通过高速叶片向气体分子传递动量，并需要前级泵处理出口气体；溅射离子泵没有排气口，而是在高真空范围内捕集残余气体，常用于维持真空。具体可用压力范围和性能必须以目标型号的厂家曲线与手册为准。",
+      "originalExcerptPage": 1272,
+      "originalExcerpt": "While a rotating vane pump extracts gas from the inlet, traps it, compresses it and releases it at the exhaust.",
+      "chineseStatement": "CERN 章节给出的典型原理示例是：油封旋片泵通过吸入、封闭、压缩和排气完成粗抽，也常作为涡轮分子泵的前级；涡轮分子泵在分子流区通过高速叶片向气体分子传递动量，并需要前级泵处理出口气体；溅射离子泵没有排气口，而是在高真空范围内捕集残余气体，常用于维持真空。具体可用压力范围和性能必须以目标型号的厂家曲线与手册为准。",
+      "applicability": "仅适用于油封旋片泵的通用工作原理；不能据此推导具体型号、介质兼容性或安全能力。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "6a5bd8bc07c5ba92b738a5a347eddc629041dfd59c63c9e89350aa45352245ac"
     },
     {
       "pageStart": 1273,
       "pageEnd": 1274,
       "sectionPath": ["II.8.4 Outgassing"],
       "keywords": ["放气", "漏气", "气载", "抽空时间", "水汽", "材料"],
-      "content": "在没有真实泄漏时，真空系统的气载仍可能主要来自材料表面和内部的放气。抽空过程通常依次受到容积气体排出、表面解吸、材料内部扩散和渗透影响；其中表面水汽解吸可能使压力下降越来越慢。遇到抽不到目标压力时，不能只判断泵太小，还应检查漏率、材料和密封件放气、污染、温度、暴露空气时间以及抽空历史。"
+      "content": "在没有真实泄漏时，真空系统的气载仍可能主要来自材料表面和内部的放气。抽空过程通常依次受到容积气体排出、表面解吸、材料内部扩散和渗透影响；其中表面水汽解吸可能使压力下降越来越慢。遇到抽不到目标压力时，不能只判断泵太小，还应检查漏率、材料和密封件放气、污染、温度、暴露空气时间以及抽空历史。",
+      "originalExcerptPage": 1274,
+      "originalExcerpt": "During the pump down, one distinguishes several phases: 1) volume pumping, 2) surface desorption, 3) bulk diffusion and 4) permeation through the wall.",
+      "chineseStatement": "在没有真实泄漏时，真空系统的气载仍可能主要来自材料表面和内部的放气。抽空过程通常依次受到容积气体排出、表面解吸、材料内部扩散和渗透影响；其中表面水汽解吸可能使压力下降越来越慢。遇到抽不到目标压力时，不能只判断泵太小，还应检查漏率、材料和密封件放气、污染、温度、暴露空气时间以及抽空历史。",
+      "applicability": "适用于解释抽空曲线的典型阶段；阶段占比会随材料、温度、暴露历史和泄漏状态变化。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "4017d897b2e8b43a40007e2afa69bb44121cc7965aaf6953d488763dc020360d"
+    },
+    {
+      "pageStart": 1266,
+      "pageEnd": 1266,
+      "sectionPath": [
+        "II.8.3 Instrumentation",
+        "II.8.3.1 Vacuum gauges",
+        "Gauge selection"
+      ],
+      "keywords": ["真空计", "量程", "测量原理", "压力监测", "仪表选择"],
+      "content": "从大气压到超高真空跨越许多数量级，单一真空计不能可靠覆盖全部范围。系统应按粗真空、高真空和超高真空阶段配置相适应的测量原理，并在量程交叠区核对读数连续性。选泵和故障判断不能只依据一只超出有效量程的仪表。",
+      "originalExcerptPage": 1266,
+      "originalExcerpt": "a single vacuum gauge cannot cover such a large range.",
+      "chineseStatement": "从大气压到超高真空跨越许多数量级，单一真空计不能可靠覆盖全部范围。系统应按粗真空、高真空和超高真空阶段配置相适应的测量原理，并在量程交叠区核对读数连续性。选泵和故障判断不能只依据一只超出有效量程的仪表。",
+      "applicability": "适用于跨粗真空至超高真空的仪表配置原则；量程和气体修正必须按具体仪表确认。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "c509625554743f140cbfdc5a6b34e748cb2cb76eaedfc9208ca2bd633ac88840"
+    },
+    {
+      "pageStart": 1266,
+      "pageEnd": 1266,
+      "sectionPath": [
+        "II.8.3 Instrumentation",
+        "II.8.3.1 Vacuum gauges",
+        "Pirani gauge"
+      ],
+      "keywords": ["Pirani", "皮拉尼", "热导真空计", "粗真空", "联锁"],
+      "content": "Pirani 热导真空计通过气体导热随压力变化的特性监测粗真空抽空过程，结构坚固且便于连续使用。它的读数会受气体种类和工作区间影响，在接近大气压或超出标定范围时不能当作精确压力；工程上常把它用于过程监测以及为更高真空仪表提供启用联锁条件。",
+      "originalExcerptPage": 1266,
+      "originalExcerpt": "This gauge covering the range from 1 atm to 10-4 mbar is therefore suitable to monitor the rough vacuum during a pump down of a vacuum system.",
+      "chineseStatement": "Pirani 热导真空计通过气体导热随压力变化的特性监测粗真空抽空过程，结构坚固且便于连续使用。它的读数会受气体种类和工作区间影响，在接近大气压或超出标定范围时不能当作精确压力；工程上常把它用于过程监测以及为更高真空仪表提供启用联锁条件。",
+      "applicability": "适用于该章节中的 Pirani 粗真空过程监测说明；精度、介质修正和量程以目标仪表手册为准。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "e85bd2471678856418d6cc9eac8b9aa2cb349b3ae2b427aadb642c00a6dc036a"
+    },
+    {
+      "pageStart": 1266,
+      "pageEnd": 1267,
+      "sectionPath": [
+        "II.8.3 Instrumentation",
+        "II.8.3.1 Vacuum gauges",
+        "Penning gauge"
+      ],
+      "keywords": ["Penning", "冷阴极", "放电", "高真空", "仪表联锁"],
+      "content": "Penning 冷阴极真空计依靠磁场中的气体放电电流推断压力，适合高真空范围而不适合在过高压力下直接工作。压力过高时放电可能不稳定甚至出现电弧，因此应由粗真空测量结果控制其启停，不能绕过仪表联锁强制点亮。",
+      "originalExcerptPage": 1267,
+      "originalExcerpt": "At high pressure, the Penning discharge is unstable and may cause arcing.",
+      "chineseStatement": "Penning 冷阴极真空计依靠磁场中的气体放电电流推断压力，适合高真空范围而不适合在过高压力下直接工作。压力过高时放电可能不稳定甚至出现电弧，因此应由粗真空测量结果控制其启停，不能绕过仪表联锁强制点亮。",
+      "applicability": "适用于解释 Penning 冷阴极计的高压风险和启用边界；不得绕过制造商联锁。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "4c71d7c88842af099ed49789a3f5f135ffd7c75dac54b6eae66389615c7360a7"
+    },
+    {
+      "pageStart": 1267,
+      "pageEnd": 1269,
+      "sectionPath": [
+        "II.8.3 Instrumentation",
+        "II.8.3.1 Vacuum gauges",
+        "Bayard-Alpert gauge"
+      ],
+      "keywords": [
+        "Bayard-Alpert",
+        "热阴极",
+        "电离真空计",
+        "超高真空",
+        "灯丝污染"
+      ],
+      "content": "Bayard-Alpert 热阴极电离真空计通过电子碰撞电离残余气体并收集离子电流测量超高真空。热灯丝会产生自身放气、裂解反应和微小抽气作用，污染或频繁暴露空气都会改变测量背景。读数异常时应同时检查灯丝状态、仪表洁净度、退气历史和安装位置。",
+      "originalExcerptPage": 1267,
+      "originalExcerpt": "Bayard-Alpert gauges are hot cathode gauges used for vacuum measurement",
+      "chineseStatement": "Bayard-Alpert 热阴极电离真空计通过电子碰撞电离残余气体并收集离子电流测量超高真空。热灯丝会产生自身放气、裂解反应和微小抽气作用，污染或频繁暴露空气都会改变测量背景。读数异常时应同时检查灯丝状态、仪表洁净度、退气历史和安装位置。",
+      "applicability": "适用于 Bayard-Alpert 热阴极电离计的原理分类；污染、退气和安装影响须按仪表程序检查。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "6466d754dc790b4b05e2d2fd7cc03eb2f42acb813a5ccc9d553af7ab6dd40d3a"
+    },
+    {
+      "pageStart": 1268,
+      "pageEnd": 1269,
+      "sectionPath": [
+        "II.8.3 Instrumentation",
+        "II.8.3.1 Vacuum gauges",
+        "Gas-dependent sensitivity"
+      ],
+      "keywords": ["氮当量", "气体灵敏度", "校准", "真空计误差", "分压"],
+      "content": "电离真空计对不同气体的灵敏度不同，常见显示值通常按氮气标定。实际气体不是氮气时，应使用对应的相对灵敏度修正，并说明气体组成和校准条件；不知道介质时只能把读数视为氮当量总压，不能据此给出精确分压或确定性工艺结论。",
+      "originalExcerptPage": 1268,
+      "originalExcerpt": "Arbitrarily, the pressure reading is expressed in nitrogen equivalent as if the gas composition was only pure nitrogen.",
+      "chineseStatement": "电离真空计对不同气体的灵敏度不同，常见显示值通常按氮气标定。实际气体不是氮气时，应使用对应的相对灵敏度修正，并说明气体组成和校准条件；不知道介质时只能把读数视为氮当量总压，不能据此给出精确分压或确定性工艺结论。",
+      "applicability": "适用于解释氮当量读数；未知气体组成时不能把显示值当作精确分压。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "c38465f62daacdf63fcad94afd6f5b8c4199d2d6c96a61653f0a27e25231d6fa"
+    },
+    {
+      "pageStart": 1269,
+      "pageEnd": 1271,
+      "sectionPath": [
+        "II.8.3 Instrumentation",
+        "II.8.3.2 Gas analysis",
+        "Quadrupole mass spectrometry"
+      ],
+      "keywords": ["QMS", "RGA", "残余气体分析", "质量峰", "碎片峰"],
+      "content": "四极质谱仪 QMS，也常称残余气体分析仪 RGA，通过离子质量电荷比分析真空中的气体组成。一个母体分子会形成多个碎片峰，不同气体也可能共享相同质量峰，因此不能看到单个峰就直接认定某种气体；应结合完整碎片模式、系统工况和总压信息判断。",
+      "originalExcerptPage": 1269,
+      "originalExcerpt": "Residual gas analysers (RGA) are used to perform gas analyses. Most of the time, quadrupole mass spectrometers (QMS) are used.",
+      "chineseStatement": "四极质谱仪 QMS，也常称残余气体分析仪 RGA，通过离子质量电荷比分析真空中的气体组成。一个母体分子会形成多个碎片峰，不同气体也可能共享相同质量峰，因此不能看到单个峰就直接认定某种气体；应结合完整碎片模式、系统工况和总压信息判断。",
+      "applicability": "适用于 RGA/QMS 的用途和常见类型说明；单峰识别仍需结合碎片模式与工况。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "c0b330bcb8c9efe8812e6d99fae9a34a60fd67485f50e0729ac53a35a92e1fcc"
+    },
+    {
+      "pageStart": 1271,
+      "pageEnd": 1271,
+      "sectionPath": [
+        "II.8.3 Instrumentation",
+        "II.8.3.2 Gas analysis",
+        "QMS calibration"
+      ],
+      "keywords": ["RGA 校准", "QMS 校准", "总压计", "相对灵敏度", "定量分析"],
+      "content": "QMS 的离子电流要结合各气体相对灵敏度，并用总压真空计归一化，才能估算分压。灯丝、电子能量、发射电流和倍增器设置改变后，旧校准可能不再适用。未经校准的谱图适合做趋势和污染线索判断，不应包装成高精度定量结果。",
+      "originalExcerptPage": 1271,
+      "originalExcerpt": "The QMS needs to be calibrated against a total pressure gauge to provide a quantitative analysis of a mass spectrum",
+      "chineseStatement": "QMS 的离子电流要结合各气体相对灵敏度，并用总压真空计归一化，才能估算分压。灯丝、电子能量、发射电流和倍增器设置改变后，旧校准可能不再适用。未经校准的谱图适合做趋势和污染线索判断，不应包装成高精度定量结果。",
+      "applicability": "适用于 QMS 定量分析的校准前提；参数变化后必须复核校准，未校准结果只宜作趋势判断。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "93d0c91be719380bf416320f8699773f36a28c522aa4af9a37ad3f4e033f546a"
+    },
+    {
+      "pageStart": 1271,
+      "pageEnd": 1271,
+      "sectionPath": [
+        "II.8.3 Instrumentation",
+        "II.8.3.2 Gas analysis",
+        "Air leak indicators"
+      ],
+      "keywords": ["漏气", "空气泄漏", "氮气", "氩气", "RGA", "检漏"],
+      "content": "RGA 中同时出现符合空气组成特征的氮和氩，可作为空气泄漏线索；氧气因表面反应活跃，不一定按空气比例完整出现。这个特征只能帮助定位方向，仍需结合压力变化、隔离试验和合适的检漏方法确认，不能仅凭一个质量峰判定漏点。",
+      "originalExcerptPage": 1271,
+      "originalExcerpt": "Indeed, traces of N2 and Ar are usually the signature of air leaks",
+      "chineseStatement": "RGA 中同时出现符合空气组成特征的氮和氩，可作为空气泄漏线索；氧气因表面反应活跃，不一定按空气比例完整出现。这个特征只能帮助定位方向，仍需结合压力变化、隔离试验和合适的检漏方法确认，不能仅凭一个质量峰判定漏点。",
+      "applicability": "适用于把氮和氩组合视为空气泄漏线索；仍须用隔离试验或合适检漏方法确认。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "5b94141dcbb26e67905557ace6e82b668ef9749654497674ba77c7d49cae7491"
+    },
+    {
+      "pageStart": 1272,
+      "pageEnd": 1272,
+      "sectionPath": [
+        "II.8.3 Instrumentation",
+        "II.8.3.3 Vacuum pumps",
+        "Oil-sealed rotary vane pump"
+      ],
+      "keywords": ["油封旋片泵", "前级泵", "真空泵油", "密封", "润滑", "排气"],
+      "content": "油封旋片泵通过旋片运动完成吸入、封闭、压缩和排气，常用于从大气压开始粗抽并为涡轮分子泵提供前级。该章节说明泵油承担密封、润滑、传热和防锈作用，但没有给出具体油品、介质兼容性或危险介质配置。选油和允许介质必须以目标型号手册及独立安全资料为准，不能从这段通用原理推导型号性能或安全适用性。",
+      "originalExcerptPage": 1272,
+      "originalExcerpt": "The wet pump operates with oil which acts as a sealing, a lubricant, a heat exchanger and protects the mechanical parts from rust and corrosion.",
+      "chineseStatement": "油封旋片泵通过旋片运动完成吸入、封闭、压缩和排气，常用于从大气压开始粗抽并为涡轮分子泵提供前级。该章节说明泵油承担密封、润滑、传热和防锈作用，但没有给出具体油品、介质兼容性或危险介质配置。选油和允许介质必须以目标型号手册及独立安全资料为准，不能从这段通用原理推导型号性能或安全适用性。",
+      "applicability": "仅说明油在油封旋片泵中的通用作用；油品、介质兼容和维护要求必须查目标型号资料。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "436a80ab6e35bab0792278678b1dc65bc121884015704bd4e6e201c9fb2908a5"
+    },
+    {
+      "pageStart": 1272,
+      "pageEnd": 1272,
+      "sectionPath": [
+        "II.8.3 Instrumentation",
+        "II.8.3.3 Vacuum pumps",
+        "Turbomolecular pump"
+      ],
+      "keywords": ["涡轮分子泵", "分子流", "前级压力", "压缩比", "叶片"],
+      "content": "涡轮分子泵依靠高速叶片向气体分子传递定向动量，只有在分子流条件下才能充分发挥抽速。泵出口仍需前级泵持续带走压缩后的气体，压缩比还随气体种类变化。该页没有给出具体型号的允许前级压力、保护联锁或安装限制，因此工程判断必须查目标型号曲线和手册。",
+      "originalExcerptPage": 1272,
+      "originalExcerpt": "During this process, the molecules are evacuated from the pump inlets to the outlet where a primary pump is taking care of them.",
+      "chineseStatement": "涡轮分子泵依靠高速叶片向气体分子传递定向动量，只有在分子流条件下才能充分发挥抽速。泵出口仍需前级泵持续带走压缩后的气体，压缩比还随气体种类变化。该页没有给出具体型号的允许前级压力、保护联锁或安装限制，因此工程判断必须查目标型号曲线和手册。",
+      "applicability": "适用于涡轮分子泵需要前级排气的通用机理；允许前级压力和保护逻辑以厂家手册为准。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "335be15f3dcf888c1e2f12e615d7013008ba3438fb0a3d5dfa0864a227c6ff16"
+    },
+    {
+      "pageStart": 1272,
+      "pageEnd": 1273,
+      "sectionPath": [
+        "II.8.3 Instrumentation",
+        "II.8.3.3 Vacuum pumps",
+        "Sputter ion pump"
+      ],
+      "keywords": ["溅射离子泵", "捕集泵", "超高真空", "气体种类", "维持真空"],
+      "content": "溅射离子泵利用 Penning 放电产生离子，并通过钛溅射形成的活性表面及离子埋藏作用捕集气体。它没有连续排气出口，主要用于已经建立高真空后的维持阶段；抽速和捕集方式随压力与气体种类变化，惰性气体和烃类的行为不能等同于活性气体。",
+      "originalExcerptPage": 1272,
+      "originalExcerpt": "The pump has no exhaust and traps the gas species.",
+      "chineseStatement": "溅射离子泵利用 Penning 放电产生离子，并通过钛溅射形成的活性表面及离子埋藏作用捕集气体。它没有连续排气出口，主要用于已经建立高真空后的维持阶段；抽速和捕集方式随压力与气体种类变化，惰性气体和烃类的行为不能等同于活性气体。",
+      "applicability": "适用于溅射离子泵作为捕集泵的基本特征；不同气体的抽速、容量和再释放风险须另查。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "b3912466070e4a86948f7c215b07d70c9e6becc646a6a4404a5c79603d3e9937"
+    },
+    {
+      "pageStart": 1274,
+      "pageEnd": 1276,
+      "sectionPath": [
+        "II.8.4 Outgassing",
+        "II.8.4.1 Elements of adsorption / desorption"
+      ],
+      "keywords": ["吸附", "解吸", "物理吸附", "化学吸附", "表面覆盖", "温度"],
+      "content": "材料表面的气体既可能以较弱的物理吸附结合，也可能形成更强的化学吸附。表面覆盖度、结合能和温度共同决定分子的停留与解吸速度；升温通常会缩短停留时间并加快放气。压力下降缓慢不一定是漏孔，也可能是表面水汽持续解吸形成的分布式气载。",
+      "originalExcerptPage": 1275,
+      "originalExcerpt": "Physical adsorption involves van der Waals intermolecular forces. Several monolayers of gas can be physisorbed on a surface. Chemical adsorption involves transfer of the electrons between atoms.",
+      "chineseStatement": "材料表面的气体既可能以较弱的物理吸附结合，也可能形成更强的化学吸附。表面覆盖度、结合能和温度共同决定分子的停留与解吸速度；升温通常会缩短停留时间并加快放气。压力下降缓慢不一定是漏孔，也可能是表面水汽持续解吸形成的分布式气载。",
+      "applicability": "适用于区分物理吸附和化学吸附；具体停留时间仍取决于结合能和表面温度。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "3506fca37669f4683d6c0435b055df7563f4f13fcb8618b60236b775a85dc79e"
+    },
+    {
+      "pageStart": 1273,
+      "pageEnd": 1277,
+      "sectionPath": [
+        "II.8.4 Outgassing",
+        "II.8.4.2 Unbaked systems",
+        "Leak versus outgassing"
+      ],
+      "keywords": ["漏率", "放气率", "压力曲线", "水汽", "扩散", "渗透"],
+      "content": "判断真空不良时应区分真实泄漏、表面解吸、材料内部扩散和经非金属材料渗透。未烘烤金属系统常由水汽主导，压力随抽气时间缓慢改善；聚合物、弹性密封和玻璃等材料还可能表现出更强放气或渗透。应结合时间趋势和气体组成检查，而不是把所有缓慢下降都归为漏气。",
+      "originalExcerptPage": 1274,
+      "originalExcerpt": "Surface desorption scales like the inverse of time.",
+      "chineseStatement": "判断真空不良时应区分真实泄漏、表面解吸、材料内部扩散和经非金属材料渗透。未烘烤金属系统常由水汽主导，压力随抽气时间缓慢改善；聚合物、弹性密封和玻璃等材料还可能表现出更强放气或渗透。应结合时间趋势和气体组成检查，而不是把所有缓慢下降都归为漏气。",
+      "applicability": "适用于未烘烤表面水汽主导的典型抽空阶段；真实泄漏、扩散和渗透仍须分别排查。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "3dbc262b192052601da527acaa27a242e034f520f06e9b6ce3ed8d084470d1ef"
+    },
+    {
+      "pageStart": 1277,
+      "pageEnd": 1277,
+      "sectionPath": [
+        "II.8.4 Outgassing",
+        "II.8.4.2 Unbaked systems",
+        "Venting practice"
+      ],
+      "keywords": ["回填", "干燥氮气", "再抽空", "水汽", "维护"],
+      "content": "需要把长期抽空的系统恢复到大气压时，采用高纯、充分干燥的氮气回填可减少表面重新吸附水汽，有利于维护后的真空恢复。该页只支持这种真空恢复原则，不构成气体操作程序；允许回填压力、流量、洁净度、供气连接和现场安全措施必须由设备程序与现场规则另行确认。",
+      "originalExcerptPage": 1277,
+      "originalExcerpt": "The study showed that venting with highly dry nitrogen gas was the best method",
+      "chineseStatement": "需要把长期抽空的系统恢复到大气压时，采用高纯、充分干燥的氮气回填可减少表面重新吸附水汽，有利于维护后的真空恢复。该页只支持这种真空恢复原则，不构成气体操作程序；允许回填压力、流量、洁净度、供气连接和现场安全措施必须由设备程序与现场规则另行确认。",
+      "applicability": "仅适用于减少维护回填后的水汽再吸附；不构成供气压力、流量或现场安全操作程序。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "3183fe08500be151e490a9a3376db0b35d0d1f18ef5a651e6a53c62d39dc7e78"
+    },
+    {
+      "pageStart": 1277,
+      "pageEnd": 1280,
+      "sectionPath": ["II.8.4 Outgassing", "II.8.4.3 Baked systems"],
+      "keywords": ["烘烤", "水汽", "氢气", "材料温度", "密封件", "漏检"],
+      "content": "真空烘烤通过提高表面温度加速水汽解吸，完成后金属系统的主要残余气体往往转为氢。烘烤温度和时长必须由腔体材料、密封、仪表、电缆及保温结构的允许值决定；所有真空暴露部件应纳入温度控制，结束后还需复查漏率和最终压力。",
+      "originalExcerptPage": 1278,
+      "originalExcerpt": "All parts of the accelerator exposed to vacuum shall be baked, including in-vacuum assemblies. Cold spots are forbidden because they will become a source of outgassing after the bakeout.",
+      "chineseStatement": "真空烘烤通过提高表面温度加速水汽解吸，完成后金属系统的主要残余气体往往转为氢。烘烤温度和时长必须由腔体材料、密封、仪表、电缆及保温结构的允许值决定；所有真空暴露部件应纳入温度控制，结束后还需复查漏率和最终压力。",
+      "applicability": "适用于该 CERN 烘烤系统的完整覆盖原则；温度和时长必须服从具体材料、密封和仪表限值。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "e77d26363216192dc0a438e4aa4eb862b38edd7684a60724473e13ac636c18d7"
+    },
+    {
+      "pageStart": 1283,
+      "pageEnd": 1285,
+      "sectionPath": [
+        "II.8.4 Outgassing",
+        "II.8.4.5 Non-metallic materials",
+        "II.8.4.6 Qualification of materials"
+      ],
+      "keywords": ["非金属材料", "弹性密封", "聚合物", "材料资格", "放气测试"],
+      "content": "非金属材料、聚合物和弹性密封的放气、渗透及耐温特性可能与金属相差很大，且强烈受制造和暴露历史影响。材料是否适合真空不能只凭名称判断，应确认具体牌号、表面积、温度、介质兼容性和可烘烤性；关键应用需要用放气测量或合格数据完成材料资格确认。",
+      "originalExcerptPage": 1284,
+      "originalExcerpt": "Polymers and elastomers are an important category of materials for vacuum technology.",
+      "chineseStatement": "非金属材料、聚合物和弹性密封的放气、渗透及耐温特性可能与金属相差很大，且强烈受制造和暴露历史影响。材料是否适合真空不能只凭名称判断，应确认具体牌号、表面积、温度、介质兼容性和可烘烤性；关键应用需要用放气测量或合格数据完成材料资格确认。",
+      "applicability": "适用于提示非金属材料需单独评估；具体牌号、厚度、温度和暴露历史决定放气与渗透。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "c20758ce5c6febfe60da6f7896ffd8c794d67785d619b9de8e0119f8448580a4"
+    },
+    {
+      "pageStart": 1285,
+      "pageEnd": 1285,
+      "sectionPath": [
+        "II.8.4 Outgassing",
+        "II.8.4.6 Qualification of materials",
+        "Cleaning and assembly"
+      ],
+      "keywords": ["清洗", "脱脂", "油污", "指纹", "洁净装配", "污染控制"],
+      "content": "真空部件清洗的目标是去除油脂、加工残留、指纹和其他表面污染，并根据材料和最终用途选择化学清洗或表面处理。清洗后还要通过手套、洁净环境和受控包装避免再次污染。该章节不是具体材料的清洗许可；材质、涂层或密封件不明确时，应先取得相容的清洗工艺，不能凭通用摘编确定溶剂、酸洗或温度。",
+      "originalExcerptPage": 1285,
+      "originalExcerpt": "Chemical cleaning is used to remove gross contamination such as grease, oil, fingerprints.",
+      "chineseStatement": "真空部件清洗的目标是去除油脂、加工残留、指纹和其他表面污染，并根据材料和最终用途选择化学清洗或表面处理。清洗后还要通过手套、洁净环境和受控包装避免再次污染。该章节不是具体材料的清洗许可；材质、涂层或密封件不明确时，应先取得相容的清洗工艺，不能凭通用摘编确定溶剂、酸洗或温度。",
+      "applicability": "适用于清洗目的说明；溶剂、酸洗、温度和流程必须先确认与材质、涂层和密封相容。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "1598a84823c39b7eb6956be6b20e82843f03135ccc04033127cca8e0fc936ff0"
     },
     {
       "pageStart": 1264,
-      "pageEnd": 1272,
+      "pageEnd": 1274,
       "sectionPath": ["OpenVac engineering synthesis", "Pump selection inputs"],
       "keywords": [
         "选泵",
@@ -122,7 +507,14 @@
         "流导",
         "前级泵"
       ],
-      "content": "基于该章节的抽速、气载、流导和泵型原理，选泵至少要确认：腔体容积与期望抽空时间，入口初始压力、目标压力和连续工作压力，气体种类及工艺进气量，漏气与放气形成的总气载，连接管路的直径、长度和附件流导，以及泵是否需要前级支持。腐蚀、可燃、有毒、富氧、粉尘、蒸汽或冷凝性介质还必须单独做材料兼容与安全审查。只有目标压力而没有气载和管路条件，不能可靠确定泵型与规格。"
+      "content": "基于该章节的抽速、气载、流导、抽空过程和泵型原理，初步选泵至少要确认：腔体容积与期望抽空时间，入口初始压力、目标压力和连续工作压力，气体种类及工艺进气量，漏气与放气形成的总气载，连接管路的直径、长度和附件流导，以及泵是否需要前级支持。只有目标压力而没有气载和管路条件，不能可靠确定泵型与规格；材料兼容、危险介质和具体产品限制还需要本章节之外的安全资料与厂家手册。",
+      "originalExcerptPage": 1264,
+      "originalExcerpt": "Hence, the pressure in a vacuum system is simply given by the ratio of the gas load to the pumping speed",
+      "chineseStatement": "基于该章节的抽速、气载、流导、抽空过程和泵型原理，初步选泵至少要确认：腔体容积与期望抽空时间，入口初始压力、目标压力和连续工作压力，气体种类及工艺进气量，漏气与放气形成的总气载，连接管路的直径、长度和附件流导，以及泵是否需要前级支持。只有目标压力而没有气载和管路条件，不能可靠确定泵型与规格；材料兼容、危险介质和具体产品限制还需要本章节之外的安全资料与厂家手册。",
+      "applicability": "适用于选泵前必须同时掌握气载与有效抽速的基础判断；完整选型还需管路、介质和工况资料。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "645e522a771c8caf6e4ddef8ebf44a56d214a696b87fa5159425bd64d5ee9d42"
     }
   ]
 }

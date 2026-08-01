@@ -10,13 +10,13 @@ import {
 import {
   adminRoleMutationSchema,
   budgetsSchema,
-  consultationStatusSchema,
   feedbackStatusSchema,
   knowledgeDraftSchema,
   knowledgeDraftUpdateSchema,
   knowledgeReviewSchema,
   metricsSchema,
   pageSchema,
+  problemReportStatusSchema,
   promptSchema,
   promptUpdateSchema,
   rollbackKnowledgeSchema,
@@ -200,41 +200,43 @@ export const handleSetFeedbackStatus = withApiErrors(
   }
 );
 
-export const handleListAdminConsultations = withApiErrors(
+export const handleListAdminProblemReports = withApiErrors(
   async (request: Request, store: ApiStore = apiStore) => {
-    await requireCapability(request, store, "consultations:read");
+    const actor = await requireCapability(
+      request,
+      store,
+      "problem_reports:read"
+    );
     const input = parseSearchParams(request, pageSchema);
-    return jsonData(await store.listAdminConsultations(pageInput(input)));
+    return jsonData(
+      await store.listAdminProblemReports(
+        pageInput(input),
+        auditContext(request, actor)
+      )
+    );
   }
 );
 
-export const handleSetConsultationStatus = withApiErrors(
+export const handleSetProblemReportStatus = withApiErrors(
   async (
     request: Request,
-    consultationId: string,
+    problemReportId: string,
     store: ApiStore = apiStore
   ) => {
     const actor = await requireCapability(
       request,
       store,
-      "consultations:write"
+      "problem_reports:write"
     );
-    const id = uuidSchema.parse(consultationId);
-    const input = await parseJson(request, consultationStatusSchema);
-    if (input.assignedTo && !(await store.getAdminRole(input.assignedTo))) {
-      throw new ApiError(
-        422,
-        "INVALID_ASSIGNEE",
-        "咨询单只能分配给有效的管理员账号。"
-      );
-    }
-    const updated = await store.setConsultationStatus(
+    const id = uuidSchema.parse(problemReportId);
+    const input = await parseJson(request, problemReportStatusSchema);
+    const updated = await store.setProblemReportStatus(
       id,
       input,
       auditContext(request, actor)
     );
 
-    if (!updated) throw notFound("咨询单");
+    if (!updated) throw notFound("问题反馈");
     return jsonData(updated);
   }
 );
@@ -311,6 +313,20 @@ export const handlePublishKnowledge = withApiErrors(
 
     if (!published) throw notFound("可发布的知识草稿");
     return jsonData(published);
+  }
+);
+
+export const handleArchiveKnowledge = withApiErrors(
+  async (request: Request, documentId: string, store: ApiStore = apiStore) => {
+    const actor = await requireCapability(request, store, "knowledge:write");
+    const id = uuidSchema.parse(documentId);
+    const archived = await store.archiveKnowledgeDocument(
+      id,
+      auditContext(request, actor)
+    );
+
+    if (!archived) throw notFound("知识文档");
+    return jsonData(archived);
   }
 );
 

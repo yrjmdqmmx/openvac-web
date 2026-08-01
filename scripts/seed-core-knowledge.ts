@@ -5,7 +5,6 @@ import { and, eq, max } from "drizzle-orm";
 
 import { db, sqlClient } from "../src/server/db";
 import {
-  knowledgeChunks,
   knowledgeDocuments,
   knowledgeSources,
   knowledgeVersions
@@ -26,6 +25,7 @@ const sourceValues = {
   metadata: {
     sourceKey: core.source.sourceKey,
     rightsReviewed: true,
+    rightsDecision: core.source.rightsDecision,
     licenseUrl: core.source.licenseUrl,
     doi: core.source.doi,
     seededBy: "knowledge/core/cern-vacuum-systems-2024.json"
@@ -36,7 +36,7 @@ const sourceValues = {
 try {
   const result = await db.transaction(async (tx) => {
     const [existingSource] = await tx
-      .select({ id: knowledgeSources.id })
+      .select({ id: knowledgeSources.id, metadata: knowledgeSources.metadata })
       .from(knowledgeSources)
       .where(eq(knowledgeSources.canonicalUrl, core.source.canonicalUrl))
       .limit(1);
@@ -45,7 +45,13 @@ try {
     if (existingSource) {
       await tx
         .update(knowledgeSources)
-        .set(sourceValues)
+        .set({
+          ...sourceValues,
+          metadata: {
+            ...(sourceValues.metadata ?? {}),
+            ...(existingSource.metadata ?? {})
+          }
+        })
         .where(eq(knowledgeSources.id, sourceId));
     } else {
       await tx.insert(knowledgeSources).values({
@@ -58,7 +64,8 @@ try {
     const [existingDocument] = await tx
       .select({
         id: knowledgeDocuments.id,
-        currentVersionId: knowledgeDocuments.currentVersionId
+        currentVersionId: knowledgeDocuments.currentVersionId,
+        status: knowledgeDocuments.status
       })
       .from(knowledgeDocuments)
       .where(
@@ -77,7 +84,7 @@ try {
       description: core.document.description,
       language: core.document.language,
       mimeType: core.document.mimeType,
-      status: "published",
+      status: existingDocument?.status ?? "draft",
       tags: core.document.tags,
       metadata: {
         attribution:
@@ -120,6 +127,7 @@ try {
             id: knowledgeVersions.id,
             contentHash: knowledgeVersions.contentHash,
             version: knowledgeVersions.version,
+            status: knowledgeVersions.status,
             metadata: knowledgeVersions.metadata
           })
           .from(knowledgeVersions)
@@ -139,24 +147,34 @@ try {
         ? currentVersion.version
         : Number(latestVersion?.value ?? 0) + 1;
 
+    if (existingDocument && currentVersion?.contentHash !== contentHash) {
+      throw new Error(
+        "Core knowledge content changed. Refusing to bypass the draft and human-review workflow."
+      );
+    }
+
     if (currentVersion?.contentHash === contentHash) {
       const currentMetadata = currentVersion.metadata ?? {};
       await tx
         .update(knowledgeVersions)
         .set({
-          status: "published",
+          status: currentVersion.status,
           content: canonicalContent,
           citationMetadata: core.citation,
           metadata: {
             ...currentMetadata,
-            reviewStatus: "approved",
+            reviewStatus:
+              typeof currentMetadata.reviewStatus === "string"
+                ? currentMetadata.reviewStatus
+                : "required",
             embeddingStatus:
               typeof currentMetadata.embeddingStatus === "string"
                 ? currentMetadata.embeddingStatus
                 : "not_configured",
-            seedVersion: 1
+            seedVersion: 1,
+            legacySeed: true,
+            humanTechnicalReviewRequired: true
           },
-          publishedAt: now,
           updatedAt: now
         })
         .where(eq(knowledgeVersions.id, versionId));
@@ -168,35 +186,18 @@ try {
         contentHash,
         content: canonicalContent,
         citationMetadata: core.citation,
-        status: "published",
+        status: "draft",
         parserVersion: "openvac-curated-v1",
         metadata: {
-          reviewStatus: "approved",
-          embeddingStatus: "not_configured",
-          seedVersion: 1
+          reviewStatus: "required",
+          embeddingStatus: "pending_review",
+          seedVersion: 1,
+          legacySeed: true,
+          humanTechnicalReviewRequired: true
         },
-        publishedAt: now,
         createdAt: now,
         updatedAt: now
       });
-
-      await tx.insert(knowledgeChunks).values(
-        core.chunks.map((chunk, index) => ({
-          id: randomUUID(),
-          versionId,
-          chunkIndex: index,
-          content: `${chunk.content}\n关键词：${chunk.keywords.join("、")}`,
-          pageStart: chunk.pageStart,
-          pageEnd: chunk.pageEnd,
-          sectionPath: chunk.sectionPath,
-          metadata: {
-            keywords: chunk.keywords,
-            curatedTranslation: true,
-            sourceLanguage: "en"
-          },
-          createdAt: now
-        }))
-      );
     }
 
     await tx
@@ -212,13 +213,14 @@ try {
       documentId,
       versionId,
       versionNumber,
-      chunks: core.chunks.length,
+      chunks: currentVersion?.status === "published" ? core.chunks.length : 0,
+      status: currentVersion?.status ?? "draft",
       unchanged: currentVersion?.contentHash === contentHash
     };
   });
 
   console.log(
-    `Published core knowledge v${result.versionNumber}: ${result.chunks} chunks (${result.unchanged ? "refreshed" : "new version"}).`
+    `${result.status === "published" ? "Refreshed published" : "Seeded review-required"} core knowledge v${result.versionNumber}: ${result.chunks} retrievable chunks (${result.unchanged ? "unchanged" : "new draft"}).`
   );
 } finally {
   await sqlClient.end({ timeout: 5 });

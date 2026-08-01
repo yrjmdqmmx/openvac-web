@@ -1,5 +1,6 @@
 import { relations, sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   index,
   integer,
@@ -252,8 +253,8 @@ export const feedback = pgTable(
   ]
 );
 
-export const consultation = pgTable(
-  "consultation",
+export const problemReport = pgTable(
+  "problem_report",
   {
     id: uuid("id").defaultRandom().primaryKey(),
     userId: text("user_id")
@@ -262,24 +263,20 @@ export const consultation = pgTable(
     conversationId: uuid("conversation_id").references(() => conversation.id, {
       onDelete: "set null"
     }),
-    status: text("status").default("submitted").notNull(),
-    contactName: text("contact_name").notNull(),
-    companyName: text("company_name").notNull(),
-    contactMethod: text("contact_method").notNull(),
-    contactValue: text("contact_value").notNull(),
-    problem: text("problem").notNull(),
-    conversationSummary: text("conversation_summary").notNull(),
+    messageId: uuid("message_id").references(() => message.id, {
+      onDelete: "set null"
+    }),
+    category: text("category").notNull(),
+    description: text("description").notNull(),
+    includeContext: boolean("include_context").default(false).notNull(),
     context: jsonb("context")
       .$type<Record<string, unknown>>()
       .default({})
       .notNull(),
-    confirmedAt: timestamp("confirmed_at", {
-      mode: "date",
-      withTimezone: true
-    }).notNull(),
-    assignedTo: text("assigned_to").references(() => user.id, {
-      onDelete: "set null"
-    }),
+    contactType: text("contact_type"),
+    contactValue: text("contact_value"),
+    consentToContact: boolean("consent_to_contact").default(false).notNull(),
+    status: text("status").default("new").notNull(),
     adminNote: text("admin_note"),
     createdAt: timestamp("created_at", {
       mode: "date",
@@ -294,18 +291,46 @@ export const consultation = pgTable(
       .defaultNow()
       .$onUpdate(() => new Date())
       .notNull(),
-    resolvedAt: timestamp("resolved_at", {
+    closedAt: timestamp("closed_at", {
+      mode: "date",
+      withTimezone: true
+    }),
+    retentionUntil: timestamp("retention_until", {
+      mode: "date",
+      withTimezone: true
+    }).notNull(),
+    contactPurgeAt: timestamp("contact_purge_at", {
       mode: "date",
       withTimezone: true
     })
   },
   (table) => [
-    index("consultation_user_created_idx").on(table.userId, table.createdAt),
-    index("consultation_status_created_idx").on(table.status, table.createdAt),
-    index("consultation_assignee_idx").on(table.assignedTo),
+    index("problem_report_user_created_idx").on(table.userId, table.createdAt),
+    index("problem_report_status_created_idx").on(
+      table.status,
+      table.createdAt
+    ),
+    index("problem_report_retention_idx").on(table.retentionUntil),
+    index("problem_report_contact_purge_idx").on(table.contactPurgeAt),
     check(
-      "consultation_status_valid",
-      sql`${table.status} in ('submitted', 'contacting', 'resolved', 'closed')`
+      "problem_report_status_valid",
+      sql`${table.status} in ('new', 'reviewing', 'closed')`
+    ),
+    check(
+      "problem_report_category_valid",
+      sql`${table.category} in ('answer_incorrect', 'citation_problem', 'unsafe_answer', 'system_error', 'product_suggestion', 'other')`
+    ),
+    check(
+      "problem_report_description_length_valid",
+      sql`char_length(${table.description}) between 1 and 3000`
+    ),
+    check(
+      "problem_report_contact_type_valid",
+      sql`${table.contactType} is null or ${table.contactType} in ('email', 'phone', 'wechat')`
+    ),
+    check(
+      "problem_report_contact_pair_valid",
+      sql`(${table.contactType} is null and ${table.contactValue} is null) or (${table.contactType} is not null and ${table.contactValue} is not null and ${table.consentToContact} = true)`
     )
   ]
 );
@@ -318,7 +343,7 @@ export const conversationRelations = relations(
       references: [user.id]
     }),
     messages: many(message),
-    consultations: many(consultation)
+    problemReports: many(problemReport)
   })
 );
 
@@ -358,4 +383,4 @@ export const messages = message;
 export const citations = citation;
 export const messageCitations = messageCitation;
 export const messageFeedback = feedback;
-export const consultations = consultation;
+export const problemReports = problemReport;

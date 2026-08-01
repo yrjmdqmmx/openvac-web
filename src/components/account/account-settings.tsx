@@ -147,8 +147,8 @@ export function AccountSettings({ email }: { email: string }) {
       <section className="mt-12 border-t border-[var(--border)] pt-8">
         <h2 className="text-xl font-semibold">清空对话数据</h2>
         <p className="mt-3 text-sm leading-7 text-[var(--muted)]">
-          在线数据会立即删除，无法在产品中恢复；加密备份将在最长 30
-          天的轮转周期内过期。
+          在线数据会立即删除，无法在产品中恢复。当前封闭测试环境的受限运维备份可能延迟反映删除；公开试用前将启用并验证不超过
+          30 天的自动过期机制。
         </p>
         <button
           type="button"
@@ -174,7 +174,7 @@ export function AccountSettings({ email }: { email: string }) {
           <h2 className="text-xl font-semibold">注销账户</h2>
         </div>
         <p className="mt-3 text-sm leading-7 text-[var(--muted)]">
-          输入密码后永久注销账户。管理员角色账户需要先移交职责，不能直接自助删除。
+          输入密码后永久注销账户，并删除问题反馈中的可选联系方式和账户关联；只可能保留无法再识别个人的匿名汇总统计。管理员角色账户需要先移交职责，不能直接自助删除。
         </p>
         <div className="mt-5 flex max-w-lg flex-col gap-3 sm:flex-row">
           <input

@@ -1,10 +1,18 @@
 import type { EmbeddingResult } from "../providers";
+import {
+  assertKnowledgeSourceAuthorized,
+  isKnowledgeSourceTier
+} from "./source-policy";
 
 export type PublishedEmbeddingCandidate = {
   chunkId: string;
   versionId: string;
   content: string;
   sourceTier: string;
+  sourceEnabled: boolean;
+  sourceDeletedAt: Date | string | null;
+  canonicalUrl: string | null;
+  publisher: string | null;
   sourceMetadata: Record<string, unknown>;
   versionMetadata: Record<string, unknown>;
   citationMetadata: Record<string, unknown>;
@@ -21,14 +29,32 @@ export function isPublishedEmbeddingCandidate(
   if (!candidate.content.trim()) return false;
   if (candidate.citationMetadata.ingestionMode !== "full_text") return false;
   if (candidate.versionMetadata.reviewStatus !== "approved") return false;
+  const review = recordValue(candidate.versionMetadata.review);
+  if (review.status !== "approved") return false;
+  if (!isKnowledgeSourceTier(candidate.sourceTier)) return false;
 
-  if (candidate.sourceTier === "open_license") {
-    return candidate.sourceMetadata.rightsReviewed === true;
+  try {
+    assertKnowledgeSourceAuthorized(
+      {
+        sourceTier: candidate.sourceTier,
+        enabled: candidate.sourceEnabled,
+        deletedAt: candidate.sourceDeletedAt,
+        canonicalUrl: candidate.canonicalUrl,
+        publisher: candidate.publisher,
+        metadata: candidate.sourceMetadata
+      },
+      candidate.citationMetadata
+    );
+    return true;
+  } catch {
+    return false;
   }
-  if (candidate.sourceTier === "internal") {
-    return candidate.sourceMetadata.commercialAiRightsConfirmed === true;
-  }
-  return false;
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 export function assertValidKnowledgeEmbeddings(

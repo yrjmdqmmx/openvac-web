@@ -1,0 +1,31 @@
+[Unit]
+Description=OpenVac %i problem-report retention cleanup
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/bin/bash /usr/local/libexec/openvac/cleanup-problem-reports.sh %i
+WorkingDirectory=/tmp
+TimeoutStartSec=30min
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadOnlyPaths=-/opt/openvac -/opt/openvac-staging
+ReadWritePaths=/run/docker.sock
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

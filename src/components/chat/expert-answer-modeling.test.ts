@@ -47,7 +47,7 @@ describe("ExpertAnswer modeling cards", () => {
         message,
         modelingEnabled: true,
         onFeedback: vi.fn(),
-        onConsult: vi.fn()
+        onProblemReport: vi.fn()
       })
     );
 
@@ -69,7 +69,7 @@ describe("ExpertAnswer modeling cards", () => {
         message,
         modelingEnabled: false,
         onFeedback: vi.fn(),
-        onConsult: vi.fn()
+        onProblemReport: vi.fn()
       })
     );
 

@@ -18,8 +18,8 @@ export const ADMIN_CAPABILITIES = [
   "users:write",
   "feedback:read",
   "feedback:write",
-  "consultations:read",
-  "consultations:write",
+  "problem_reports:read",
+  "problem_reports:write",
   "knowledge:read",
   "knowledge:write",
   "sources:read",
@@ -85,14 +85,26 @@ export type ConversationDetail = ConversationSummary & {
   messages: ChatMessage[];
 };
 
-export type ConsultationInput = {
+export const PROBLEM_REPORT_CATEGORIES = [
+  "answer_incorrect",
+  "citation_problem",
+  "unsafe_answer",
+  "system_error",
+  "product_suggestion",
+  "other"
+] as const;
+
+export type ProblemReportCategory = (typeof PROBLEM_REPORT_CATEGORIES)[number];
+
+export type ProblemReportInput = {
   conversationId?: string;
-  contactName: string;
-  companyName: string;
-  contactMethod: "phone" | "email" | "wechat";
-  contactValue: string;
-  problem: string;
-  conversationSummary: string;
+  messageId?: string;
+  category: ProblemReportCategory;
+  description: string;
+  includeContext: boolean;
+  contactType?: "phone" | "email" | "wechat";
+  contactValue?: string;
+  consentToContact: boolean;
 };
 
 export type KnowledgeDraftInput = {
@@ -108,14 +120,32 @@ export type KnowledgeDraftUpdate = Partial<KnowledgeDraftInput>;
 export type KnowledgeReviewInput = {
   versionId: string;
   expectedContentHash: string;
+  decision: "approved" | "rejected";
+  note?: string;
+};
+
+export type SourceRightsDecisionInput = {
+  status: "approved" | "pending" | "rejected";
+  scope: "full_text" | "metadata_only";
+  basis: string;
+  evidenceUrl: string;
+  appliesToRecordUrl: string;
 };
 
 export type SourceInput = {
+  kind: "upload" | "manual" | "manufacturer" | "standard" | "patent" | "web";
   name: string;
+  publisher: string;
+  canonicalUrl: string;
   baseUrl: string;
   sourceTier:
-    "open_license" | "manufacturer_metadata" | "standard_metadata" | "internal";
+    | "open_license"
+    | "metadata_only"
+    | "manufacturer_metadata"
+    | "standard_metadata"
+    | "internal";
   licensePolicy: string;
+  rightsDecision?: SourceRightsDecisionInput;
   notes?: string;
   enabled: boolean;
 };
@@ -206,13 +236,9 @@ export type ApiStore = {
     audit: AuditContext
   ): Promise<{ id: string; status: string } | null>;
 
-  listConsultations(
+  createProblemReport(
     userId: string,
-    input: PageInput
-  ): Promise<PageResult<Record<string, unknown>>>;
-  createConsultation(
-    userId: string,
-    input: ConsultationInput,
+    input: ProblemReportInput,
     audit: AuditContext
   ): Promise<{ id: string; status: string; createdAt: Date } | null>;
 
@@ -237,14 +263,14 @@ export type ApiStore = {
     },
     audit: AuditContext
   ): Promise<Record<string, unknown> | null>;
-  listAdminConsultations(
-    input: PageInput
+  listAdminProblemReports(
+    input: PageInput,
+    audit: AuditContext
   ): Promise<PageResult<Record<string, unknown>>>;
-  setConsultationStatus(
-    consultationId: string,
+  setProblemReportStatus(
+    problemReportId: string,
     input: {
-      status: "submitted" | "contacting" | "resolved" | "closed";
-      assignedTo?: string;
+      status: "new" | "reviewing" | "closed";
       note?: string;
     },
     audit: AuditContext
@@ -271,6 +297,10 @@ export type ApiStore = {
     audit: AuditContext
   ): Promise<Record<string, unknown> | null>;
   publishKnowledgeDraft(
+    documentId: string,
+    audit: AuditContext
+  ): Promise<Record<string, unknown> | null>;
+  archiveKnowledgeDocument(
     documentId: string,
     audit: AuditContext
   ): Promise<Record<string, unknown> | null>;

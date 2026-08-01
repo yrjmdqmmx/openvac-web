@@ -55,7 +55,20 @@ describe("Postgres knowledge ingestion review lifecycle", () => {
             {
               document_id: "doc-1",
               version_id: "version-1",
-              content
+              content,
+              citation_metadata: { ingestionMode: "full_text" },
+              source_tier: "open_license",
+              source_enabled: true,
+              source_deleted_at: null,
+              canonical_url: "https://cds.cern.ch/record/2929324",
+              publisher: "CERN",
+              source_metadata: {
+                rightsDecision: {
+                  status: "approved",
+                  scope: "full_text",
+                  appliesToRecordUrl: "https://cds.cern.ch/record/2929324"
+                }
+              }
             }
           ]
     );
@@ -72,11 +85,54 @@ describe("Postgres knowledge ingestion review lifecycle", () => {
     const contentQuery = sql.find("FROM knowledge_version");
     expect(contentQuery.query).toContain("kv.status = 'review'");
     expect(contentQuery.query).toContain("kd.status = 'review'");
+    expect(contentQuery.query).toContain(
+      "JOIN knowledge_source ks ON ks.id = kd.source_id"
+    );
     expect(contentQuery.query).toContain("kv.content_hash = $3");
+    expect(contentQuery.query).toContain(
+      "kv.metadata #>> '{review,contentHash}' = $3"
+    );
     expect(contentQuery.query).toContain(
       "kv.citation_metadata ->> 'ingestionMode' = 'full_text'"
     );
     expect(contentQuery.parameters?.[2]).toBe(hash);
+  });
+
+  it("refuses reviewed content when source rights do not match the record URL", async () => {
+    const content = "Human-reviewed content";
+    const hash = createHash("sha256").update(content, "utf8").digest("hex");
+    const sql = new RecordingSql((query) =>
+      query.includes("FROM background_task")
+        ? [{ id: "job-1" }]
+        : [
+            {
+              document_id: "doc-1",
+              version_id: "version-1",
+              content,
+              citation_metadata: { ingestionMode: "full_text" },
+              source_tier: "open_license",
+              source_enabled: true,
+              source_deleted_at: null,
+              canonical_url: "https://cds.cern.ch/record/2929324",
+              publisher: "CERN",
+              source_metadata: {
+                rightsReviewed: true,
+                rightsDecision: {
+                  status: "approved",
+                  scope: "full_text",
+                  appliesToRecordUrl: "https://cds.cern.ch/record/other"
+                }
+              }
+            }
+          ]
+    );
+    const repository = new PostgresKnowledgeIngestionRepository(sql);
+
+    await expect(
+      repository.loadApprovedContent(
+        makeJob({ stage: "embedding_pending", review: approval(hash) })
+      )
+    ).resolves.toBeNull();
   });
 
   it("preserves review while recording the reviewer hash after embedding", async () => {

@@ -32,23 +32,42 @@ case "$release_id" in
 esac
 [ "${#release_id}" -eq 40 ] || fail "release ID must be a 40-character commit SHA"
 
-case "$release_image" in
-  ghcr.io/*@sha256:*) ;;
+image_name="${release_image%@sha256:*}"
+image_digest="${release_image##*@sha256:}"
+case "$image_name" in
+  ghcr.io/?*) ;;
   *) fail "release image must be an immutable GHCR digest" ;;
 esac
+case "$image_name" in
+  *[!A-Za-z0-9._/-]*|*//*|*/) fail "release image contains an invalid GHCR repository name" ;;
+esac
+case "$image_digest" in
+  ""|*[!0-9a-f]*) fail "release image must contain a lowercase SHA-256 digest" ;;
+esac
+[ "${#image_digest}" -eq 64 ] ||
+  fail "release image must contain a 64-character SHA-256 digest"
 
 case "$health_url" in
   https://*|http://127.0.0.1:*) ;;
   *) fail "health URL must use HTTPS or loopback HTTP" ;;
 esac
 
-[ -d "$deploy_dir" ] || fail "deployment directory does not exist"
-[ -f "$deploy_dir/.env" ] || fail "host .env is required"
-[ -d "$bundle_dir" ] || fail "bundle directory does not exist"
-[ -f "$bundle_dir/docker-compose.yml" ] || fail "bundle is missing docker-compose.yml"
-[ -f "$bundle_dir/deploy/deploy.sh" ] || fail "bundle is missing deploy.sh"
-[ -f "$bundle_dir/deploy/activate-bundle.sh" ] || fail "bundle is missing activate-bundle.sh"
-[ -f "$bundle_dir/DEPLOY_BUNDLE.sha256" ] || fail "bundle is missing its manifest"
+[ -d "$deploy_dir" ] && [ ! -L "$deploy_dir" ] ||
+  fail "deployment directory must be a real directory, not a symlink"
+[ -f "$deploy_dir/.env" ] && [ ! -L "$deploy_dir/.env" ] ||
+  fail "host .env must be a regular file, not a symlink"
+[ "$(find "$deploy_dir/.env" -prune -type f -perm 600 -print)" = "$deploy_dir/.env" ] ||
+  fail "host .env must have mode 0600"
+[ -d "$bundle_dir" ] && [ ! -L "$bundle_dir" ] ||
+  fail "bundle directory must be a real directory, not a symlink"
+[ -f "$bundle_dir/docker-compose.yml" ] && [ ! -L "$bundle_dir/docker-compose.yml" ] ||
+  fail "bundle is missing a regular docker-compose.yml"
+[ -f "$bundle_dir/deploy/deploy.sh" ] && [ ! -L "$bundle_dir/deploy/deploy.sh" ] ||
+  fail "bundle is missing a regular deploy.sh"
+[ -f "$bundle_dir/deploy/activate-bundle.sh" ] && [ ! -L "$bundle_dir/deploy/activate-bundle.sh" ] ||
+  fail "bundle is missing a regular activate-bundle.sh"
+[ -f "$bundle_dir/DEPLOY_BUNDLE.sha256" ] && [ ! -L "$bundle_dir/DEPLOY_BUNDLE.sha256" ] ||
+  fail "bundle is missing a regular manifest"
 
 if find "$bundle_dir" \( -name ".env" -o -name ".env.*" \) -print -quit |
   grep -q .; then
@@ -66,6 +85,10 @@ fi
 
 releases_dir="$deploy_dir/releases"
 release_dir="$releases_dir/$release_id"
+if [ -e "$releases_dir" ] || [ -L "$releases_dir" ]; then
+  [ -d "$releases_dir" ] && [ ! -L "$releases_dir" ] ||
+    fail "releases path must be a real directory, not a symlink"
+fi
 install -d -m 700 "$releases_dir"
 
 staged_dir=""
@@ -93,6 +116,10 @@ else
   cp -R "$bundle_dir/." "$staged_dir/"
   mv "$staged_dir" "$release_dir"
   staged_dir=""
+  (
+    cd "$release_dir"
+    sha256sum --check DEPLOY_BUNDLE.sha256
+  )
 fi
 
 if ! OPENVAC_HEALTH_URL="$health_url" \

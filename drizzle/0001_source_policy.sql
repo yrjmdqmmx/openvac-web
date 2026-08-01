@@ -1,0 +1,2 @@
+ALTER TYPE "public"."knowledge_source_kind" ADD VALUE 'patent' BEFORE 'web';--> statement-breakpoint
+ALTER TYPE "public"."knowledge_source_tier" ADD VALUE 'metadata_only' BEFORE 'manufacturer_metadata';

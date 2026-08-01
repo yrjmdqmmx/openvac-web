@@ -40,6 +40,7 @@ export type ModelStreamEvent =
       type: "finish";
       finishReason?: string;
       usage?: ModelUsage;
+      providerRequestId?: string;
     };
 
 export interface ModelProvider {

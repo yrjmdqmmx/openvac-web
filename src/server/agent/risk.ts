@@ -12,7 +12,7 @@ export type HighRiskHazard =
 export interface RiskAssessment {
   level: RiskLevel;
   hazards: HighRiskHazard[];
-  requiresHumanConsultation: boolean;
+  requiresExternalProfessional: boolean;
   safetyDirective?: string;
 }
 
@@ -99,9 +99,9 @@ export function classifyVacuumRisk(question: string): RiskAssessment {
     return {
       level: "high",
       hazards,
-      requiresHumanConsultation: true,
+      requiresExternalProfessional: true,
       safetyDirective:
-        "只提供安全级停机、隔离能源、通风/泄压和按厂家程序检查的建议；不得指导带电拆修、绕过联锁或在介质与工况不明时继续运行。必须索取设备型号、介质、压力、温度和现场安全条件，并转人工确认。"
+        "只提供安全级停机、隔离能源、通风/泄压和按厂家程序检查的建议；不得指导带电拆修、绕过联锁或在介质与工况不明时继续运行。必须索取设备型号、介质、压力、温度和现场安全条件，并要求联系设备制造商、本单位安全负责人或具备资质的现场人员。问题反馈不是紧急支持渠道。"
     };
   }
 
@@ -109,14 +109,14 @@ export function classifyVacuumRisk(question: string): RiskAssessment {
     return {
       level: "medium",
       hazards: [],
-      requiresHumanConsultation: false
+      requiresExternalProfessional: false
     };
   }
 
   return {
     level: "low",
     hazards: [],
-    requiresHumanConsultation: false
+    requiresExternalProfessional: false
   };
 }
 

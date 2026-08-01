@@ -12,7 +12,7 @@ const principles = [
   {
     icon: ShieldCheck,
     title: "安全有边界",
-    body: "高风险工况只给停机、隔离与检查建议，并转人工。"
+    body: "高风险工况只给停机、隔离与检查建议，并要求联系制造商或现场合格人员。"
   },
   {
     icon: Code2,
@@ -73,7 +73,8 @@ export default function HomePage() {
             <Link href="/product">产品说明</Link>
             <Link href="/legal/terms">服务协议</Link>
             <Link href="/legal/privacy">隐私政策</Link>
-            <Link href="/consult">投诉与人工咨询</Link>
+            <Link href="/feedback">问题反馈</Link>
+            <Link href="/complaints">法律投诉</Link>
           </nav>
         </div>
       </footer>

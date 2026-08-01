@@ -76,6 +76,12 @@ describe("server-side admin authorization", () => {
     expect(hasCapability("analyst", "metrics:read")).toBe(true);
     expect(hasCapability("analyst", "settings:write")).toBe(false);
     expect(hasCapability("support", "feedback:write")).toBe(true);
+    expect(hasCapability("support", "problem_reports:write")).toBe(true);
+    expect(hasCapability("analyst", "problem_reports:read")).toBe(true);
+    expect(hasCapability("analyst", "problem_reports:write")).toBe(false);
+    expect(hasCapability("knowledge_editor", "problem_reports:read")).toBe(
+      false
+    );
     expect(hasCapability("support", "knowledge:write")).toBe(false);
   });
 

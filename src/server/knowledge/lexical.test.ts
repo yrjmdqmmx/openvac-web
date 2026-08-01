@@ -11,6 +11,24 @@ describe("Chinese lexical retrieval", () => {
     expect(terms).not.toContain("是什么");
   });
 
+  it("fails closed for missing, unreviewed, or unlicensed sources", () => {
+    expect(POSTGRES_LEXICAL_RETRIEVAL_SQL).toContain(
+      "JOIN knowledge_source ks ON ks.id = kd.source_id"
+    );
+    expect(POSTGRES_LEXICAL_RETRIEVAL_SQL).not.toContain(
+      "LEFT JOIN knowledge_source"
+    );
+    expect(POSTGRES_LEXICAL_RETRIEVAL_SQL).toContain(
+      "kv.metadata #>> '{review,status}' = 'approved'"
+    );
+    expect(POSTGRES_LEXICAL_RETRIEVAL_SQL).toContain(
+      "{rightsDecision,appliesToRecordUrl}"
+    );
+    expect(POSTGRES_LEXICAL_RETRIEVAL_SQL).toContain(
+      "kv.citation_metadata ->> 'ingestionMode' = 'full_text'"
+    );
+  });
+
   it("keeps engineering inputs needed for pump selection", () => {
     const terms = extractLexicalTerms("如何根据目标压力、流导和抽空时间选泵？");
 

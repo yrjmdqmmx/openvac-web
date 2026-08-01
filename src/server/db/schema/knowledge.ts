@@ -22,6 +22,7 @@ export const knowledgeSourceKind = pgEnum("knowledge_source_kind", [
   "manual",
   "manufacturer",
   "standard",
+  "patent",
   "web"
 ]);
 
@@ -36,6 +37,7 @@ export const knowledgeStatus = pgEnum("knowledge_status", [
 
 export const knowledgeSourceTier = pgEnum("knowledge_source_tier", [
   "open_license",
+  "metadata_only",
   "manufacturer_metadata",
   "standard_metadata",
   "internal"

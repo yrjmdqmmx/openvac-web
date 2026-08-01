@@ -111,11 +111,45 @@ describe("deployment Compose project isolation", () => {
       .split("\n")
       .filter((line) => line.includes("docker compose"));
 
-    expect(composeCommands).toHaveLength(5);
+    expect(composeCommands).toHaveLength(6);
     for (const command of composeCommands) {
       expect(command).toContain('--project-name "$compose_project"');
       expect(command).toContain('--env-file "$deploy_dir/.env"');
       expect(command).toContain('-f "$compose_file"');
     }
+  });
+
+  it("verifies the exact provider model before running migrations", () => {
+    const deploy = source("deploy/deploy.sh");
+    const verification = deploy.indexOf("pnpm model:verify");
+    const migration =
+      deploy.indexOf("pnpm model:verify") < 0
+        ? -1
+        : deploy.indexOf("run --rm migrate");
+
+    expect(verification).toBeGreaterThan(0);
+    expect(migration).toBeGreaterThan(verification);
+  });
+
+  it("fails closed on truncated image digests and empty restore schemas", () => {
+    const release = source(".github/workflows/release.yml");
+    const deploy = source("deploy/deploy.sh");
+    const restore = source("deploy/restore-drill.sh");
+
+    expect(release).toContain("[0-9a-f]{64}");
+    expect(deploy).toContain('[ "${#image_digest}" -eq 64 ]');
+    expect(restore).toContain("restore drill produced an empty public schema");
+    expect(restore).toContain("((restored_table_count > 0))");
+  });
+
+  it("rotates local backups only after a private OSS upload succeeds", () => {
+    const orchestrator = source("deploy/backup-to-oss.sh");
+    const upload = orchestrator.indexOf("upload-backup-oss.sh");
+    const rotation = orchestrator.lastIndexOf("rotate-backups.sh");
+
+    expect(orchestrator).toContain("set -Eeuo pipefail");
+    expect(upload).toBeGreaterThan(0);
+    expect(rotation).toBeGreaterThan(upload);
+    expect(source("deploy/upload-backup-oss.sh")).toContain("--acl private");
   });
 });
