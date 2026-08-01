@@ -1,0 +1,33 @@
+[Unit]
+Description=OpenVac production database backup to private OSS
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathIsDirectory=/opt/openvac
+AssertPathIsDirectory=/opt/openvac/backups
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+EnvironmentFile=/etc/openvac/backup.env
+ExecStartPre=/usr/bin/test -f /etc/openvac/backup.env
+ExecStartPre=/usr/bin/test ! -L /etc/openvac/backup.env
+ExecStartPre=/usr/bin/test -O /etc/openvac/backup.env
+ExecStartPre=/bin/sh -c 'test "$(/usr/bin/stat -c %%a:%%U:%%G /etc/openvac/backup.env)" = 600:root:root'
+ExecStart=/bin/bash /usr/local/libexec/openvac/backup-to-oss.sh production
+WorkingDirectory=/tmp
+TimeoutStartSec=2h
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/opt/openvac/backups /run/docker.sock
+
+[Install]
+WantedBy=multi-user.target

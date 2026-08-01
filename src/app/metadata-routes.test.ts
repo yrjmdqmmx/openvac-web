@@ -27,7 +27,8 @@ describe("runtime metadata routes", () => {
       "https://runtime.openvac.example/legal/terms",
       "https://runtime.openvac.example/legal/privacy",
       "https://runtime.openvac.example/help",
-      "https://runtime.openvac.example/consult"
+      "https://runtime.openvac.example/feedback",
+      "https://runtime.openvac.example/complaints"
     ]);
   });
 

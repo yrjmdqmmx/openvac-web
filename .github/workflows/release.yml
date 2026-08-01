@@ -3,6 +3,10 @@ name: Build and deploy
 on:
   workflow_dispatch:
     inputs:
+      commit_sha:
+        description: Exact 40-character commit SHA that already passed CI
+        required: true
+        type: string
       target:
         description: Deployment target
         required: true
@@ -18,7 +22,87 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  ci_gate:
+    name: Verify successful CI for release commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Refuse unverified or ambiguous revisions
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SHA: ${{ inputs.commit_sha }}
+          TARGET: ${{ inputs.target }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          case "$RELEASE_SHA" in
+            ""|*[!0-9a-f]*)
+              echo "commit_sha must be a lowercase hexadecimal commit SHA" >&2
+              exit 64
+              ;;
+          esac
+          test "${#RELEASE_SHA}" -eq 40
+
+          if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "Dispatch this workflow from the default branch ($DEFAULT_BRANCH)." >&2
+            exit 64
+          fi
+
+          response="$RUNNER_TEMP/openvac-ci-runs.json"
+          curl --fail-with-body --silent --show-error \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$RELEASE_SHA&status=success&per_page=100" \
+            --output "$response"
+
+          ci_run_url="$(
+            jq --exit-status --raw-output \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg default_branch "$DEFAULT_BRANCH" \
+              --arg sha "$RELEASE_SHA" \
+              --arg target "$TARGET" \
+              '[.workflow_runs[] |
+                select(
+                  .head_sha == $sha and
+                  .status == "completed" and
+                  .conclusion == "success" and
+                  .head_repository.full_name == $repository and
+                  (.event == "push" or .event == "workflow_dispatch") and
+                  ($target != "production" or .head_branch == $default_branch)
+                )][0].html_url // empty' \
+              "$response"
+          )"
+          test -n "$ci_run_url"
+          echo "Release commit passed CI: $ci_run_url"
+
+          if [ "$TARGET" = production ]; then
+            environment_response="$RUNNER_TEMP/openvac-production-environment.json"
+            curl --fail-with-body --silent --show-error \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "X-GitHub-Api-Version: 2026-03-10" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/environments/production" \
+              --output "$environment_response"
+            jq --exit-status '
+              any(
+                .protection_rules[]?;
+                .type == "required_reviewers" and
+                (.reviewers | length) > 0
+              ) and
+              (
+                .deployment_branch_policy.protected_branches == true or
+                .deployment_branch_policy.custom_branch_policies == true
+              )
+            ' "$environment_response" >/dev/null
+            echo "Production environment has required reviewers and a branch policy."
+          fi
+
   image:
+    needs: ci_gate
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -29,6 +113,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ inputs.commit_sha }}
           persist-credentials: false
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -41,7 +126,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=sha
+            type=raw,value=sha-${{ inputs.commit_sha }}
       - id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -53,15 +138,18 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy:
-    needs: image
+    needs: [ci_gate, image]
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    environment: ${{ inputs.target }}
+    environment:
+      name: ${{ inputs.target }}
+      url: ${{ inputs.target == 'production' && 'https://openvac.cn' || 'https://staging-openvac.openvac.cn' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ inputs.commit_sha }}
           persist-credentials: false
       - name: Configure SSH
         env:
@@ -80,20 +168,26 @@ jobs:
           TARGET: ${{ inputs.target }}
           IMAGE_TAGS: ${{ needs.image.outputs.image }}
           IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+          RELEASE_SHA: ${{ inputs.commit_sha }}
         run: |
           set -Eeuo pipefail
           test -n "$ECS_HOST"
           test -n "$ECS_USER"
-          release_id="$GITHUB_SHA"
+          release_id="$RELEASE_SHA"
           case "$release_id" in
             ""|*[!0-9a-f]*)
-              echo "GITHUB_SHA must be lowercase hexadecimal" >&2
+              echo "commit_sha must be lowercase hexadecimal" >&2
               exit 64
               ;;
           esac
           test "${#release_id}" -eq 40
           image_tag="$(printf '%s\n' "$IMAGE_TAGS" | head -n 1)"
           release_image="${image_tag%@*}@${IMAGE_DIGEST}"
+          if [[ ! "$release_image" =~ ^ghcr\.io/[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] ||
+            [[ "$release_image" == *//* ]]; then
+            echo "Image output is not an exact immutable GHCR digest" >&2
+            exit 64
+          fi
           case "$TARGET" in
             production)
               deploy_dir="/opt/openvac"

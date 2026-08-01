@@ -127,6 +127,10 @@ export class DeepSeekModelProvider implements ModelProvider {
         );
       }
 
+      const providerRequestId =
+        response.headers.get("x-request-id") ??
+        response.headers.get("request-id") ??
+        undefined;
       let finishReason: string | undefined;
       let usage: ModelUsage | undefined;
 
@@ -197,7 +201,7 @@ export class DeepSeekModelProvider implements ModelProvider {
           { retryable: true }
         );
       }
-      yield { type: "finish", finishReason, usage };
+      yield { type: "finish", finishReason, usage, providerRequestId };
     } catch (cause) {
       if (deadline.didTimeout()) {
         throw deadline.timeoutError;

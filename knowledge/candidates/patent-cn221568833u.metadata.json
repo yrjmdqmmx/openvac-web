@@ -27,7 +27,23 @@
     "bibliographicVerifiedAt": "2026-08-01T00:00:00.000Z",
     "legalStatusDisclaimer": "Current ownership and legal status require a live CNIPA check; OpenVac does not provide legal advice.",
     "evidenceLevel": "patentee_disclosure",
-    "independentPerformanceValidation": false
+    "independentPerformanceValidation": false,
+    "summaryAuthorship": "OpenVac independent Chinese summary; not patent text",
+    "claimLocators": [
+      "权利要求1：双滑腔、双滑板、圆形接触端头与橡胶滚筒",
+      "权利要求2–3：进排气通道、侧盖板与输出轴",
+      "权利要求4–5：内滑座、弹簧与橡胶防撞垫"
+    ],
+    "figureLocators": [
+      "图3：泵体内部结构",
+      "图4：固定板、双滑腔与双滑板",
+      "图5–6：防撞垫与滚筒接触端"
+    ],
+    "technicalUseWarnings": [
+      "密封与磨损效果是申请人陈述，不是独立性能试验。",
+      "说明书中的‘向心力’表述不得直接作为基础物理结论。",
+      "不得据此确定泵型、抽速、极限压力、寿命或材料兼容性。"
+    ]
   },
   "review": {
     "status": "required",

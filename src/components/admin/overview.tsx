@@ -8,7 +8,7 @@ type Metrics = {
   errorRate: number;
   p95LatencyMs: number;
   searchCallsToday: number;
-  openConsultations: number;
+  openProblemReports: number;
 };
 
 const initial: Metrics = {
@@ -17,7 +17,7 @@ const initial: Metrics = {
   errorRate: 0,
   p95LatencyMs: 0,
   searchCallsToday: 0,
-  openConsultations: 0
+  openProblemReports: 0
 };
 
 export function AdminOverview() {
@@ -56,7 +56,7 @@ export function AdminOverview() {
     ["错误率", `${(metrics.errorRate * 100).toFixed(2)}%`],
     ["P95 延迟", `${metrics.p95LatencyMs.toLocaleString("zh-CN")} ms`],
     ["今日联网调用", metrics.searchCallsToday.toLocaleString("zh-CN")],
-    ["待处理咨询单", metrics.openConsultations.toLocaleString("zh-CN")]
+    ["待处理问题反馈", metrics.openProblemReports.toLocaleString("zh-CN")]
   ];
 
   return (

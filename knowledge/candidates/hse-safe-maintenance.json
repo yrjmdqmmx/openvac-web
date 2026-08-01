@@ -1,0 +1,72 @@
+{
+  "sourceCanonicalUrl": "https://www.hse.gov.uk/work-equipment-machinery/maintenance.htm",
+  "document": {
+    "externalKey": "hse-safe-maintenance-2025",
+    "title": "Maintenance of work equipment（OpenVac 安全知识草稿）",
+    "description": "依据 HSE 设备维护网页独立编写的中文安全摘要；仅用于停机、隔离和胜任人员边界，不替代中国法规、厂家手册或现场风险评估。",
+    "language": "zh-CN",
+    "mimeType": "text/html",
+    "tags": ["安全停机", "能源隔离", "锁定", "维护", "胜任人员"]
+  },
+  "citation": {
+    "authors": ["UK Health and Safety Executive"],
+    "publication": "Maintenance of work equipment",
+    "recordUrl": "https://www.hse.gov.uk/work-equipment-machinery/maintenance.htm",
+    "licenseClass": "open",
+    "licenseName": "Open Government Licence v3.0",
+    "licenseUrl": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+    "ingestionMode": "full_text",
+    "fetchedAt": "2026-08-01T00:00:00.000Z",
+    "curationMethod": "official-web-section-located-Chinese-synthesis",
+    "changesMade": "Chinese safety synthesis and chunking; HSE logo, images and third-party assets excluded.",
+    "thirdPartyAssetsExcluded": true,
+    "jurisdictionNotice": "HSE guidance is UK workplace safety material. OpenVac uses it as a conservative safety reference, not as a statement of Chinese legal compliance."
+  },
+  "review": {
+    "status": "required",
+    "requirements": [
+      "逐条核对 HSE 页面标题与安全含义",
+      "确认仅给出停机、隔离和胜任人员边界",
+      "确认没有把英国法律要求表述为中国法律结论",
+      "由真空行业专家批准后才允许向量化和发布"
+    ]
+  },
+  "sections": [
+    {
+      "sourceSection": "Why maintenance of plant and equipment is important",
+      "sectionPath": ["维护风险", "故障与非常规作业"],
+      "keywords": ["设备故障", "非常规作业", "风险评估", "安全维护"],
+      "content": "设备维护能减少故障，但诊断和修理本身属于非常规作业，可能暴露运动部件、压力、高温、危险介质和意外启动风险。故障设备不应继续带病运行；在没有安全系统和可执行程序时，OpenVac 不得远程指导拆修。"
+    },
+    {
+      "sourceSection": "Who can maintain work equipment",
+      "sectionPath": ["人员能力", "胜任与厂家支持"],
+      "keywords": ["胜任人员", "专业承包商", "厂家", "培训"],
+      "content": "维护应由具有必要技能、知识、经验和设备信息的人员执行。高风险或复杂设备可能需要制造商或专业承包商介入。OpenVac 只能帮助整理待核实信息，不能认定用户能力或替代现场责任人。"
+    },
+    {
+      "sourceSection": "Before you start maintenance",
+      "sectionPath": ["作业准备", "厂家说明与安全系统"],
+      "keywords": ["维护说明", "安全作业系统", "停机窗口", "防护用品"],
+      "content": "维护前应先判断是否应交由专业人员，并依据制造商维护说明规划安全作业步骤。还要确认人员能力、工具、防护用品和安全作业区。不应在临时报警、连锁未明或生产运行中仓促开始拆解。"
+    },
+    {
+      "sourceSection": "Safe plant and equipment > Safe isolation",
+      "sectionPath": ["能源隔离", "停机、断开与防重新接通"],
+      "keywords": ["断电", "锁定", "隔离阀", "压力管线", "防误启动"],
+      "content": "维护开始前应停止运动部件，隔离电源及其他能源，并防止他人意外重新接通。对含压流体、气体、蒸汽或危险介质的管路，还要隔离并锁定相关阀门。仅按下控制按钮或依赖可被绕过的联锁，不等同于可验证的能源隔离。"
+    },
+    {
+      "sourceSection": "Safe plant and equipment > Other factors you need to consider",
+      "sectionPath": ["剩余能量与介质", "泄压、冷却与清理"],
+      "keywords": ["储能", "泄压", "高温", "易燃介质", "有毒介质"],
+      "content": "断电不代表所有风险已消失；还要受控释放气动、液压或机械储能，支撑可能坠落的部件，并等待高温件冷却。包含易燃、爆炸性或有毒物料的系统应由现场人员按程序清理和确认；此类情形不适合通过对话直接给出拆修步骤。"
+    },
+    {
+      "sourceSection": "High-risk equipment and dos and don'ts",
+      "sectionPath": ["高风险维护", "许可、报告与停用"],
+      "keywords": ["作业许可", "故障报告", "停用", "专业监督"],
+      "content": "高风险维护可能需要正式作业许可、监督、物理隔离、临时防护和持续监测。使用者应有途径报告损坏或不安全设备，且不得忽略故障报告或继续使用明显损坏的设备。OpenVac 的问题反馈仅用于改进产品，不是现场作业许可或紧急通知渠道。"
+    }
+  ]
+}

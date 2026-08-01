@@ -21,13 +21,15 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:all": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "test:all": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm knowledge:validate && pnpm test && pnpm build",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
+    "admin:bootstrap-owner": "tsx scripts/bootstrap-owner.ts",
     "knowledge:seed": "tsx scripts/seed-sources.ts",
     "knowledge:seed-core": "tsx scripts/seed-core-knowledge.ts",
     "knowledge:seed-candidates": "tsx scripts/seed-knowledge-candidates.ts",
+    "knowledge:validate": "tsx scripts/validate-phase-one-knowledge.ts",
     "knowledge:embed-published": "tsx scripts/embed-published-knowledge.ts",
     "knowledge:verify-governance": "tsx scripts/verify-knowledge-governance.ts",
     "eval:core": "tsx scripts/eval-core-retrieval.ts",
@@ -35,7 +37,10 @@
     "eval:candidates": "tsx scripts/eval-candidate-retrieval.ts",
     "eval:candidates:live": "tsx scripts/eval-candidate-retrieval.ts --live",
     "eval": "tsx scripts/run-evals.ts",
-    "smoke:deepseek": "tsx scripts/smoke-deepseek.ts"
+    "eval:live": "tsx scripts/eval-v1-live.ts",
+    "model:verify": "tsx scripts/verify-deepseek-model.ts",
+    "smoke:deepseek": "tsx scripts/smoke-deepseek.ts",
+    "problem-reports:cleanup": "tsx scripts/cleanup-problem-reports.ts"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "3.0.18",

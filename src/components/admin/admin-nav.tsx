@@ -26,7 +26,7 @@ const items = [
     label: "对话与反馈",
     icon: MessagesSquare
   },
-  { href: "/admin/consultations", label: "咨询单", icon: ClipboardList },
+  { href: "/admin/problem-reports", label: "问题反馈", icon: ClipboardList },
   { href: "/admin/knowledge", label: "知识库", icon: BookOpen },
   { href: "/admin/sources", label: "来源白名单", icon: ShieldCheck },
   { href: "/admin/prompts", label: "提示词与评测", icon: FileCheck2 },

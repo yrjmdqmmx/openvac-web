@@ -18,7 +18,7 @@ export default function HelpPage() {
         <h2 className="text-2xl font-semibold">不要省略的风险信息</h2>
         <p className="mt-4 leading-8 text-[var(--muted)]">
           如果涉及氧气、易燃、有毒、腐蚀、高温、电气拆修或联锁，请在第一句话写明。OpenVac
-          会先给安全级停机建议，再要求型号、介质和工况并转人工。
+          会先给安全级停机建议，再要求型号、介质和工况。涉及现场紧急风险时，请立即停机、执行现场应急程序，并联系设备制造商或合格人员；问题反馈入口不提供紧急支持。
         </p>
       </section>
     </ContentPage>

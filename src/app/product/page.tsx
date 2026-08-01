@@ -8,7 +8,7 @@ export default function ProductPage() {
     <ContentPage
       eyebrow="产品透明度"
       title="OpenVac Web V1"
-      intro="面向中国大陆工程、维保和采购人员的真空泵专业问答工具。V1 提供有依据的回答、来源引用和人工咨询，不替代工程定案。"
+      intro="面向中国大陆工程、维保和采购人员的真空泵专业问答工具。V1 提供有依据的回答、来源引用和问题反馈入口，不替代工程定案。"
     >
       <section>
         <h2 className="text-2xl font-semibold">基础模型</h2>
@@ -25,7 +25,7 @@ export default function ProductPage() {
         <h2 className="text-2xl font-semibold">能力边界</h2>
         <p className="mt-4 leading-8 text-[var(--muted)]">
           选泵、方案、故障和配件都可以提问，但 V1
-          不提供自动工程定案、确定性计算器、库存价格、支付下单或终端用户文件上传。高风险问题只提供停机、隔离、检查与转人工建议。
+          不提供自动工程定案、确定性计算器、库存价格、支付下单、紧急支持或终端用户文件上传。高风险问题只提供停机、隔离与检查建议，并要求联系设备制造商或现场合格人员。
         </p>
       </section>
       <section>

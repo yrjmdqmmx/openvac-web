@@ -10,7 +10,7 @@ export const metadata: Metadata = {
     template: "%s｜OpenVac"
   },
   description:
-    "有依据的真空泵专业问答：选泵、方案、故障与配件问题，提供来源引用和人工咨询。",
+    "有依据的真空泵专业问答：选泵、方案、故障与配件问题，提供来源引用和问题反馈入口。",
   applicationName: "OpenVac",
   openGraph: {
     title: "OpenVac｜真空泵专家",

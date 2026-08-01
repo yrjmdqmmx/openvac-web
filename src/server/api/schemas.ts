@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { ADMIN_ROLES } from "./types";
+import { ADMIN_ROLES, PROBLEM_REPORT_CATEGORIES } from "./types";
 
 const optionalTrimmed = (max: number) =>
   z.string().trim().min(1).max(max).optional();
@@ -49,22 +49,44 @@ export const messageReportSchema = z.object({
   details: optionalTrimmed(2000)
 });
 
-export const consultationSchema = z
+export const problemReportSchema = z
   .object({
-    confirmed: z.literal(true, {
-      error: "提交咨询前必须由用户明确确认。"
-    }),
     conversationId: z.string().uuid().optional(),
-    contactName: z.string().trim().min(1).max(80),
-    companyName: z.string().trim().min(1).max(160),
-    contactMethod: z.enum(["phone", "email", "wechat"]),
-    contactValue: z.string().trim().min(3).max(160),
-    problem: z.string().trim().min(10).max(5000),
-    conversationSummary: z.string().trim().min(10).max(8000)
+    messageId: z.string().uuid().optional(),
+    category: z.enum(PROBLEM_REPORT_CATEGORIES),
+    description: z.string().trim().min(1).max(3000),
+    includeContext: z.boolean().default(false),
+    contactType: z.enum(["phone", "email", "wechat"]).optional(),
+    contactValue: optionalTrimmed(160),
+    consentToContact: z.boolean().default(false)
   })
   .superRefine((value, context) => {
+    if (value.includeContext && !value.conversationId && !value.messageId) {
+      context.addIssue({
+        code: "custom",
+        path: ["includeContext"],
+        message: "勾选附带上下文时必须关联对话或消息。"
+      });
+    }
+
+    if (Boolean(value.contactType) !== Boolean(value.contactValue)) {
+      context.addIssue({
+        code: "custom",
+        path: value.contactType ? ["contactValue"] : ["contactType"],
+        message: "联系类型和联系方式必须同时填写。"
+      });
+    }
+
+    if ((value.contactType || value.contactValue) && !value.consentToContact) {
+      context.addIssue({
+        code: "custom",
+        path: ["consentToContact"],
+        message: "提供联系方式前必须明确同意可能的后续联系。"
+      });
+    }
+
     if (
-      value.contactMethod === "email" &&
+      value.contactType === "email" &&
       !z.email().safeParse(value.contactValue).success
     ) {
       context.addIssue({
@@ -75,8 +97,8 @@ export const consultationSchema = z
     }
 
     if (
-      value.contactMethod === "phone" &&
-      !/^[+0-9() -]{6,30}$/.test(value.contactValue)
+      value.contactType === "phone" &&
+      !/^[+0-9() -]{6,30}$/.test(value.contactValue ?? "")
     ) {
       context.addIssue({
         code: "custom",
@@ -112,9 +134,8 @@ export const feedbackStatusSchema = z.object({
   note: optionalTrimmed(1000)
 });
 
-export const consultationStatusSchema = z.object({
-  status: z.enum(["submitted", "contacting", "resolved", "closed"]),
-  assignedTo: z.string().trim().min(1).max(128).optional(),
+export const problemReportStatusSchema = z.object({
+  status: z.enum(["new", "reviewing", "closed"]),
   note: optionalTrimmed(2000)
 });
 
@@ -143,13 +164,25 @@ export const rollbackKnowledgeSchema = z.object({
   versionId: z.string().uuid()
 });
 
-export const knowledgeReviewSchema = z.object({
-  versionId: z.string().uuid(),
-  expectedContentHash: z
-    .string()
-    .trim()
-    .regex(/^[a-f0-9]{64}$/u, "内容哈希必须是小写 SHA-256。")
-});
+export const knowledgeReviewSchema = z
+  .object({
+    versionId: z.string().uuid(),
+    expectedContentHash: z
+      .string()
+      .trim()
+      .regex(/^[a-f0-9]{64}$/u, "内容哈希必须是小写 SHA-256。"),
+    decision: z.enum(["approved", "rejected"]).default("approved"),
+    note: optionalTrimmed(2_000)
+  })
+  .superRefine((value, context) => {
+    if (value.decision === "rejected" && !value.note) {
+      context.addIssue({
+        code: "custom",
+        path: ["note"],
+        message: "驳回知识时必须填写审核备注。"
+      });
+    }
+  });
 
 const sourceKindSchema = z.enum([
   "upload",

@@ -8,18 +8,19 @@ assumptions, traceable sources, missing inputs, and a safe next step.
 The V1 product boundary is intentionally narrow:
 
 - evidence-grounded vacuum Q&A with expandable citations;
-- conversation history, feedback, reports, and confirmed human-consultation
-  tickets;
+- conversation history, message feedback/reports, and explicitly submitted
+  problem reports with opt-in context/contact sharing;
 - email/password accounts with verification, password reset, session
   revocation, account deletion, and a hidden daily quota;
 - a governed knowledge workflow from draft and OCR review through evaluation,
   publication, and rollback;
 - role-based operations for users, conversations, sources, prompts, budgets,
-  consultations, and audit logs.
+  problem reports, and audit logs.
 
 V1 does **not** make final engineering decisions, expose a deterministic pump
 calculator, display live inventory or prices, process payments, accept end-user
-file uploads, or provide a model picker.
+file uploads, provide a model picker, promise replies to problem reports, or
+provide real-time/emergency support.
 
 ## Architecture
 
@@ -68,8 +69,10 @@ pnpm test
 pnpm build
 pnpm test:e2e
 pnpm worker
+pnpm problem-reports:cleanup
 pnpm eval
 pnpm eval:core
+pnpm knowledge:validate
 ```
 
 Knowledge Phase 1 uses only tracked, record-scoped source decisions. The local
@@ -77,8 +80,11 @@ Knowledge Phase 1 uses only tracked, record-scoped source decisions. The local
 be uploaded. `pnpm knowledge:seed` registers governed sources and
 `pnpm knowledge:seed-candidates` creates review-required drafts. Candidate
 seeding never impersonates a reviewer, creates patent vectors, or overwrites a
-draft that may contain human edits. After a human review, worker completion,
-and publication, run `pnpm knowledge:verify-governance` and
+draft that may contain human edits. `pnpm knowledge:validate` checks the local
+Phase 1 catalogue, record-scoped rights, page locators, patent metadata-only
+boundary, and 150-case evaluation structure without claiming human approval or
+live retrieval quality. After a human review, worker completion, and
+publication, run `pnpm knowledge:verify-governance` and
 `pnpm eval:core:live` against the real PostgreSQL/pgvector path.
 
 Database changes are generated and applied with:
@@ -120,23 +126,29 @@ bibliographic facts, short claim/figure locators, an independently written
 summary, and an authority link; it does not store or vectorize patent full text
 or drawings without a separate record-level rights decision. A patent
 disclosure is not independent performance validation, a safety certification,
-or legal advice.
+or legal advice. A reviewed metadata record can be recalled only by an explicit
+publication-number lookup; this is not semantic retrieval and is not counted in
+the Top-5 corpus hit rate.
 
 ## Security and privacy
 
 - secrets stay in ECS environment files or GitHub environment secrets;
 - the database is not bound to a public host port;
-- private source files and rotating backups belong in private OSS;
+- private source files and rotating backups must use private OSS before public
+  launch; current staging OSS upload is not yet configured;
 - user Markdown is rendered as inert text, and citations require HTTPS;
 - web fetching revalidates an authority allowlist and blocks private network
   addresses, slow responses, redirects, and oversized bodies;
 - model output is buffered and withheld until its answer structure and
   citations validate;
-- OCR receives only short-lived private-OSS URLs on an exact HTTPS host
-  allowlist, with bounded polling and result size;
+- once enabled, OCR receives only short-lived private-OSS URLs on an exact
+  HTTPS host allowlist, with bounded polling and result size;
 - every admin write has a server-side role check and audit event;
-- conversations remain until user deletion; online deletion is immediate and
-  backups rotate out within 30 days.
+- conversations remain until user deletion and online deletion is immediate;
+  public launch additionally requires verified backup expiry within 30 days.
+- problem reports expire after 180 days; optional contact details are removed
+  30 days after closure, and owner notifications contain no report body or
+  contact data.
 
 Run the read-only ECS check before creating a site:
 
@@ -159,9 +171,10 @@ starting the new containers, and checks `/api/health`. A failed migration stops
 the release; a failed health check starts the previous image.
 
 Public launch remains blocked until HTTPS, ICP status, legal pages, complaint
-contact details, AI-generated-content labelling, model filing disclosure, a
-120-question evaluation run, expert review, and a real backup restore drill are
-all evidenced.
+contact details, AI-generated-content labelling, model filing disclosure, the
+150-case launch evaluation (102 retrieval, 18 exact patent-metadata, and 30
+safety-boundary cases), independent expert review, private-OSS backup upload,
+and a real backup restore drill are all evidenced.
 
 ## Licence
 

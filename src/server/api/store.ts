@@ -28,7 +28,6 @@ import {
   auditLogs,
   backgroundTasks,
   citations,
-  consultations,
   conversations,
   dailyUsage,
   knowledgeChunks,
@@ -39,6 +38,7 @@ import {
   messageFeedback,
   messages,
   promptVersions,
+  problemReports,
   systemSettings,
   user as users
 } from "@/server/db/schema";
@@ -47,6 +47,11 @@ import {
   KnowledgeSourcePolicyError,
   type GovernedKnowledgeSource
 } from "@/server/knowledge/source-policy";
+import {
+  problemReportContactPurgeAt,
+  problemReportRetentionUntil
+} from "@/server/problem-reports/retention";
+import { storedProblemReportAssociations } from "@/server/problem-reports/context-policy";
 
 import { ApiError } from "./errors";
 import { auditLogReadPolicy } from "./audit-policy";
@@ -295,15 +300,32 @@ export function sha256KnowledgeContent(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
+export function knowledgeEvidenceMetadataChanged(input: {
+  currentSourceId: string | null;
+  nextSourceId?: string | null;
+  ingestionModeProvided: boolean;
+  citationMetadataProvided: boolean;
+}): boolean {
+  return (
+    input.ingestionModeProvided ||
+    input.citationMetadataProvided ||
+    (input.nextSourceId !== undefined &&
+      input.nextSourceId !== input.currentSourceId)
+  );
+}
+
 export type KnowledgeReviewTransition = {
+  documentStatus: "draft" | "review";
+  versionStatus: "draft" | "review";
   contentHash: string;
   review: {
-    status: "approved";
+    status: "approved" | "rejected";
     reviewedBy: string;
     reviewedAt: string;
     contentHash: string;
+    note?: string;
   };
-  embeddingStatus: "queued" | "not_applicable";
+  embeddingStatus: "queued" | "not_applicable" | "pending_review";
   task:
     | {
         idempotencyKey: string;
@@ -327,6 +349,8 @@ export function buildKnowledgeReviewTransition(input: {
   ingestionMode: unknown;
   reviewerId: string;
   reviewedAt: Date;
+  decision?: "approved" | "rejected";
+  note?: string;
 }): KnowledgeReviewTransition {
   const actualHash = sha256KnowledgeContent(input.content);
   const storedHash = input.storedContentHash?.toLowerCase() ?? null;
@@ -354,13 +378,31 @@ export function buildKnowledgeReviewTransition(input: {
       "知识版本缺少有效的入库模式。"
     );
   }
+  if (input.decision === "rejected" && !input.note?.trim()) {
+    throw new ApiError(
+      422,
+      "KNOWLEDGE_REJECTION_NOTE_REQUIRED",
+      "驳回知识时必须填写审核备注。"
+    );
+  }
 
   const review = {
-    status: "approved" as const,
+    status: input.decision ?? ("approved" as const),
     reviewedBy: input.reviewerId,
     reviewedAt: input.reviewedAt.toISOString(),
-    contentHash: actualHash
+    contentHash: actualHash,
+    ...(input.note ? { note: input.note } : {})
   };
+  if (review.status === "rejected") {
+    return {
+      documentStatus: "draft",
+      versionStatus: "draft",
+      contentHash: actualHash,
+      review,
+      embeddingStatus: "pending_review",
+      task: undefined
+    };
+  }
   const task =
     input.ingestionMode === "full_text"
       ? {
@@ -375,11 +417,70 @@ export function buildKnowledgeReviewTransition(input: {
       : undefined;
 
   return {
+    documentStatus: "review",
+    versionStatus: "review",
     contentHash: actualHash,
     review,
     embeddingStatus: task ? "queued" : "not_applicable",
     task
   };
+}
+
+export function invalidateKnowledgeReviewAfterHashChange(input: {
+  metadata: Record<string, unknown>;
+  previousContentHash: string | null;
+  nextContentHash: string;
+  invalidatedBy: string;
+  invalidatedAt: Date;
+}): { invalidated: boolean; metadata: Record<string, unknown> } {
+  const previousHash = input.previousContentHash?.toLowerCase() ?? null;
+  const nextHash = input.nextContentHash.toLowerCase();
+  if (previousHash === nextHash) {
+    return { invalidated: false, metadata: input.metadata };
+  }
+
+  const existingReview = recordValue(input.metadata.review);
+  return {
+    invalidated: true,
+    metadata: {
+      ...input.metadata,
+      reviewStatus: "required",
+      embeddingStatus: "pending_review",
+      ...(Object.keys(existingReview).length > 0
+        ? {
+            review: {
+              ...existingReview,
+              status: "invalidated",
+              invalidatedAt: input.invalidatedAt.toISOString(),
+              invalidatedBy: input.invalidatedBy,
+              invalidatedReason: "content_hash_changed",
+              invalidatedContentHash: nextHash
+            }
+          }
+        : {})
+    }
+  };
+}
+
+export function effectiveKnowledgeReviewStatus(input: {
+  metadata: Record<string, unknown>;
+  content: string;
+  contentHash: string | null;
+}): string {
+  const review = recordValue(input.metadata.review);
+  if (review.status === "invalidated") return "invalidated";
+
+  const configured = stringValue(input.metadata.reviewStatus) ?? "required";
+  if (configured !== "approved") return configured;
+
+  const reviewedHash = stringValue(review.contentHash)?.toLowerCase();
+  const storedHash = input.contentHash?.toLowerCase() ?? null;
+  const actualHash = sha256KnowledgeContent(input.content);
+  return reviewedHash &&
+    storedHash === reviewedHash &&
+    actualHash === storedHash
+    ? "approved"
+    : "invalidated";
 }
 
 export function assertKnowledgePublicationGate(
@@ -571,7 +672,12 @@ async function loadKnowledgeDocumentView(
   const source = sourceRows[0];
   const chunkCount = Number(chunkRows[0]?.value ?? 0);
   let publishReady = false;
-  if (version) {
+  const publishBlockers: string[] = [];
+  if (
+    version &&
+    document.status !== "published" &&
+    document.status !== "archived"
+  ) {
     try {
       assertKnowledgePublicationGate({
         documentStatus: document.status,
@@ -588,27 +694,44 @@ async function loadKnowledgeDocumentView(
         "发布"
       );
       publishReady = true;
-    } catch {
+    } catch (error) {
       publishReady = false;
+      publishBlockers.push(
+        error instanceof ApiError
+          ? error.message
+          : "发布门禁检查失败，请稍后重试。"
+      );
     }
   }
 
   const versionMetadata = recordValue(version?.metadata);
+  const effectiveReviewStatus = version
+    ? effectiveKnowledgeReviewStatus({
+        metadata: versionMetadata,
+        content: version.content,
+        contentHash: version.contentHash
+      })
+    : "required";
+  const review = recordValue(versionMetadata.review);
   return {
     ...document,
     sourceTier: source?.sourceTier ?? "internal",
     publisher: source?.publisher ?? source?.name ?? null,
     licenseClass: source?.licensePolicy ?? "unknown",
     version: version?.version ?? null,
+    versionStatus: version?.status ?? null,
     contentHash: version?.contentHash ?? null,
     citationMetadata: version?.citationMetadata ?? {},
     versionMetadata,
-    reviewStatus: versionMetadata.reviewStatus ?? "required",
+    reviewStatus: effectiveReviewStatus,
+    reviewNote: stringValue(review.note) ?? null,
+    reviewInvalidatedAt: stringValue(review.invalidatedAt) ?? null,
     embeddingStatus: versionMetadata.embeddingStatus ?? "pending_review",
     ocrConfidence: versionMetadata.ocrConfidence ?? null,
     chunkCount,
     previousPublishedVersionId: previousRows[0]?.id ?? null,
     publishReady,
+    publishBlockers,
     ...(includeContent
       ? {
           content: version?.content ?? "",
@@ -1250,49 +1373,20 @@ export const apiStore: ApiStore = {
     });
   },
 
-  async listConsultations(userId, input) {
-    const status = enumValue(
-      ["submitted", "contacting", "resolved", "closed"] as const,
-      input.status
-    );
-    const filters = [
-      eq(consultations.userId, userId),
-      ...(status ? [eq(consultations.status, status)] : [])
-    ];
+  async createProblemReport(userId, input, audit) {
+    let conversationId = input.conversationId;
 
-    const [items, totalRows] = await Promise.all([
-      db
+    if (input.messageId) {
+      const [ownedMessage] = await db
         .select({
-          id: consultations.id,
-          conversationId: consultations.conversationId,
-          companyName: consultations.companyName,
-          problem: consultations.problem,
-          status: consultations.status,
-          createdAt: consultations.createdAt,
-          updatedAt: consultations.updatedAt
+          id: messages.id,
+          conversationId: messages.conversationId
         })
-        .from(consultations)
-        .where(and(...filters))
-        .orderBy(desc(consultations.createdAt))
-        .limit(input.pageSize)
-        .offset(offset(input)),
-      db
-        .select({ value: count() })
-        .from(consultations)
-        .where(and(...filters))
-    ]);
-
-    return pageResult(items, input, Number(totalRows[0]?.value ?? 0));
-  },
-
-  async createConsultation(userId, input, audit) {
-    if (input.conversationId) {
-      const [owned] = await db
-        .select({ id: conversations.id })
-        .from(conversations)
+        .from(messages)
+        .innerJoin(conversations, eq(messages.conversationId, conversations.id))
         .where(
           and(
-            eq(conversations.id, input.conversationId),
+            eq(messages.id, input.messageId),
             eq(conversations.userId, userId),
             ne(conversations.status, "deleted"),
             isNull(conversations.deletedAt)
@@ -1300,42 +1394,112 @@ export const apiStore: ApiStore = {
         )
         .limit(1);
 
-      if (!owned) {
+      if (
+        !ownedMessage ||
+        (conversationId && conversationId !== ownedMessage.conversationId)
+      ) {
+        return null;
+      }
+      conversationId = ownedMessage.conversationId;
+    }
+
+    let ownedConversation:
+      { id: string; title: string; summary: string | null } | undefined;
+    if (conversationId) {
+      [ownedConversation] = await db
+        .select({
+          id: conversations.id,
+          title: conversations.title,
+          summary: conversations.summary
+        })
+        .from(conversations)
+        .where(
+          and(
+            eq(conversations.id, conversationId),
+            eq(conversations.userId, userId),
+            ne(conversations.status, "deleted"),
+            isNull(conversations.deletedAt)
+          )
+        )
+        .limit(1);
+
+      if (!ownedConversation) {
         return null;
       }
     }
 
-    const id = crypto.randomUUID();
-    const now = new Date();
+    if (input.includeContext && !ownedConversation) {
+      return null;
+    }
 
+    const now = new Date();
+    let context: Record<string, unknown> = {};
+    if (input.includeContext && ownedConversation) {
+      const recentMessages = await db
+        .select({
+          id: messages.id,
+          role: messages.role,
+          content: messages.content,
+          createdAt: messages.createdAt
+        })
+        .from(messages)
+        .where(eq(messages.conversationId, ownedConversation.id))
+        .orderBy(desc(messages.createdAt), desc(messages.id))
+        .limit(8);
+
+      context = {
+        conversationId: ownedConversation.id,
+        title: ownedConversation.title,
+        summary: ownedConversation.summary,
+        messages: recentMessages.reverse().map((message) => ({
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          createdAt: message.createdAt.toISOString()
+        })),
+        capturedAt: now.toISOString()
+      };
+    }
+
+    const id = crypto.randomUUID();
+    const storedAssociations = storedProblemReportAssociations({
+      includeContext: input.includeContext,
+      conversationId,
+      messageId: input.messageId
+    });
     return db.transaction(async (tx) => {
       const [created] = await tx
-        .insert(consultations)
+        .insert(problemReports)
         .values({
           id,
           userId,
-          conversationId: input.conversationId ?? null,
-          contactName: input.contactName,
-          companyName: input.companyName,
-          contactMethod: input.contactMethod,
-          contactValue: input.contactValue,
-          problem: input.problem,
-          conversationSummary: input.conversationSummary,
-          confirmedAt: now,
-          status: "submitted",
+          conversationId: storedAssociations.conversationId,
+          messageId: storedAssociations.messageId,
+          category: input.category,
+          description: input.description,
+          includeContext: input.includeContext,
+          context,
+          contactType: input.contactType ?? null,
+          contactValue: input.contactValue ?? null,
+          consentToContact: input.consentToContact,
+          status: "new",
+          retentionUntil: problemReportRetentionUntil(now),
           createdAt: now,
           updatedAt: now
         })
         .returning({
-          id: consultations.id,
-          status: consultations.status,
-          createdAt: consultations.createdAt
+          id: problemReports.id,
+          status: problemReports.status,
+          createdAt: problemReports.createdAt
         });
 
       await tx.insert(auditLogs).values(
-        auditValues(audit, "consultation.create", "consultation", id, {
-          conversationId: input.conversationId ?? null,
-          contactMethod: input.contactMethod
+        auditValues(audit, "problem_report.create", "problem_report", id, {
+          conversationId: storedAssociations.conversationId,
+          messageId: storedAssociations.messageId,
+          category: input.category,
+          includeContext: input.includeContext,
+          hasContact: Boolean(input.contactValue)
         })
       );
 
@@ -1568,53 +1732,69 @@ export const apiStore: ApiStore = {
     });
   },
 
-  async listAdminConsultations(input) {
+  async listAdminProblemReports(input, audit) {
     const status = enumValue(
-      ["submitted", "contacting", "resolved", "closed"] as const,
+      ["new", "reviewing", "closed"] as const,
       input.status
     );
     const filters = [
-      ...(status ? [eq(consultations.status, status)] : []),
+      ...(status ? [eq(problemReports.status, status)] : []),
       ...(input.query
         ? [
             or(
-              ilike(consultations.companyName, queryPattern(input.query)),
-              ilike(consultations.problem, queryPattern(input.query))
+              ilike(problemReports.description, queryPattern(input.query)),
+              ilike(problemReports.contactValue, queryPattern(input.query))
             )
           ]
         : [])
     ].filter((filter) => filter !== undefined);
 
     const where = filters.length > 0 ? and(...filters) : undefined;
-    const [items, totalRows] = await Promise.all([
-      db
-        .select()
-        .from(consultations)
-        .where(where)
-        .orderBy(desc(consultations.createdAt))
-        .limit(input.pageSize)
-        .offset(offset(input)),
-      db.select({ value: count() }).from(consultations).where(where)
-    ]);
+    return db.transaction(async (tx) => {
+      const [items, totalRows] = await Promise.all([
+        tx
+          .select()
+          .from(problemReports)
+          .where(where)
+          .orderBy(desc(problemReports.createdAt))
+          .limit(input.pageSize)
+          .offset(offset(input)),
+        tx.select({ value: count() }).from(problemReports).where(where)
+      ]);
 
-    return pageResult(items, input, Number(totalRows[0]?.value ?? 0));
+      await tx.insert(auditLogs).values(
+        auditValues(
+          audit,
+          "problem_report.list.view",
+          "problem_report",
+          "collection",
+          {
+            page: input.page,
+            pageSize: input.pageSize,
+            status: status ?? null,
+            searched: Boolean(input.query)
+          }
+        )
+      );
+
+      return pageResult(items, input, Number(totalRows[0]?.value ?? 0));
+    });
   },
 
-  async setConsultationStatus(consultationId, input, audit) {
+  async setProblemReportStatus(problemReportId, input, audit) {
     return db.transaction(async (tx) => {
+      const now = new Date();
       const [updated] = await tx
-        .update(consultations)
+        .update(problemReports)
         .set({
           status: input.status,
-          assignedTo: input.assignedTo ?? null,
           adminNote: input.note ?? null,
-          resolvedAt:
-            input.status === "resolved" || input.status === "closed"
-              ? new Date()
-              : null,
-          updatedAt: new Date()
+          closedAt: input.status === "closed" ? now : null,
+          contactPurgeAt:
+            input.status === "closed" ? problemReportContactPurgeAt(now) : null,
+          updatedAt: now
         })
-        .where(eq(consultations.id, consultationId))
+        .where(eq(problemReports.id, problemReportId))
         .returning();
 
       if (!updated) {
@@ -1624,12 +1804,11 @@ export const apiStore: ApiStore = {
       await tx.insert(auditLogs).values(
         auditValues(
           audit,
-          "consultation.status.update",
-          "consultation",
-          consultationId,
+          "problem_report.status.update",
+          "problem_report",
+          problemReportId,
           {
-            status: input.status,
-            assignedTo: input.assignedTo ?? null
+            status: input.status
           }
         )
       );
@@ -1750,6 +1929,7 @@ export const apiStore: ApiStore = {
         .select({
           id: knowledgeDocuments.id,
           status: knowledgeDocuments.status,
+          sourceId: knowledgeDocuments.sourceId,
           currentVersionId: knowledgeDocuments.currentVersionId
         })
         .from(knowledgeDocuments)
@@ -1758,24 +1938,65 @@ export const apiStore: ApiStore = {
 
       if (
         !document ||
-        document.status !== "draft" ||
+        (document.status !== "draft" && document.status !== "review") ||
         !document.currentVersionId
       ) {
         return null;
       }
 
+      const [currentVersion] = await tx
+        .select()
+        .from(knowledgeVersions)
+        .where(eq(knowledgeVersions.id, document.currentVersionId))
+        .limit(1)
+        .for("update");
+      if (
+        !currentVersion ||
+        currentVersion.documentId !== documentId ||
+        (currentVersion.status !== "draft" &&
+          currentVersion.status !== "review")
+      ) {
+        return null;
+      }
+
+      const now = new Date();
+      const previousContentHash =
+        currentVersion.contentHash ??
+        sha256KnowledgeContent(currentVersion.content);
+      const nextContentHash =
+        input.content === undefined
+          ? previousContentHash
+          : sha256KnowledgeContent(input.content);
+      const hashTransition = invalidateKnowledgeReviewAfterHashChange({
+        metadata: currentVersion.metadata,
+        previousContentHash,
+        nextContentHash,
+        invalidatedBy: audit.actor.id,
+        invalidatedAt: now
+      });
+      const evidenceMetadataChanged = knowledgeEvidenceMetadataChanged({
+        currentSourceId: document.sourceId,
+        nextSourceId: input.sourceId,
+        ingestionModeProvided: input.ingestionMode !== undefined,
+        citationMetadataProvided: input.citationMetadata !== undefined
+      });
+      const reviewInvalidated =
+        hashTransition.invalidated || evidenceMetadataChanged;
+
       const documentPatch: Partial<typeof knowledgeDocuments.$inferInsert> = {
-        updatedAt: new Date()
+        updatedAt: now,
+        ...(reviewInvalidated ? { status: "draft" } : {})
       };
       if (input.title !== undefined) documentPatch.title = input.title;
       if (input.sourceId !== undefined) documentPatch.sourceId = input.sourceId;
 
       const versionPatch: Partial<typeof knowledgeVersions.$inferInsert> = {
-        updatedAt: new Date()
+        updatedAt: now,
+        ...(reviewInvalidated ? { status: "draft" } : {})
       };
       if (input.content !== undefined) {
         versionPatch.content = input.content;
-        versionPatch.contentHash = sha256KnowledgeContent(input.content);
+        versionPatch.contentHash = nextContentHash;
       }
       if (input.citationMetadata !== undefined) {
         versionPatch.citationMetadata = {
@@ -1783,25 +2004,35 @@ export const apiStore: ApiStore = {
           ...(input.ingestionMode ? { ingestionMode: input.ingestionMode } : {})
         };
       } else if (input.ingestionMode !== undefined) {
-        const [currentVersion] = await tx
-          .select({ citationMetadata: knowledgeVersions.citationMetadata })
-          .from(knowledgeVersions)
-          .where(eq(knowledgeVersions.id, document.currentVersionId))
-          .limit(1);
         versionPatch.citationMetadata = {
-          ...(currentVersion?.citationMetadata ?? {}),
+          ...currentVersion.citationMetadata,
           ingestionMode: input.ingestionMode
         };
       }
-      if (
-        input.content !== undefined ||
-        input.ingestionMode !== undefined ||
-        input.citationMetadata !== undefined
-      ) {
-        versionPatch.metadata = {
-          reviewStatus: "required",
-          embeddingStatus: "pending_review"
-        };
+      if (reviewInvalidated) {
+        const existingReview = recordValue(
+          hashTransition.metadata.review ?? currentVersion.metadata.review
+        );
+        versionPatch.metadata = evidenceMetadataChanged
+          ? {
+              ...hashTransition.metadata,
+              reviewStatus: "required",
+              embeddingStatus: "pending_review",
+              ...(Object.keys(existingReview).length > 0
+                ? {
+                    review: {
+                      ...existingReview,
+                      status: "invalidated",
+                      invalidatedAt: now.toISOString(),
+                      invalidatedBy: audit.actor.id,
+                      invalidatedReason: hashTransition.invalidated
+                        ? "content_hash_and_evidence_metadata_changed"
+                        : "evidence_metadata_changed"
+                    }
+                  }
+                : {})
+            }
+          : hashTransition.metadata;
       }
 
       await tx
@@ -1821,7 +2052,10 @@ export const apiStore: ApiStore = {
           documentId,
           {
             versionId: document.currentVersionId,
-            changedFields: Object.keys(input)
+            changedFields: Object.keys(input),
+            reviewInvalidated,
+            previousContentHash,
+            nextContentHash
           }
         )
       );
@@ -1891,7 +2125,9 @@ export const apiStore: ApiStore = {
         expectedContentHash: input.expectedContentHash,
         ingestionMode: version.citationMetadata.ingestionMode,
         reviewerId: audit.actor.id,
-        reviewedAt: now
+        reviewedAt: now,
+        decision: input.decision,
+        note: input.note
       });
       const [source] = document.sourceId
         ? await tx
@@ -1907,13 +2143,16 @@ export const apiStore: ApiStore = {
             .where(eq(knowledgeSources.id, document.sourceId))
             .limit(1)
         : [];
-      assertPublishableKnowledgeSource(
-        source,
-        version.citationMetadata,
-        "发布"
-      );
+      if (input.decision === "approved") {
+        assertPublishableKnowledgeSource(
+          source,
+          version.citationMetadata,
+          "发布"
+        );
+      }
       const existingReview = recordValue(version.metadata.review);
       const [existingChunkResult] =
+        input.decision === "approved" &&
         transition.task &&
         version.metadata.embeddingStatus === "completed" &&
         existingReview.contentHash === transition.contentHash
@@ -1929,7 +2168,7 @@ export const apiStore: ApiStore = {
         : transition.embeddingStatus;
       const metadata = {
         ...version.metadata,
-        reviewStatus: "approved",
+        reviewStatus: transition.review.status,
         embeddingStatus,
         review: transition.review
       };
@@ -1937,7 +2176,7 @@ export const apiStore: ApiStore = {
       await tx
         .update(knowledgeVersions)
         .set({
-          status: "review",
+          status: transition.versionStatus,
           contentHash: transition.contentHash,
           metadata,
           updatedAt: now
@@ -1945,7 +2184,7 @@ export const apiStore: ApiStore = {
         .where(eq(knowledgeVersions.id, document.currentVersionId));
       await tx
         .update(knowledgeDocuments)
-        .set({ status: "review", updatedAt: now })
+        .set({ status: transition.documentStatus, updatedAt: now })
         .where(eq(knowledgeDocuments.id, documentId));
 
       if (transition.task && !preserveCompletedEmbedding) {
@@ -1973,13 +2212,16 @@ export const apiStore: ApiStore = {
       await tx.insert(auditLogs).values(
         auditValues(
           audit,
-          "knowledge.review.approve",
+          input.decision === "approved"
+            ? "knowledge.review.approve"
+            : "knowledge.review.reject",
           "knowledge_document",
           documentId,
           {
             versionId: document.currentVersionId,
             contentHash: transition.contentHash,
-            embeddingStatus
+            embeddingStatus,
+            noteProvided: Boolean(input.note)
           }
         )
       );
@@ -2109,6 +2351,67 @@ export const apiStore: ApiStore = {
       );
       return published;
     });
+  },
+
+  async archiveKnowledgeDocument(documentId, audit) {
+    const archived = await db.transaction(async (tx) => {
+      const [document] = await tx
+        .select({
+          id: knowledgeDocuments.id,
+          status: knowledgeDocuments.status,
+          currentVersionId: knowledgeDocuments.currentVersionId
+        })
+        .from(knowledgeDocuments)
+        .where(eq(knowledgeDocuments.id, documentId))
+        .limit(1)
+        .for("update");
+      if (!document) return null;
+      if (document.status === "archived") {
+        return { id: document.id, unchanged: true };
+      }
+
+      const now = new Date();
+      if (document.currentVersionId) {
+        await tx
+          .update(knowledgeVersions)
+          .set({ status: "archived", updatedAt: now })
+          .where(eq(knowledgeVersions.id, document.currentVersionId));
+      }
+      const [updated] = await tx
+        .update(knowledgeDocuments)
+        .set({ status: "archived", updatedAt: now })
+        .where(
+          and(
+            eq(knowledgeDocuments.id, documentId),
+            eq(knowledgeDocuments.status, document.status)
+          )
+        )
+        .returning({ id: knowledgeDocuments.id });
+      if (!updated) {
+        throw new ApiError(
+          409,
+          "KNOWLEDGE_ARCHIVE_CONFLICT",
+          "知识文档状态已变化，请刷新后重试。"
+        );
+      }
+
+      await tx.insert(auditLogs).values(
+        auditValues(
+          audit,
+          "knowledge.archive",
+          "knowledge_document",
+          documentId,
+          {
+            versionId: document.currentVersionId,
+            previousStatus: document.status
+          }
+        )
+      );
+      return { id: updated.id, unchanged: false };
+    });
+
+    if (!archived) return null;
+    return this.getKnowledgeDocument(documentId);
   },
 
   async rollbackKnowledgeDocument(documentId, versionId, audit) {
@@ -2739,7 +3042,7 @@ export const apiStore: ApiStore = {
       usage,
       userCount,
       conversationCount,
-      consultationCount,
+      openProblemReportCount,
       openFeedbackCount
     ] = await Promise.all([
       db
@@ -2766,11 +3069,12 @@ export const apiStore: ApiStore = {
         ),
       db
         .select({ value: count() })
-        .from(consultations)
+        .from(problemReports)
         .where(
           and(
-            gte(consultations.createdAt, input.from),
-            lte(consultations.createdAt, input.to)
+            inArray(problemReports.status, ["new", "reviewing"]),
+            gte(problemReports.createdAt, input.from),
+            lte(problemReports.createdAt, input.to)
           )
         ),
       db
@@ -2786,7 +3090,7 @@ export const apiStore: ApiStore = {
       },
       users: Number(userCount[0]?.value ?? 0),
       conversations: Number(conversationCount[0]?.value ?? 0),
-      consultations: Number(consultationCount[0]?.value ?? 0),
+      openProblemReports: Number(openProblemReportCount[0]?.value ?? 0),
       openFeedback: Number(openFeedbackCount[0]?.value ?? 0),
       usage: {
         requests: Number(usage[0]?.requests ?? 0),

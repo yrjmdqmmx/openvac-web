@@ -24,7 +24,9 @@ describe("DeepSeekModelProvider", () => {
     const fetchMock = vi.fn(
       async (_url: string | URL | Request, init?: RequestInit) => {
         sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        return new Response(body);
+        return new Response(body, {
+          headers: { "x-request-id": "deepseek-request-1" }
+        });
       }
     );
     const provider = new DeepSeekModelProvider({
@@ -61,7 +63,8 @@ describe("DeepSeekModelProvider", () => {
           inputTokens: 3,
           outputTokens: 2,
           totalTokens: 5
-        }
+        },
+        providerRequestId: "deepseek-request-1"
       }
     ]);
     expect(JSON.stringify(events)).not.toContain("private");

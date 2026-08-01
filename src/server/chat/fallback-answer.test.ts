@@ -30,7 +30,7 @@ describe("no-evidence answer fallback", () => {
     expect(validateCitations(answer, []).valid).toBe(true);
   });
 
-  it("keeps high-risk requests stopped and routed to a human", () => {
+  it("keeps high-risk requests stopped and routes to an external professional", () => {
     const question = "氧气系统的真空泵可以带电拆修吗？";
     const answer = buildNoEvidenceAnswer({
       question,
@@ -39,6 +39,7 @@ describe("no-evidence answer fallback", () => {
 
     expect(answer).toContain("停机、隔离能源");
     expect(answer).toContain("不得指导带电拆修");
+    expect(answer).toContain("设备制造商");
     expect(hasRequiredAnswerSections(answer)).toBe(true);
   });
 });

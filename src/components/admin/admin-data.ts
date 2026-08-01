@@ -15,15 +15,16 @@ export const adminModuleConfigs = {
     responseKeys: ["conversations"],
     columns: ["title", "userEmail", "status", "model", "updatedAt"]
   },
-  consultations: {
-    title: "咨询单",
-    description: "处理用户确认提交的人工咨询与工况摘要。",
-    endpoint: "/api/admin/consultations",
-    responseKeys: ["consultations"],
+  "problem-reports": {
+    title: "问题反馈",
+    description: "复核回答、引用、系统错误和产品建议；反馈不代表承诺回复。",
+    endpoint: "/api/admin/problem-reports",
+    responseKeys: ["problemReports"],
     columns: [
-      "contactName",
-      "companyName",
-      "contactMethod",
+      "category",
+      "description",
+      "includeContext",
+      "contactType",
       "status",
       "createdAt"
     ]
@@ -96,9 +97,10 @@ export const adminColumnLabels: Record<string, string> = {
   status: "状态",
   model: "模型",
   updatedAt: "更新时间",
-  contactName: "联系人",
-  companyName: "公司",
-  contactMethod: "联系类型",
+  category: "问题类型",
+  description: "问题描述",
+  includeContext: "附带上下文",
+  contactType: "联系类型",
   kind: "来源类型",
   publisher: "发布机构",
   canonicalUrl: "记录地址",
@@ -172,6 +174,23 @@ export function extractAdminRows(
 export function formatAdminValue(key: string, value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "boolean") return value ? "是" : "否";
+  if (typeof value === "string") {
+    const labels: Record<string, string> = {
+      answer_incorrect: "回答不正确",
+      citation_problem: "引用问题",
+      unsafe_answer: "可能不安全",
+      system_error: "系统错误",
+      product_suggestion: "产品建议",
+      other: "其他",
+      new: "新反馈",
+      reviewing: "复核中",
+      closed: "已关闭",
+      email: "邮箱",
+      phone: "电话",
+      wechat: "微信"
+    };
+    if (labels[value]) return labels[value];
+  }
   if (/At$/.test(key) && typeof value === "string") {
     const date = new Date(value);
     if (!Number.isNaN(date.getTime())) {
@@ -209,6 +228,8 @@ export type KnowledgeDocumentView = {
   reviewStatus?: string;
   reviewedBy?: string;
   reviewedAt?: string;
+  reviewNote?: string;
+  reviewInvalidatedAt?: string;
   contentHash?: string;
   publishReady?: boolean;
   publishBlockers: string[];
@@ -336,6 +357,11 @@ function normalizeKnowledgeDocument(
       review.reviewerName
     ),
     reviewedAt: stringValue(row.reviewedAt, review.reviewedAt),
+    reviewNote: stringValue(row.reviewNote, review.note),
+    reviewInvalidatedAt: stringValue(
+      row.reviewInvalidatedAt,
+      review.invalidatedAt
+    ),
     contentHash: stringValue(row.contentHash, version.contentHash),
     publishReady:
       explicitPublishReady ?? (status === "review" ? undefined : false),

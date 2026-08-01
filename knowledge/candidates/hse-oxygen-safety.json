@@ -1,0 +1,67 @@
+{
+  "sourceCanonicalUrl": "https://www.hse.gov.uk/pubns/indg459.htm",
+  "document": {
+    "externalKey": "hse-oxygen-use-indg459",
+    "title": "Oxygen use in the workplace（OpenVac 安全知识草稿）",
+    "description": "依据 HSE INDG459 氧气安全指南独立编写的中文安全摘要；用于识别富氧、着火、材料与维护风险，不代替氧服役设备的厂家认证和现场评估。",
+    "language": "zh-CN",
+    "mimeType": "text/html",
+    "tags": ["氧气", "富氧", "火灾", "油脂污染", "受限空间"]
+  },
+  "citation": {
+    "authors": ["UK Health and Safety Executive"],
+    "publishedYear": 2013,
+    "publication": "INDG459 Oxygen use in the workplace",
+    "recordUrl": "https://www.hse.gov.uk/pubns/indg459.htm",
+    "licenseClass": "open",
+    "licenseName": "Open Government Licence v3.0",
+    "licenseUrl": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+    "ingestionMode": "full_text",
+    "fetchedAt": "2026-08-01T00:00:00.000Z",
+    "curationMethod": "official-publication-section-located-Chinese-synthesis",
+    "changesMade": "Chinese safety synthesis and chunking; HSE logo, images and third-party assets excluded.",
+    "thirdPartyAssetsExcluded": true,
+    "jurisdictionNotice": "HSE guidance is UK workplace safety material. Oxygen-service suitability still requires the equipment manufacturer and competent local personnel."
+  },
+  "review": {
+    "status": "required",
+    "requirements": [
+      "核对富氧、火灾、油脂及密闭空间警示",
+      "确认不给出未经厂家证实的氧服役泵选型或材料兼容性结论",
+      "确认没有将一般工业氧气指南外推为特定真空泵操作手册",
+      "由真空行业专家批准后才允许向量化和发布"
+    ]
+  },
+  "sections": [
+    {
+      "sourceSection": "Fire and explosion hazards > Oxygen enrichment",
+      "sectionPath": ["富氧危险", "易燃性和火灾后果"],
+      "keywords": ["富氧", "火灾", "爆炸", "泄漏", "通风"],
+      "content": "氧含量高于正常空气时，材料更容易点燃，火焰也可能更猛烈且难以扑灭。富氧可来自氧气泄漏、不当排放或通风不足，在受限或通风不良空间中后果尤其严重。涉及氧气的真空工况必须先停止一般性选型推荐，转由厂家和现场胜任人员确认。"
+    },
+    {
+      "sourceSection": "What are the hazards from using oxygen?",
+      "sectionPath": ["氧化反应", "油、脂和普通材料"],
+      "keywords": ["油脂", "氧化", "自燃", "材料兼容性", "氧服役"],
+      "content": "纯氧尤其在加压状态下可与常见材料剧烈反应，油和脂类污染会显著增加风险。很多在空气中看似普通的纺织品、橡胶甚至金属在氧中也可能强烈燃烧。因此，不得在没有氧服役证明和清洁程序时建议普通油封泵、润滑油、密封材料或临时润滑处置。"
+    },
+    {
+      "sourceSection": "Preventing oxygen enrichment",
+      "sectionPath": ["泄漏与排放", "通风和气氛监测"],
+      "keywords": ["泄漏检查", "通风", "排气", "氧浓度", "密闭空间"],
+      "content": "防止富氧需要管理氧气泄漏和排放路径，并保持与现场风险匹配的通风。小的阀门或软管泄漏也可以在通风不良空间快速改变气氛。远程对话无法确认当地氧浓度、通风或排气安全性；怀疑泄漏时应依现场程序停机、隔离和撤离，而不是继续试运行。"
+    },
+    {
+      "sourceSection": "Maintenance of oxygen service equipment",
+      "sectionPath": ["氧服役设备", "专用部件、清洁与人员能力"],
+      "keywords": ["氧服役设备", "专用部件", "清洁", "厂家程序", "胜任人员"],
+      "content": "氧服役设备的部件、材料、清洁状态和维护程序都不应按普通空气设备类推。维护应使用制造商规定的部件、工具和清洁方法，并由了解氧气火灾风险的胜任人员完成。OpenVac 不得根据一般机械故障现象指导用户自行拆解、换油或代用密封。"
+    },
+    {
+      "sourceSection": "Working in confined spaces",
+      "sectionPath": ["受限空间", "气氛、进入和应急边界"],
+      "keywords": ["受限空间", "气氛检测", "撤离", "救援", "进入许可"],
+      "content": "在受限空间中，富氧会增加火灾风险，而其他抽气、置换或泄漏又可能导致缺氧或有毒气氛。进入、监测、通风和救援必须由现场程序和胜任人员管理。问题反馈不是紧急报警渠道；若存在真实气氛风险，用户应立即依现场应急程序行动。"
+    }
+  ]
+}

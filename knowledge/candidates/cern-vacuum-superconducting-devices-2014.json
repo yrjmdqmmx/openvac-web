@@ -22,7 +22,16 @@
     "pageRange": "497–515",
     "doi": "10.5170/CERN-2014-005.497",
     "recordUrl": "https://cds.cern.ch/record/1974068",
-    "officialPdfUrl": "https://cds.cern.ch/record/1974068/files/arXiv%3A1501.07162.pdf",
+    "officialPdfUrl": "https://cds.cern.ch/record/1974068/files/CERN-2014-005-p497.pdf",
+    "alternateOfficialPdfUrl": "https://cds.cern.ch/record/1974068/files/arXiv%3A1501.07162.pdf",
+    "excerptVerification": {
+      "status": "record_linked_arxiv_copy_reviewed",
+      "reviewedPdfUrl": "https://cds.cern.ch/record/1974068/files/arXiv%3A1501.07162.pdf",
+      "printedPageRange": "497-515",
+      "officialPublishedPdfBinaryStatus": "pending_anubis_recheck",
+      "officialPublishedPdfUrl": "https://cds.cern.ch/record/1974068/files/CERN-2014-005-p497.pdf",
+      "note": "The CERN-p497 download was blocked by Anubis during this audit. The excerpts were checked page-by-page against the same-work arXiv PDF linked by the CERN record; the official published binary must be independently rechecked during human review before publication."
+    },
     "licenseClass": "open",
     "licenseName": "Creative Commons Attribution 4.0",
     "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
@@ -38,6 +47,7 @@
       "逐条核对页码、公式适用条件、单位和压力范围",
       "确认没有把特定超导装置案例推广为普通工业系统通则",
       "确认未复制第三方 courtesy 图片、曲线或表格",
+      "通过 CERN 浏览器挑战后，逐块复核正式 CERN-2014-005-p497.pdf 二进制与当前摘录；当前只核对了 CERN 记录链接的 arXiv 同文 PDF",
       "由真空行业专家批准后才允许向量化和发布"
     ]
   },
@@ -46,66 +56,309 @@
       "pageStart": 497,
       "pageEnd": 499,
       "sectionPath": [
-        "2. Vacuum science fundamentals",
+        "2 Basic notions of vacuum technology",
         "Flow regimes and Knudsen number"
       ],
       "keywords": ["Knudsen 数", "黏性流", "过渡流", "分子流", "平均自由程"],
-      "content": "真空系统中的流动状态应由平均自由程与系统特征尺寸的比值（Knudsen 数）判断，而不能只凭一个压力数值。Kn 很小时，分子间碰撞占主导，可按黏性流处理；Kn 很大时，分子与壁面的碰撞更重要，进入分子流；两者之间是过渡区。压力边界会随气体、温度和几何尺寸变化，不同资料对‘低真空、高真空、超高真空’的分界也可能不同。"
+      "content": "真空系统中的流动状态应由平均自由程与系统特征尺寸的比值（Knudsen 数）判断，而不能只凭一个压力数值。Kn 很小时，分子间碰撞占主导，可按黏性流处理；Kn 很大时，分子与壁面的碰撞更重要，进入分子流；两者之间是过渡区。压力边界会随气体、温度和几何尺寸变化，不同资料对‘低真空、高真空、超高真空’的分界也可能不同。",
+      "originalExcerptPage": 498,
+      "originalExcerpt": "As reported in Table 2, the values of Kn delimit three different gas flows: free molecular, viscous, and transitional.",
+      "chineseStatement": "真空系统中的流动状态应由平均自由程与系统特征尺寸的比值（Knudsen 数）判断，而不能只凭一个压力数值。Kn 很小时，分子间碰撞占主导，可按黏性流处理；Kn 很大时，分子与壁面的碰撞更重要，进入分子流；两者之间是过渡区。压力边界会随气体、温度和几何尺寸变化，不同资料对‘低真空、高真空、超高真空’的分界也可能不同。",
+      "applicability": "适用于用 Knudsen 数判断流态；压力分界随气体、温度和系统特征尺寸改变。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "ee35d2a72a1ecf5dfe8ecfa4775b996b69779b7f8f396576b95a8f531f7a6c2d"
     },
     {
       "pageStart": 499,
+      "pageEnd": 500,
+      "sectionPath": [
+        "2.1 Gas transport in free molecular flow",
+        "2.1.1 Gas conductance",
+        "Geometry and gas dependence"
+      ],
+      "keywords": ["分子流导", "孔口", "传输概率", "气体种类", "几何尺寸"],
+      "content": "在等温分子流中，净气流与两端压差成正比，比例系数就是流导。流导不随压力变化，但受入口面积、通道几何、传输概率、温度和分子质量影响；同一部件对不同气体的流导并不相同。复杂弯管、阀门或组合结构不能只靠一个直管公式代替，必要时应采用经验证的几何模型或测试粒子蒙特卡洛方法。",
+      "originalExcerptPage": 499,
+      "originalExcerpt": "In the free molecular regime, the conductance does not depend on pressure. It depends only on the mean molecular speed and the vacuum system geometry.",
+      "chineseStatement": "在等温分子流中，净气流与两端压差成正比，比例系数就是流导。流导不随压力变化，但受入口面积、通道几何、传输概率、温度和分子质量影响；同一部件对不同气体的流导并不相同。复杂弯管、阀门或组合结构不能只靠一个直管公式代替，必要时应采用经验证的几何模型或测试粒子蒙特卡洛方法。",
+      "applicability": "适用于等温分子流；过渡流、黏性流及复杂几何必须采用相应模型或验证方法。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "8bba035bd9aecb0f086d50724e21646ea1ba48f3377ae8c66951f564830f7f1d"
+    },
+    {
+      "pageStart": 500,
+      "pageEnd": 500,
+      "sectionPath": [
+        "2.1 Gas transport in free molecular flow",
+        "2.1.1 Gas conductance",
+        "Series and parallel restrictions"
+      ],
+      "keywords": ["串联流导", "并联流导", "阀门", "弯头", "最小流导"],
+      "content": "分子流部件串联时，各段的流阻相加，因此总流导会低于任一主要限制段；并联通道则由各支路流导相加。实际泵口前的阀门、细长管、波纹管、挡板和转接件应作为一条完整气路核算，不能只采用最大口径或泵入口的流导。寻找瓶颈时，应优先检查流导最小且与主气流串联的部件。",
+      "originalExcerptPage": 500,
+      "originalExcerpt": "Vacuum components are installed either in series, i.e. traversed by the same gas flow, or in parallel, i.e. equal pressures at the extremities.",
+      "chineseStatement": "分子流部件串联时，各段的流阻相加，因此总流导会低于任一主要限制段；并联通道则由各支路流导相加。实际泵口前的阀门、细长管、波纹管、挡板和转接件应作为一条完整气路核算，不能只采用最大口径或泵入口的流导。寻找瓶颈时，应优先检查流导最小且与主气流串联的部件。",
+      "applicability": "适用于分子流组件的串并联流导关系；实际气路应纳入阀门、波纹管、弯头和转接件。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "843e25162d78381e5f7045d8cdf8e7b613120af73ba50da79aa8d6f619333b9d"
+    },
+    {
+      "pageStart": 501,
       "pageEnd": 502,
       "sectionPath": [
-        "2.1 Free molecular gas flow",
-        "Conductance and effective pumping speed"
+        "2.1 Gas transport in free molecular flow",
+        "2.1.2 Pumping speed",
+        "Nominal and effective pumping speed"
       ],
-      "keywords": ["流导", "孔口", "管路", "有效抽速", "标称抽速"],
-      "content": "在分子流条件下，孔口和管路会限制气体从腔体到泵入口的输运。泵的标称抽速 S 与连接管路流导 C 共同决定腔体端有效抽速；两者可按串联阻抗理解。当 C 远小于 S 时，有效抽速主要由管路决定，盲目增大泵的铭牌抽速收益有限。计算前必须确认流态、气体、温度、管径、长度、弯头和阀件，缺少这些输入不能给确定结果。"
+      "keywords": ["抽速", "标称抽速", "有效抽速", "流导", "捕获概率"],
+      "content": "泵入口抽速由入口截面能够接收的分子通量和捕获概率共同决定，厂家标称抽速通常指泵入口位置。腔体实际感受到的有效抽速还要串入腔体至泵之间的流导；当连接流导远小于泵抽速时，有效抽速接近该流导，继续增大泵的标称抽速改善有限。选泵计算必须同时说明测量位置和连接结构。",
+      "originalExcerptPage": 501,
+      "originalExcerpt": "The effective pumping speed is lower than the nominal pumping speed owing to gas flow restrictions interposed between the pump and the vessel.",
+      "chineseStatement": "泵入口抽速由入口截面能够接收的分子通量和捕获概率共同决定，厂家标称抽速通常指泵入口位置。腔体实际感受到的有效抽速还要串入腔体至泵之间的流导；当连接流导远小于泵抽速时，有效抽速接近该流导，继续增大泵的标称抽速改善有限。选泵计算必须同时说明测量位置和连接结构。",
+      "applicability": "适用于泵入口标称抽速与腔体有效抽速的区别；需要给出连接结构和测量位置。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "e43c9876ad9aa1f642a99bd6c483dfaa9ea33d6b2844f069eb53e484733a5589"
     },
     {
       "pageStart": 502,
+      "pageEnd": 503,
+      "sectionPath": ["2.1.3 Outgassing", "Sources and surface treatment"],
+      "keywords": ["放气", "表面解吸", "体相扩散", "清洗", "烘烤"],
+      "content": "除工艺进气和真实泄漏外，材料表面吸附层及材料内部溶解气体也会持续形成气载。金属清洗、酸洗、电抛光和真空烘烤针对的污染或放气机理不同，不能互相替代；聚合物的放气又强烈依赖材料种类、空气暴露历史和抽气时间。材料和处理方案应在系统设计初期确定，不能等到极限压力不达标后只靠换大泵补救。",
+      "originalExcerptPage": 502,
+      "originalExcerpt": "In addition to intentional gas injections and air leaks, outgassing of materials plays a crucial role in the global gas balance.",
+      "chineseStatement": "除工艺进气和真实泄漏外，材料表面吸附层及材料内部溶解气体也会持续形成气载。金属清洗、酸洗、电抛光和真空烘烤针对的污染或放气机理不同，不能互相替代；聚合物的放气又强烈依赖材料种类、空气暴露历史和抽气时间。材料和处理方案应在系统设计初期确定，不能等到极限压力不达标后只靠换大泵补救。",
+      "applicability": "适用于真空气载来源分析；材料处理的效果取决于材质、污染、温度和暴露历史。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "b6affa4eb6ad770fd51247ea920569040482f3462cd79a2ef6828aa75a282346"
+    },
+    {
+      "pageStart": 503,
       "pageEnd": 504,
-      "sectionPath": ["2.1.3 Outgassing", "2.1.4 Pressure profile"],
-      "keywords": ["放气", "气载", "材料", "表面处理", "压力分布"],
-      "content": "系统气载不仅来自真实泄漏，还包括表面解吸、材料内部扩散、渗透和工艺进气。稳态压力由气载分布与局部有效抽速共同决定，因此泵的极限压力不等于整套装置可达压力。材料选择、清洁、表面粗糙度、聚合物用量、空气暴露历史和烘烤条件应在设计阶段一起评估；遇到压力平台时，应同时排查漏气、放气、污染和流导限制。"
+      "sectionPath": [
+        "2.1.4 Pressure profiles",
+        "Localized and distributed gas loads"
+      ],
+      "keywords": ["压力分布", "局部气载", "分布放气", "节点分析", "稳态压力"],
+      "content": "真空装置的压力不是处处相同。局部进气源可通过各节点的气流守恒与局部抽速求解；均匀分布放气在长管中会形成连续压力曲线，抽气点附近较低、远离抽气点处可能较高。只有在线性且抽速不随压力显著变化时，各气载贡献才可直接叠加。泵的极限压力不能代替整套系统的压力分布计算。",
+      "originalExcerptPage": 503,
+      "originalExcerpt": "The calculation of the pressure profile along vacuum systems is an essential task of vacuum experts and should be tackled at the design phase.",
+      "chineseStatement": "真空装置的压力不是处处相同。局部进气源可通过各节点的气流守恒与局部抽速求解；均匀分布放气在长管中会形成连续压力曲线，抽气点附近较低、远离抽气点处可能较高。只有在线性且抽速不随压力显著变化时，各气载贡献才可直接叠加。泵的极限压力不能代替整套系统的压力分布计算。",
+      "applicability": "适用于存在局部或分布气载的系统设计；抽速随压力变化时不能直接使用线性叠加。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "7fef67847233200fc965a45e1d3ce55bce270b52a022450f68b49989d40c8c94"
+    },
+    {
+      "pageStart": 505,
+      "pageEnd": 506,
+      "sectionPath": [
+        "2.2 Heat transport by gas",
+        "2.2.1 Gas thermal conduction in viscous regime"
+      ],
+      "keywords": ["气体传热", "黏性流", "热导率", "壁面间距", "低温绝热"],
+      "content": "在黏性流条件下，残余气体的导热可按连续介质的热传导处理。文中平行壁面模型表明，此时热流主要由气体热导率、冷热端温差和壁面间距决定，单纯降低压力并不会按比例降低导热，因为载能分子减少的同时平均自由程增大。该结论只适用于仍处于黏性流且几何近似成立的范围。",
+      "originalExcerptPage": 506,
+      "originalExcerpt": "The conduction heat flow in viscous regimes does not depend on the gas pressure",
+      "chineseStatement": "在黏性流条件下，残余气体的导热可按连续介质的热传导处理。文中平行壁面模型表明，此时热流主要由气体热导率、冷热端温差和壁面间距决定，单纯降低压力并不会按比例降低导热，因为载能分子减少的同时平均自由程增大。该结论只适用于仍处于黏性流且几何近似成立的范围。",
+      "applicability": "适用于文中连续介质和平行壁近似的黏性流传热；超出该流态后必须改用分子流模型。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "4da1537b6707f11953d97bb8b597032bee3435b06dcf0d48d11478209fc1ff4d"
     },
     {
       "pageStart": 506,
+      "pageEnd": 507,
+      "sectionPath": [
+        "2.2 Heat transport by gas",
+        "2.2.2 Gas thermal conduction in molecular regime"
+      ],
+      "keywords": ["分子流传热", "热适应系数", "表面温度", "残余气体", "压力"],
+      "content": "进入分子流后，分子主要在冷热壁面之间直接携带能量，热流近似随压力变化，而不再由两壁距离直接控制。能量交换效率还取决于气体与表面的热适应系数、壁面材料和状态；表面若形成吸附或凝结层，系数也会改变。压力读数与温度必须取自相容的位置，否则热迁移造成的压力差会使估算失真。",
+      "originalExcerptPage": 506,
+      "originalExcerpt": "Therefore, the heat flow is proportional to the pressure and does not depend on the distance between the two walls.",
+      "chineseStatement": "进入分子流后，分子主要在冷热壁面之间直接携带能量，热流近似随压力变化，而不再由两壁距离直接控制。能量交换效率还取决于气体与表面的热适应系数、壁面材料和状态；表面若形成吸附或凝结层，系数也会改变。压力读数与温度必须取自相容的位置，否则热迁移造成的压力差会使估算失真。",
+      "applicability": "适用于文中几何和热适应系数假设下的分子流传热；压力与温度须取相容位置。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "63314f959c38ad075a340c4c0cf06ba479fc47495c7cbac180a1ff325e030b2d"
+    },
+    {
+      "pageStart": 507,
       "pageEnd": 508,
-      "sectionPath": ["2.2 Heat transfer in residual gas"],
-      "keywords": ["残余气体", "气体传热", "热辐射", "压力", "低温绝热"],
-      "content": "残余气体会在不同温度的表面之间传热，机理随压力和流动状态变化。在低温绝热系统中，降低压力可以削弱气体导热，但所需压力取决于气体种类、表面温度、间距、几何和表面状态。文献中的示例阈值只适用于其给定条件，OpenVac 不应把某个压力值回答成所有真空夹层的统一验收标准。"
+      "sectionPath": [
+        "2.2.2 Gas thermal conduction in molecular regime",
+        "Worked cryogenic example and applicability"
+      ],
+      "keywords": ["传热示例", "热辐射", "氮气", "真空夹层", "适用边界"],
+      "content": "文中用特定平行板、温度、表面发射率和氮气条件比较分子流气体导热与辐射换热，所得压力数量级是教学算例而非通用验收线。工业真空夹层若气体组成、冷热端温度、间距、材料表面或多层绝热结构不同，必须重新计算或按设备标准验证，不能直接搬用该示例数值。",
+      "originalExcerptPage": 507,
+      "originalExcerpt": "As an example, two plates at 300 K and 80 K at a distance of 10 cm are considered. As in Section 2.2.1, the residual gas is N2.",
+      "chineseStatement": "文中用特定平行板、温度、表面发射率和氮气条件比较分子流气体导热与辐射换热，所得压力数量级是教学算例而非通用验收线。工业真空夹层若气体组成、冷热端温度、间距、材料表面或多层绝热结构不同，必须重新计算或按设备标准验证，不能直接搬用该示例数值。",
+      "applicability": "仅用于说明文中算例的温度、间距和气体条件；其压力数量级不是通用验收线。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "d514140bc72702a774a1011af1d6734d99e6eb2f5719d5ec2e4f72cac4e022e1"
+    },
+    {
+      "pageStart": 508,
+      "pageEnd": 508,
+      "sectionPath": [
+        "3 Gas pumping in molecular regimes",
+        "Momentum-transfer and capture pumps"
+      ],
+      "keywords": ["动量传递泵", "捕获泵", "前级泵", "低温泵", "泵型组合"],
+      "content": "分子流泵可概括为两类：动量传递泵把分子逐级压向出口，再由黏性流前级泵排走；捕获泵则把分子固定在系统内的表面上。两类泵的系统约束不同，前者要核对前级压力与排气能力，后者要核对气体容量和再生。本文只展开涡轮分子泵与低温抽气，不能据此推断其他泵型不适合工业系统。",
+      "originalExcerptPage": 508,
+      "originalExcerpt": "Vacuum pumps in the molecular regime are classified into two families",
+      "chineseStatement": "分子流泵可概括为两类：动量传递泵把分子逐级压向出口，再由黏性流前级泵排走；捕获泵则把分子固定在系统内的表面上。两类泵的系统约束不同，前者要核对前级压力与排气能力，后者要核对气体容量和再生。本文只展开涡轮分子泵与低温抽气，不能据此推断其他泵型不适合工业系统。",
+      "applicability": "适用于分子流泵的基本分类；本文只展开涡轮分子泵和低温抽气，不能排除其他泵型。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "c82dbf10182d3afe43335f393d13b86118b2873924158787250645e5a9d80b1d"
     },
     {
       "pageStart": 508,
       "pageEnd": 509,
-      "sectionPath": ["3. Vacuum pumps", "Momentum-transfer and capture pumps"],
-      "keywords": ["排出型泵", "捕获型泵", "动量传递", "低温泵", "泵型组合"],
-      "content": "真空泵可按作用方式分为把气体输送到出口的动量传递类，以及把气体留在系统内的捕获类。前者通常需要合适的排气与前级条件；后者的抽速、容量和再生需求依气体而异。没有一种泵覆盖从大气压到超高真空的全部范围，工程系统往往组合粗抽、前级和高真空泵。"
+      "sectionPath": ["3.1 Turbomolecular pumps", "Working principle"],
+      "keywords": ["涡轮分子泵", "转子叶片", "动量传递", "分子流", "转速"],
+      "content": "涡轮分子泵利用高速倾斜转子叶片改变分子速度分布，使气体从入口向出口逐级迁移；定子在级间重新随机化分子方向，供下一转子级继续压缩。该机理要求分子在叶片间运动时很少发生分子间碰撞，因此入口必须进入分子流，粗真空阶段不能把它当作独立粗抽泵使用。",
+      "originalExcerptPage": 509,
+      "originalExcerpt": "In a real TMP, the gas is compressed by several series of rotating blades. Each series of rotating blades is followed by a series of static blades.",
+      "chineseStatement": "涡轮分子泵利用高速倾斜转子叶片改变分子速度分布，使气体从入口向出口逐级迁移；定子在级间重新随机化分子方向，供下一转子级继续压缩。该机理要求分子在叶片间运动时很少发生分子间碰撞，因此入口必须进入分子流，粗真空阶段不能把它当作独立粗抽泵使用。",
+      "applicability": "适用于涡轮分子泵的多级转静子机理；入口须处于制造商允许的分子流工作区。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "8b2c168938af757a976bea746b662bb667cf93b82805a6ca8f48d235a69bac80"
     },
     {
       "pageStart": 509,
       "pageEnd": 511,
-      "sectionPath": ["3.1 Turbomolecular pumps"],
-      "keywords": ["涡轮分子泵", "分子流", "前级泵", "压缩比", "氢气"],
-      "content": "涡轮分子泵依靠高速转子叶片向气体分子传递动量，只有入口处进入分子流后才能充分发挥额定抽速，并需要前级泵处理出口气体。抽速、压缩比和允许前级压力与气体种类有关，轻气体尤其不能照搬氮气参数。选型和故障判断必须查目标型号曲线，并遵守厂家关于停电、转子失速、空气倒灌、磁场和联锁的要求。"
+      "sectionPath": [
+        "3.1 Turbomolecular pumps",
+        "Pumping speed and compression ratio"
+      ],
+      "keywords": ["涡轮分子泵抽速", "压缩比", "轻气体", "氢气", "极限压力"],
+      "content": "涡轮分子泵的抽速和最大压缩比分别描述入口接收气体的能力与入口、出口之间可建立的压力比。抽速在分子流区通常较稳定，但压缩比明显依赖气体质量，氢等轻气体往往比氮气更难压缩。评估返流和可达压力时必须查目标型号针对具体气体的曲线，不能以氮气铭牌参数替代氢气性能。",
+      "originalExcerptPage": 511,
+      "originalExcerpt": "As expected, the maximum compression ratio is the lowest for H2",
+      "chineseStatement": "涡轮分子泵的抽速和最大压缩比分别描述入口接收气体的能力与入口、出口之间可建立的压力比。抽速在分子流区通常较稳定，但压缩比明显依赖气体质量，氢等轻气体往往比氮气更难压缩。评估返流和可达压力时必须查目标型号针对具体气体的曲线，不能以氮气铭牌参数替代氢气性能。",
+      "applicability": "适用于说明压缩比的气体依赖性；具体氢气和氮气性能必须查目标型号曲线。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "f8c88a7e698036132bc67463de4b08c87a3da3bc0040b1bc20fa274a238ff002"
     },
     {
       "pageStart": 511,
-      "pageEnd": 513,
+      "pageEnd": 511,
       "sectionPath": [
-        "3.2 Cryopumps",
+        "3.1 Turbomolecular pumps",
+        "Backing and operational protection"
+      ],
+      "keywords": ["前级泵", "干式泵", "空气倒灌", "停电", "磁场", "联锁"],
+      "content": "涡轮分子泵出口需要机械前级泵持续排走压缩气体，干式前级可降低油返流风险。高速转子在停电、卡滞或突然进气时可能受损，系统应按具体设备配置压力监测、隔离或放气保护；电子部件的辐射耐受和周围磁场限制也依型号而变。本文列举的是超导装置相关风险，不能代替制造商联锁和安装手册。",
+      "originalExcerptPage": 511,
+      "originalExcerpt": "In addition, in case of unwanted rotor deceleration caused by a power cut or the rotor seizing, the vacuum system has to be protected by safety valves and dedicated pressure sensors against air back-stream.",
+      "chineseStatement": "涡轮分子泵出口需要机械前级泵持续排走压缩气体，干式前级可降低油返流风险。高速转子在停电、卡滞或突然进气时可能受损，系统应按具体设备配置压力监测、隔离或放气保护；电子部件的辐射耐受和周围磁场限制也依型号而变。本文列举的是超导装置相关风险，不能代替制造商联锁和安装手册。",
+      "applicability": "适用于高速转子失速或停电的保护边界；不得替代制造商的联锁、阀门和安装手册。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "8bb8eb7c3f7442ca25a031f6f738c6e894cd792a3fef3469a2f131756068c1d8"
+    },
+    {
+      "pageStart": 511,
+      "pageEnd": 512,
+      "sectionPath": [
+        "3.2.3 Cryopumping",
         "Cryocondensation, cryosorption and cryotrapping"
       ],
-      "keywords": ["低温泵", "低温凝结", "低温吸附", "低温捕集", "氢", "氦"],
-      "content": "低温抽气包含低温凝结、低温吸附和低温捕集等机制。不同气体的饱和蒸气压和与低温表面的相互作用不同；氢、氦等轻气体通常需要依靠高比表面积吸附材料或特定捕集设计。低温泵的可用抽速并不代表无限容量，气体逐步积累后性能会变化。"
+      "keywords": [
+        "低温凝结",
+        "低温吸附",
+        "低温捕集",
+        "饱和蒸气压",
+        "多孔材料"
+      ],
+      "content": "低温抽气包含不同物理机制：低温凝结受该气体在目标温度下的饱和蒸气压限制；低温吸附依靠分子与基材的作用力，多孔材料可提供很大的有效表面积；低温捕集则把难凝结气体束缚在另一种气体的凝结层中。三者不能混称，选择机制时必须同时给出气体种类、温度和允许分压。",
+      "originalExcerptPage": 511,
+      "originalExcerpt": "Cryopumps rely on three different pumping mechanisms",
+      "chineseStatement": "低温抽气包含不同物理机制：低温凝结受该气体在目标温度下的饱和蒸气压限制；低温吸附依靠分子与基材的作用力，多孔材料可提供很大的有效表面积；低温捕集则把难凝结气体束缚在另一种气体的凝结层中。三者不能混称，选择机制时必须同时给出气体种类、温度和允许分压。",
+      "applicability": "适用于区分三种低温抽气机制；选择时必须同时给出气体种类、温度和允许分压。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "a6baba4d3feebb9790a861ea76c4af72d611d6f970fce078d721e49a001a0942"
+    },
+    {
+      "pageStart": 512,
+      "pageEnd": 512,
+      "sectionPath": [
+        "3.2.3 Cryopumping",
+        "Commercial cryopump architecture and gas selectivity"
+      ],
+      "keywords": ["低温泵", "水蒸气", "氢", "氦", "冷屏", "吸附剂"],
+      "content": "典型低温泵把不同任务分配给不同温区和表面：较高温冷面先拦截水等易凝气体，更低温表面处理其他可凝气体，而隐藏的多孔吸附面用于氢、氦、氖等难以仅靠凝结维持低分压的气体。泵对各气体的抽速与容量并不一致，入口几何和冷头温度正常也不代表所有气体都具有相同性能。",
+      "originalExcerptPage": 512,
+      "originalExcerpt": "Modern cryopumps exploit the first two mechanisms. Cryocondensation takes place on a cold surface, in general at 80 K for water vapour and at 10–20 K for the other gas species.",
+      "chineseStatement": "典型低温泵把不同任务分配给不同温区和表面：较高温冷面先拦截水等易凝气体，更低温表面处理其他可凝气体，而隐藏的多孔吸附面用于氢、氦、氖等难以仅靠凝结维持低分压的气体。泵对各气体的抽速与容量并不一致，入口几何和冷头温度正常也不代表所有气体都具有相同性能。",
+      "applicability": "适用于文中典型低温泵结构的原理说明；各气体抽速、容量和温区以具体产品数据为准。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "fad32f62902e709373d7102f657332cdd41fad2a281652d8bcb56d24ea7cf33f"
     },
     {
       "pageStart": 513,
-      "pageEnd": 515,
-      "sectionPath": ["3.2 Cryopumps", "Capacity and regeneration"],
-      "keywords": ["低温泵容量", "再生", "隔离", "LHC", "束流屏"],
-      "content": "低温泵必须同时评估瞬时抽速、特定气体容量和再生周期。再生会释放已捕获气体，需要按设备说明隔离、升温、排气并控制压力和介质风险。文献中的 LHC 束流屏、冷孔和吸附材料属于特定超导加速器案例，只能帮助理解低温真空设计，不能直接套用于普通工业装置。涉及可燃、有毒、腐蚀或富氧介质时必须转人工做安全与材料兼容审查。"
+      "pageEnd": 513,
+      "sectionPath": ["3.2.3 Cryopumping", "Capacity and regeneration"],
+      "keywords": ["低温泵容量", "气体负荷", "再生", "隔离阀", "机械抽气"],
+      "content": "低温泵的瞬时抽速不能代表可长期接收的总气量。可凝气体容量受凝结层热学条件约束，吸附气体容量则受多孔材料数量与状态限制；负荷累积会使性能下降。再生时应将泵与主系统隔离、受控升温，并用机械泵带走释放气体。周期和终点应依据实际气体负荷及厂家程序确定，不能只按运行小时数推断。",
+      "originalExcerptPage": 513,
+      "originalExcerpt": "Cryopumps require periodic regeneration to evacuate the gas adsorbed or condensed; in this way, the initial pumping speed is fully recovered.",
+      "chineseStatement": "低温泵的瞬时抽速不能代表可长期接收的总气量。可凝气体容量受凝结层热学条件约束，吸附气体容量则受多孔材料数量与状态限制；负荷累积会使性能下降。再生时应将泵与主系统隔离、受控升温，并用机械泵带走释放气体。周期和终点应依据实际气体负荷及厂家程序确定，不能只按运行小时数推断。",
+      "applicability": "适用于低温泵容量累积和再生原则；周期、终点和释放气体处置须按实际负荷及厂家程序。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "c9200f7bc46616ec8995b0bc8735b11e853b71f789530c58d6c57c33e7bb98f2"
+    },
+    {
+      "pageStart": 513,
+      "pageEnd": 514,
+      "sectionPath": [
+        "3.2.3 Cryopumping",
+        "LHC cryogenic vacuum system",
+        "Beam screen and cold bore"
+      ],
+      "keywords": ["LHC", "束流屏", "冷孔", "抽气槽", "束流诱导解吸"],
+      "content": "LHC 弧区利用极低温冷孔提供低温抽气，同时在束流与冷孔之间设置受控温度的束流屏，用来承受束流相关热负荷；束流屏上的抽气槽让部分气体迁移到受屏蔽的冷表面。该结构同时受束流寿命、孔径、热负荷、辐射和解吸约束，是超导加速器的系统级方案，不能直接当作普通低温容器的标准结构。",
+      "originalExcerptPage": 513,
+      "originalExcerpt": "The adopted solution is the insertion of a tubular shield, called a beam screen",
+      "chineseStatement": "LHC 弧区利用极低温冷孔提供低温抽气，同时在束流与冷孔之间设置受控温度的束流屏，用来承受束流相关热负荷；束流屏上的抽气槽让部分气体迁移到受屏蔽的冷表面。该结构同时受束流寿命、孔径、热负荷、辐射和解吸约束，是超导加速器的系统级方案，不能直接当作普通低温容器的标准结构。",
+      "applicability": "仅适用于 LHC 低温束流真空系统的结构背景；不能直接外推为普通工业低温容器设计。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "84f741b109ca1af6eef6535ed92c64535c18ee6cf3b85d4df43fc24f8ab118d4"
+    },
+    {
+      "pageStart": 514,
+      "pageEnd": 514,
+      "sectionPath": [
+        "3.2.3 Cryopumping",
+        "LHC cryogenic vacuum system",
+        "Hydrogen cryosorption at 4.5 K"
+      ],
+      "keywords": ["氢气", "低温吸附", "碳纤维吸附剂", "4.5 K", "再生边界"],
+      "content": "LHC 某些磁体区的冷孔温度高于弧区条件，单靠氢的低温凝结不能满足该装置的目标分压，因此在束流屏外配置专用多孔吸附材料，并利用磁体升温过程进行再生。这里的温度、吸附剂布置和容量来自 LHC 特定真空与束流要求，只能说明‘难凝气体可能需要低温吸附’，不能外推为工业设备的材料或再生参数。",
+      "originalExcerptPage": 514,
+      "originalExcerpt": "Consequently, H2 has to be pumped by cryosorption onto porous materials as already implemented in cryopumps",
+      "chineseStatement": "LHC 某些磁体区的冷孔温度高于弧区条件，单靠氢的低温凝结不能满足该装置的目标分压，因此在束流屏外配置专用多孔吸附材料，并利用磁体升温过程进行再生。这里的温度、吸附剂布置和容量来自 LHC 特定真空与束流要求，只能说明‘难凝气体可能需要低温吸附’，不能外推为工业设备的材料或再生参数。",
+      "applicability": "仅说明 LHC 4.5 K 区域的氢气低温吸附需求；材料、容量和再生参数不得外推到工业设备。",
+      "licenseClass": "open",
+      "reviewStatus": "required",
+      "contentHash": "66fdf1668e80fb7766a43a67884f057007b244dcdd84f3bf25c0916929887fdf"
     }
   ]
 }

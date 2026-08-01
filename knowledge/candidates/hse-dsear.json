@@ -1,0 +1,72 @@
+{
+  "sourceCanonicalUrl": "https://www.hse.gov.uk/fireandexplosion/dsear.htm",
+  "document": {
+    "externalKey": "hse-dsear-2024",
+    "title": "Dangerous Substances and Explosive Atmospheres（OpenVac 安全知识草稿）",
+    "description": "依据 HSE DSEAR 概览独立编写的中文安全摘要；用于识别易燃、爆炸性、加压或对金属有腐蚀性的工况，不替代中国法规与现场风险评估。",
+    "language": "zh-CN",
+    "mimeType": "text/html",
+    "tags": ["易燃蒸气", "爆炸性气氛", "腐蚀", "点火源", "应急程序"]
+  },
+  "citation": {
+    "authors": ["UK Health and Safety Executive"],
+    "publication": "The Dangerous Substances and Explosive Atmospheres Regulations 2002",
+    "recordUrl": "https://www.hse.gov.uk/fireandexplosion/dsear.htm",
+    "licenseClass": "open",
+    "licenseName": "Open Government Licence v3.0",
+    "licenseUrl": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+    "ingestionMode": "full_text",
+    "fetchedAt": "2026-08-01T00:00:00.000Z",
+    "curationMethod": "official-web-section-located-Chinese-synthesis",
+    "changesMade": "Chinese safety synthesis and chunking; logos, images and third-party assets excluded.",
+    "thirdPartyAssetsExcluded": true,
+    "jurisdictionNotice": "DSEAR is UK legislation. OpenVac uses the risk-control concepts as conservative safety evidence, not as Chinese legal advice."
+  },
+  "review": {
+    "status": "required",
+    "requirements": [
+      "核对危险物质、爆炸性气氛和点火源的原文边界",
+      "确认不将 DSEAR 表述为中国法律意见",
+      "确认没有给出未核验的爆炸极限、稀释比或设备分区结论",
+      "由真空行业专家批准后才允许向量化和发布"
+    ]
+  },
+  "sections": [
+    {
+      "sourceSection": "What is DSEAR?",
+      "sectionPath": ["危险物质", "火灾、爆炸与金属腐蚀"],
+      "keywords": ["危险物质", "火灾", "爆炸", "腐蚀", "风险控制"],
+      "content": "易燃液体、气体、蒸气、可燃粉尘、加压气体和对金属有腐蚀性的物质，都可能带来火灾、爆炸或结构完整性风险。真空设备并不会因为系统压力低于大气压就自动消除这些危险；泵内压缩、漏气、排气端和停机进气都必须纳入现场评估。"
+    },
+    {
+      "sourceSection": "What are dangerous substances?",
+      "sectionPath": ["介质识别", "溶剂、可燃气体与腐蚀性物质"],
+      "keywords": ["安全数据表", "溶剂", "可燃气体", "加压气体", "腐蚀性"],
+      "content": "在选择真空泵或故障处置前，要确认被抽介质的准确名称、浓度、温度、相态、安全数据表、可能的凝结或聚合及与泵液和材料的反应。只有‘有溶剂味’或一个商品名不足以判断可否继续运行，也不能据此给出材料兼容性结论。"
+    },
+    {
+      "sourceSection": "What does DSEAR require? > Find out and assess risks",
+      "sectionPath": ["风险评估", "介质、活动和失效后果"],
+      "keywords": ["风险评估", "气载", "排气", "失效模式", "现场工况"],
+      "content": "风险评估不能只看泵的极限压力；应同时检查危险物质、涉及它们的工艺活动、正常及异常气载、排气去向、泄漏和停电等失效模式。缺少介质和现场分区信息时，OpenVac 应停止给出确定选型或操作建议。"
+    },
+    {
+      "sourceSection": "What does DSEAR require? > Control measures",
+      "sectionPath": ["控制措施", "消除、减量、密闭与安全排放"],
+      "keywords": ["消除危险", "减少释放", "通风", "安全排放", "不相容物质"],
+      "content": "危险首先应尽可能通过替代物质或工艺消除；无法消除时，才按现场评估减少数量、防止或控制释放、通风或密闭、将排放引至安全位置、隔离不相容物质。不能在没有数据时由 AI 自行生成稀释比例或通风量。"
+    },
+    {
+      "sourceSection": "What does DSEAR require? > Explosive atmospheres and ignition sources",
+      "sectionPath": ["爆炸性气氛", "区域分类与点火源"],
+      "keywords": ["爆炸性气氛", "危险区域", "点火源", "静电", "电气设备"],
+      "content": "可能形成爆炸性气氛的区域需要由现场专业人员识别和分类，并避免不受保护的电气设备、高温表面、机械火花和静电等点火源。一般用途真空泵不能仅因为‘能抽到目标压力’就被认定适合易燃介质。"
+    },
+    {
+      "sourceSection": "What does DSEAR require? > Emergency plans and training",
+      "sectionPath": ["事故缓解", "应急程序与人员培训"],
+      "keywords": ["事故缓解", "应急程序", "报警", "培训", "安全数据表"],
+      "content": "除了预防释放和点火，现场还需要预先准备事故、泄漏、火灾和爆炸的缓解与应急程序，并让人员掌握危险物质、安全数据表、报警和撤离要求。OpenVac 问题反馈不是现场事故上报、报警或救援渠道。"
+    }
+  ]
+}

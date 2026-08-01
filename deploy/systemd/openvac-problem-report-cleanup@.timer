@@ -1,0 +1,11 @@
+[Unit]
+Description=Run OpenVac %i problem-report retention cleanup daily
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=openvac-problem-report-cleanup@%i.service
+
+[Install]
+WantedBy=timers.target

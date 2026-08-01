@@ -80,7 +80,34 @@ function runActivation(deployRoot: string, bundle: string, releaseId: string) {
       deployRoot,
       releaseId,
       bundle,
-      "ghcr.io/example/openvac@sha256:abc123",
+      `ghcr.io/example/openvac@sha256:${"a".repeat(64)}`,
+      "openvac-production",
+      "https://openvac.example/api/health"
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OPENVAC_ACTIVATION_TEST_ROOT: deployRoot
+      }
+    }
+  );
+}
+
+function runActivationWithImage(
+  deployRoot: string,
+  bundle: string,
+  releaseId: string,
+  image: string
+) {
+  return spawnSync(
+    "sh",
+    [
+      activationScript,
+      deployRoot,
+      releaseId,
+      bundle,
+      image,
       "openvac-production",
       "https://openvac.example/api/health"
     ],
@@ -162,5 +189,41 @@ describe("deployment bundle activation", () => {
     expect(readFileSync(join(deployRoot, ".env"), "utf8")).toBe(
       "HOST_SECRET=preserved\n"
     );
+  });
+
+  it("rejects truncated image digests before installing a release", () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    mkdirSync(deployRoot);
+    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+    const bundle = createBundle(root);
+
+    const result = runActivationWithImage(
+      deployRoot,
+      bundle,
+      "e".repeat(40),
+      "ghcr.io/example/openvac@sha256:abc123"
+    );
+
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain("64-character SHA-256 digest");
+    expect(() => readFileSync(join(deployRoot, "current-release"))).toThrow();
+  });
+
+  it("rejects a host environment file with permissive mode", () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    mkdirSync(deployRoot);
+    writeFileSync(join(deployRoot, ".env"), "HOST_SECRET=exposed\n", {
+      encoding: "utf8",
+      mode: 0o644
+    });
+    const bundle = createBundle(root);
+
+    const result = runActivation(deployRoot, bundle, "f".repeat(40));
+
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain("mode 0600");
+    expect(() => readFileSync(join(deployRoot, "current-release"))).toThrow();
   });
 });

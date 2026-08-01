@@ -9,6 +9,7 @@ import {
   extractLexicalTerms,
   POSTGRES_LEXICAL_RETRIEVAL_SQL
 } from "@/server/knowledge/lexical";
+import { retrievePatentMetadataReferences } from "@/server/knowledge/metadata-reference";
 import { SafeWebFetcher } from "@/server/knowledge/web-fetch";
 import { getEmbeddingProvider, getWebSearchProvider } from "@/server/providers";
 import {
@@ -35,23 +36,36 @@ export async function collectEvidence(input: {
   onStage?: (label: string) => void;
 }): Promise<EvidenceResult> {
   input.onStage?.("正在检索已审核知识…");
+  const patentReferences = await retrievePatentMetadataReferences(
+    input.question,
+    async (query, parameters) => {
+      const rows = await sqlClient.unsafe(query, parameters as never[]);
+      return [...rows] as Array<Record<string, unknown>>;
+    }
+  ).catch(() => []);
   const local = await retrieveLocal(input.question);
-  const localEvidence = local.candidates
-    .filter((candidate) => candidate.citation)
-    .slice(0, 6)
-    .map((candidate) =>
-      sanitizeGroundingEvidence(
-        {
-          citation: candidate.citation!,
-          excerpt: candidate.content
-        },
-        2_200
+  const localEvidence = deduplicateEvidence([
+    ...patentReferences.map((evidence) =>
+      sanitizeGroundingEvidence(evidence, 2_200)
+    ),
+    ...local.candidates
+      .filter((candidate) => candidate.citation)
+      .slice(0, 6)
+      .map((candidate) =>
+        sanitizeGroundingEvidence(
+          {
+            citation: candidate.citation!,
+            excerpt: candidate.content
+          },
+          2_200
+        )
       )
-    );
+  ]).slice(0, 6);
 
   const insufficient =
-    localEvidence.length < 2 ||
-    (local.candidates[0]?.score ?? 0) < 0.016 ||
+    (patentReferences.length === 0 &&
+      (localEvidence.length < 2 ||
+        (local.candidates[0]?.score ?? 0) < 0.016)) ||
     TIME_SENSITIVE.test(input.question);
 
   if (!insufficient || process.env.ALIBABA_WEB_SEARCH_ENABLED !== "true") {
