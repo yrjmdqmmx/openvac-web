@@ -158,9 +158,15 @@ describe("deployment Compose project isolation", () => {
       offline.indexOf('sha256sum --check "$(basename "$checksum")"')
     ).toBeLessThan(offline.indexOf('"$ECS_USER@$ECS_HOST" docker load'));
     expect(offline).toContain(
-      'if [ "$loaded_id" != "$expected_config_digest" ]'
+      "modeling_config_digest: ${{ steps.modeling_identity.outputs.config_digest }}"
+    );
+    expect(offline).toContain(
+      'if [ "$loaded_id" != "$archive_config_digest" ]'
     );
     expect(offline).toContain('docker pull "$release_modeling_image"');
+    expect(offline).toContain(
+      'if [ "$resolved_id" != "$release_config_digest" ]'
+    );
     expect(offline).toContain("- Service activation: not performed");
   });
 
