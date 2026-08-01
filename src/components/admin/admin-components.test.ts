@@ -89,6 +89,133 @@ describe("admin components", () => {
     );
   });
 
+  it("approves the exact current knowledge hash with an optional note", async () => {
+    const contentHash = "b".repeat(64);
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: {
+          items: [
+            {
+              id: "document-approve",
+              title: "待审知识",
+              status: "draft",
+              currentVersionId: "version-approve",
+              versionStatus: "draft",
+              contentHash,
+              reviewStatus: "required",
+              publishReady: false,
+              publishBlockers: ["必须先完成人工复核。"]
+            }
+          ]
+        }
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(createElement(KnowledgeManager));
+
+    const note = await screen.findByRole("textbox", { name: "审核备注" });
+    fireEvent.change(note, { target: { value: "来源与页码已核对。" } });
+    fireEvent.click(screen.getByRole("button", { name: "批准" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/admin/knowledge/document-approve/review",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            versionId: "version-approve",
+            expectedContentHash: contentHash,
+            decision: "approved",
+            note: "来源与页码已核对。"
+          })
+        })
+      )
+    );
+  });
+
+  it("requires a note and submits knowledge rejection", async () => {
+    const contentHash = "c".repeat(64);
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: {
+          items: [
+            {
+              id: "document-reject",
+              title: "需要退回的知识",
+              status: "review",
+              currentVersionId: "version-reject",
+              versionStatus: "review",
+              contentHash,
+              reviewStatus: "required",
+              publishReady: false,
+              publishBlockers: []
+            }
+          ]
+        }
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(createElement(KnowledgeManager));
+
+    const reject = await screen.findByRole("button", { name: "驳回" });
+    expect(reject).toBeDisabled();
+    fireEvent.change(screen.getByRole("textbox", { name: "审核备注" }), {
+      target: { value: "引用缺少具体页码。" }
+    });
+    expect(reject).toBeEnabled();
+    fireEvent.click(reject);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/admin/knowledge/document-reject/review",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            versionId: "version-reject",
+            expectedContentHash: contentHash,
+            decision: "rejected",
+            note: "引用缺少具体页码。"
+          })
+        })
+      )
+    );
+  });
+
+  it("archives a knowledge document through the audited endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: {
+          items: [
+            {
+              id: "document-archive",
+              title: "已发布知识",
+              status: "published",
+              currentVersionId: "version-published",
+              versionStatus: "published",
+              contentHash: "d".repeat(64),
+              reviewStatus: "approved",
+              publishReady: false,
+              publishBlockers: []
+            }
+          ]
+        }
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(createElement(KnowledgeManager));
+    fireEvent.click(await screen.findByRole("button", { name: "归档文档" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/admin/knowledge/document-archive/archive",
+        expect.objectContaining({ method: "POST", body: "{}" })
+      )
+    );
+  });
+
   it("renders direct data arrays with the users API field names", async () => {
     vi.stubGlobal(
       "fetch",

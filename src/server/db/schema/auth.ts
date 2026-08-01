@@ -25,6 +25,7 @@ export const user = pgTable(
     banned: boolean("banned").default(false).notNull(),
     banReason: text("ban_reason"),
     banExpires: authTimestamp("ban_expires"),
+    deletionRequestedAt: authTimestamp("deletion_requested_at"),
     dailyQuotaBonus: integer("daily_quota_bonus").default(0).notNull(),
     createdAt: authTimestamp("created_at").defaultNow().notNull(),
     updatedAt: authTimestamp("updated_at")

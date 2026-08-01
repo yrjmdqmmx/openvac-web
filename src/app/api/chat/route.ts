@@ -4,16 +4,25 @@ import {
   buildExpertPrompt,
   hasRequiredAnswerSections,
   selectCitationPrefix,
+  validateHighRiskAnswerBoundaries,
   validateCitations,
   type AnswerMeta,
   type Citation,
   type GroundingEvidence
 } from "@/server/agent";
 import { auth } from "@/server/auth";
+import {
+  AccountDeletionInProgressError,
+  assertAccountWritable
+} from "@/server/auth/account-write-barrier";
 import { collectEvidence } from "@/server/chat/evidence";
 import { citationSourcePolicy } from "@/server/chat/citation-policy";
 import { buildNoEvidenceAnswer } from "@/server/chat/fallback-answer";
-import { serializeStoredCitation } from "@/server/chat/stored-message";
+import { resolveAuthorizedModelingCards } from "@/server/chat/modeling-cards";
+import {
+  serializeStoredCitation,
+  serializeStoredModelingCards
+} from "@/server/chat/stored-message";
 import { db } from "@/server/db";
 import {
   citations,
@@ -24,10 +33,22 @@ import {
 } from "@/server/db/schema";
 import { getModelProvider, type ModelUsage } from "@/server/providers";
 import {
+  completeModelInvocation,
+  failModelInvocation,
+  loadActiveRuntimePrompt,
+  ModelRuntimeError,
+  startModelInvocation,
+  type InvocationHandle
+} from "@/server/operations/model-runtime";
+import {
   commitQuota,
+  QuotaAccountDeletionPendingError,
+  QuotaAccountUnavailableError,
   QuotaExceededError,
   releaseQuota,
-  reserveAnswerQuota
+  reserveAnswerQuota,
+  reserveModelAttemptQuota,
+  type QuotaReservation
 } from "@/server/quota";
 
 export const runtime = "nodejs";
@@ -61,7 +82,8 @@ export async function POST(request: Request) {
     .select({
       banned: user.banned,
       banReason: user.banReason,
-      banExpires: user.banExpires
+      banExpires: user.banExpires,
+      deletionRequestedAt: user.deletionRequestedAt
     })
     .from(user)
     .where(eq(user.id, session.user.id))
@@ -73,7 +95,14 @@ export async function POST(request: Request) {
     return jsonError(
       403,
       "ACCOUNT_SUSPENDED",
-      account.banReason || "账户当前无法使用，请联系支持人员。"
+      account.banReason || "账户当前无法使用。"
+    );
+  }
+  if (!account || account.deletionRequestedAt) {
+    return jsonError(
+      409,
+      "ACCOUNT_DELETION_IN_PROGRESS",
+      "账号正在删除，不能再写入新数据。"
     );
   }
 
@@ -82,6 +111,7 @@ export async function POST(request: Request) {
     return replayResponse(replay);
   }
 
+  const modelProvider = getModelProvider();
   let reservation;
   try {
     reservation = await reserveAnswerQuota({
@@ -90,6 +120,16 @@ export async function POST(request: Request) {
       metadata: { conversationId: parsed.data.conversationId ?? null }
     });
   } catch (error) {
+    if (
+      error instanceof QuotaAccountDeletionPendingError ||
+      error instanceof QuotaAccountUnavailableError
+    ) {
+      return jsonError(
+        409,
+        "ACCOUNT_DELETION_IN_PROGRESS",
+        "账号正在删除，不能再写入新数据。"
+      );
+    }
     if (error instanceof QuotaExceededError) {
       return Response.json(
         {
@@ -138,6 +178,65 @@ export async function POST(request: Request) {
     );
   }
 
+  let modelAttemptReservation: QuotaReservation;
+  try {
+    modelAttemptReservation = await reserveModelAttemptQuota({
+      userId: session.user.id,
+      clientRequestId: parsed.data.clientRequestId,
+      metadata: { conversationId: parsed.data.conversationId ?? null }
+    });
+  } catch (error) {
+    await releaseQuota({
+      leaseId: reservation.leaseId,
+      userId: session.user.id,
+      reason: "model_attempt_reservation_failed"
+    }).catch(() => undefined);
+    if (
+      error instanceof QuotaAccountDeletionPendingError ||
+      error instanceof QuotaAccountUnavailableError
+    ) {
+      return jsonError(
+        409,
+        "ACCOUNT_DELETION_IN_PROGRESS",
+        "账号正在删除，不能再写入新数据。"
+      );
+    }
+    if (error instanceof QuotaExceededError) {
+      return Response.json(
+        {
+          error: {
+            code: "MODEL_ATTEMPT_LIMIT_EXCEEDED",
+            message:
+              "模型尝试次数已达到今日保护上限，本次未调用模型，请于额度恢复后重试。",
+            resetAt: error.resetAt.toISOString()
+          }
+        },
+        { status: 429 }
+      );
+    }
+    return jsonError(
+      503,
+      "MODEL_ATTEMPT_QUOTA_UNAVAILABLE",
+      "模型尝试保护服务暂时不可用，请稍后重试。"
+    );
+  }
+
+  if (
+    modelAttemptReservation.idempotent ||
+    modelAttemptReservation.status !== "reserved"
+  ) {
+    await releaseQuota({
+      leaseId: reservation.leaseId,
+      userId: session.user.id,
+      reason: "model_attempt_request_reused"
+    }).catch(() => undefined);
+    return jsonError(
+      409,
+      "MODEL_ATTEMPT_REQUEST_REUSED",
+      "这个模型请求标识已经使用，请刷新后重试。"
+    );
+  }
+
   let turn: PersistedTurn;
   try {
     turn = await createPendingTurn({
@@ -145,20 +244,30 @@ export async function POST(request: Request) {
       conversationId: parsed.data.conversationId,
       question: parsed.data.message,
       clientRequestId: parsed.data.clientRequestId,
-      model: getModelProvider().model
+      model: modelProvider.model
     });
   } catch (error) {
-    await releaseQuota({
-      leaseId: reservation.leaseId,
-      userId: session.user.id,
-      reason: "message_persistence_failed"
-    }).catch(() => undefined);
+    await Promise.allSettled([
+      releaseQuota({
+        leaseId: reservation.leaseId,
+        userId: session.user.id,
+        reason: "message_persistence_failed"
+      }),
+      releaseQuota({
+        leaseId: modelAttemptReservation.leaseId,
+        userId: session.user.id,
+        reason: "message_persistence_failed"
+      })
+    ]);
     if (error instanceof ConversationNotFoundError) {
       return jsonError(
         404,
         "CONVERSATION_NOT_FOUND",
         "这段对话不存在或已删除。"
       );
+    }
+    if (error instanceof AccountDeletionInProgressError) {
+      return jsonError(409, error.code, "账号正在删除，不能再写入新数据。");
     }
     return jsonError(
       503,
@@ -168,9 +277,19 @@ export async function POST(request: Request) {
   }
 
   const encoder = new TextEncoder();
+  const responseAbortController = new AbortController();
+  const operationSignal = AbortSignal.any([
+    request.signal,
+    responseAbortController.signal
+  ]);
   let streamClosed = false;
   const responseStream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      const abortOperation = () => {
+        if (!responseAbortController.signal.aborted) {
+          responseAbortController.abort();
+        }
+      };
       const send = (event: Record<string, unknown>) => {
         if (streamClosed) return;
         try {
@@ -179,6 +298,7 @@ export async function POST(request: Request) {
           );
         } catch {
           streamClosed = true;
+          abortOperation();
         }
       };
       const heartbeat = setInterval(() => {
@@ -187,12 +307,17 @@ export async function POST(request: Request) {
           controller.enqueue(encoder.encode(": keep-alive\n\n"));
         } catch {
           streamClosed = true;
+          abortOperation();
         }
       }, 15_000);
 
       const startedAt = Date.now();
       let answer = "";
       let usage: ModelUsage | undefined;
+      let invocation: InvocationHandle | undefined;
+      let invocationSettled = false;
+      let providerCallAttempted = false;
+      let modelAttemptFinalized = false;
 
       try {
         send({
@@ -204,7 +329,7 @@ export async function POST(request: Request) {
           question: parsed.data.message,
           userId: session.user.id,
           clientRequestId: parsed.data.clientRequestId,
-          signal: request.signal,
+          signal: operationSignal,
           onStage: (label) =>
             send({
               type: "status",
@@ -213,13 +338,15 @@ export async function POST(request: Request) {
             })
         });
 
+        const activePrompt = await loadActiveRuntimePrompt();
         const prompt = buildExpertPrompt({
           question: parsed.data.message,
           evidence: evidenceResult.evidence,
           conversationContext: await loadConversationContext(
             turn.conversationId,
             turn.userMessageId
-          )
+          ),
+          operatorInstructions: activePrompt?.content
         });
         send({
           type: "status",
@@ -232,34 +359,86 @@ export async function POST(request: Request) {
             question: parsed.data.message,
             risk: prompt.risk
           });
+          const releasedModelAttempt = await releaseQuota({
+            leaseId: modelAttemptReservation.leaseId,
+            userId: session.user.id,
+            reason: "model_not_required"
+          });
+          if (releasedModelAttempt.status !== "released") {
+            throw new ModelAttemptQuotaTransitionError();
+          }
+          modelAttemptFinalized = true;
         } else {
-          for await (const event of getModelProvider().stream({
+          const maximumOutputTokens = parseMaximumOutputTokens();
+          invocation = await startModelInvocation({
+            userId: session.user.id,
+            conversationId: turn.conversationId,
+            messageId: turn.assistantMessageId,
+            clientRequestId: parsed.data.clientRequestId,
+            provider: modelProvider.id,
+            model: modelProvider.model,
+            messages: prompt.messages,
+            maximumOutputTokens,
+            promptVersionId: activePrompt?.id,
+            evidenceSourceIds: evidenceResult.evidence.map(
+              (item) => item.citation.sourceId
+            ),
+            webSearched: evidenceResult.webSearched
+          });
+          operationSignal.throwIfAborted();
+          const committedModelAttempt = await commitQuota({
+            leaseId: modelAttemptReservation.leaseId,
+            userId: session.user.id
+          });
+          if (committedModelAttempt.status !== "committed") {
+            throw new ModelAttemptQuotaTransitionError();
+          }
+          modelAttemptFinalized = true;
+          let providerRequestId: string | undefined;
+          let finishReason: string | undefined;
+          providerCallAttempted = true;
+          for await (const event of modelProvider.stream({
             messages: prompt.messages,
             temperature: 0.1,
-            maxOutputTokens: parseMaximumOutputTokens(),
-            signal: request.signal
+            maxOutputTokens: maximumOutputTokens,
+            signal: operationSignal
           })) {
             if (event.type === "text-delta") {
               answer += event.text;
             } else if (event.type === "finish") {
               usage = event.usage;
+              providerRequestId = event.providerRequestId;
+              finishReason = event.finishReason;
             }
           }
+          await completeModelInvocation({
+            handle: invocation,
+            usage,
+            providerRequestId,
+            finishReason
+          });
+          invocationSettled = true;
         }
 
         const citationValidation = validateAnswer(
           answer,
-          evidenceResult.evidence
+          evidenceResult.evidence,
+          prompt.risk.level
         );
         const citedEvidence = selectCitationPrefix(
           evidenceResult.evidence,
           citationValidation.usedCitationNumbers
         );
+        const modelingCards = await resolveAuthorizedModelingCards({
+          ownerId: session.user.id,
+          texts: [parsed.data.message, answer]
+        });
         const meta: AnswerMeta = {
           riskLevel: prompt.risk.level,
           missingInputs: inferMissingInputs(parsed.data.message),
           webSearched: evidenceResult.webSearched,
-          citations: citedEvidence.map((item) => item.citation)
+          citations: citedEvidence.map((item) => item.citation),
+          ...(modelingCards.length ? { modelingCards } : {})
         };
         const bufferedCitations = meta.citations.map(serializeCitation);
 
@@ -269,12 +448,24 @@ export async function POST(request: Request) {
           label: "正在校验引用并保存回答…"
         });
         await completeTurn({
+          userId: session.user.id,
           turn,
           answer,
           meta,
           evidence: citedEvidence,
           usage,
-          latencyMs: Date.now() - startedAt
+          latencyMs: Date.now() - startedAt,
+          runtime: {
+            provider: modelProvider.id,
+            model: modelProvider.model,
+            promptVersionId: activePrompt?.id ?? null,
+            promptVersion: activePrompt?.version ?? null,
+            sourceVersions: citedEvidence.map((item) => ({
+              sourceId: item.citation.sourceId,
+              fetchedAt: new Date(item.citation.fetchedAt).toISOString(),
+              pageOrSection: item.citation.pageOrSection ?? null
+            }))
+          }
         });
         const committedReservation = await commitQuota({
           leaseId: reservation.leaseId,
@@ -304,7 +495,25 @@ export async function POST(request: Request) {
           }
         });
       } catch (error) {
-        const cancelled = request.signal.aborted;
+        const cancelled = operationSignal.aborted;
+        if (invocation && !invocationSettled) {
+          await failModelInvocation({
+            handle: invocation,
+            status: cancelled ? "cancelled" : "failed",
+            errorCode: cancelled ? "CLIENT_CANCELLED" : errorCode(error),
+            errorMessage: safeErrorMessage(error),
+            retainReservedEstimate: providerCallAttempted
+          }).catch(() => undefined);
+        }
+        if (!modelAttemptFinalized) {
+          await releaseQuota({
+            leaseId: modelAttemptReservation.leaseId,
+            userId: session.user.id,
+            reason: cancelled
+              ? "cancelled_before_model_attempt"
+              : "failed_before_model_attempt"
+          }).catch(() => undefined);
+        }
         await failTurn(
           turn.assistantMessageId,
           cancelled ? "cancelled" : "failed",
@@ -321,7 +530,7 @@ export async function POST(request: Request) {
           code: cancelled ? "CANCELLED" : errorCode(error),
           message: cancelled
             ? "已取消回答，本次不会扣除额度。"
-            : "本次回答未能通过证据或引用校验，额度已归还。"
+            : userFacingFailureMessage(error)
         });
       } finally {
         clearInterval(heartbeat);
@@ -333,6 +542,9 @@ export async function POST(request: Request) {
     },
     cancel() {
       streamClosed = true;
+      if (!responseAbortController.signal.aborted) {
+        responseAbortController.abort();
+      }
     }
   });
 
@@ -355,6 +567,7 @@ async function createPendingTurn(input: {
   model: string;
 }): Promise<PersistedTurn> {
   return db.transaction(async (tx) => {
+    await assertAccountWritable(tx, input.userId);
     const now = new Date();
     let conversationId = input.conversationId;
 
@@ -429,14 +642,27 @@ async function createPendingTurn(input: {
 }
 
 async function completeTurn(input: {
+  userId: string;
   turn: PersistedTurn;
   answer: string;
   meta: AnswerMeta;
   evidence: GroundingEvidence[];
   usage?: ModelUsage;
   latencyMs: number;
+  runtime: {
+    provider: string;
+    model: string;
+    promptVersionId: string | null;
+    promptVersion: number | null;
+    sourceVersions: Array<{
+      sourceId: string;
+      fetchedAt: string;
+      pageOrSection: string | null;
+    }>;
+  };
 }) {
   await db.transaction(async (tx) => {
+    await assertAccountWritable(tx, input.userId);
     await tx
       .update(messages)
       .set({
@@ -449,7 +675,11 @@ async function completeTurn(input: {
         metadata: {
           riskLevel: input.meta.riskLevel,
           missingInputs: input.meta.missingInputs,
-          webSearched: input.meta.webSearched
+          webSearched: input.meta.webSearched,
+          ...(input.meta.modelingCards?.length
+            ? { modelingCards: input.meta.modelingCards }
+            : {}),
+          ...input.runtime
         }
       })
       .where(eq(messages.id, input.turn.assistantMessageId));
@@ -606,6 +836,9 @@ function replayResponse(
         const replayCitations = replay.citations
           .map((citation) => serializeStoredCitation(citation))
           .filter((citation) => citation !== null);
+        const replayModelingCards = serializeStoredModelingCards(
+          replay.metadata.modelingCards
+        );
         replayCitations.forEach((citation) =>
           emit({ type: "citation", citation })
         );
@@ -617,7 +850,10 @@ function replayResponse(
             riskLevel: replay.metadata.riskLevel ?? "low",
             missingInputs: replay.metadata.missingInputs ?? [],
             webSearched: replay.metadata.webSearched ?? false,
-            citations: replayCitations
+            citations: replayCitations,
+            ...(replayModelingCards.length
+              ? { modelingCards: replayModelingCards }
+              : {})
           }
         });
         controller.close();
@@ -632,7 +868,11 @@ function replayResponse(
   );
 }
 
-function validateAnswer(answer: string, evidence: GroundingEvidence[]) {
+function validateAnswer(
+  answer: string,
+  evidence: GroundingEvidence[],
+  riskLevel: AnswerMeta["riskLevel"]
+) {
   if (!hasRequiredAnswerSections(answer)) {
     throw new InvalidAnswerError("模型回答未满足 OpenVac 的五段结构。");
   }
@@ -642,6 +882,14 @@ function validateAnswer(answer: string, evidence: GroundingEvidence[]) {
   });
   if (!result.valid) {
     throw new InvalidAnswerError(`引用校验失败：${result.errors.join(" ")}`);
+  }
+  if (riskLevel === "high") {
+    const safety = validateHighRiskAnswerBoundaries(answer);
+    if (!safety.valid) {
+      throw new InvalidAnswerError(
+        `高风险回答缺少安全边界：${safety.missing.join(", ")}。`
+      );
+    }
   }
   return result;
 }
@@ -713,7 +961,27 @@ function errorCode(error: unknown) {
 
 function safeErrorMessage(error: unknown) {
   if (error instanceof InvalidAnswerError) return error.message;
+  if (error instanceof ModelRuntimeError) return error.message;
+  if (error instanceof AccountDeletionInProgressError) return error.message;
   return "Provider or persistence operation failed.";
+}
+
+function userFacingFailureMessage(error: unknown) {
+  if (error instanceof AccountDeletionInProgressError) {
+    return "账号正在删除，本次回答已停止，回答额度已归还。";
+  }
+  if (error instanceof ModelRuntimeError) {
+    if (error.code === "MODEL_DISABLED") {
+      return "回答模型当前已停用，本次额度已归还。";
+    }
+    if (error.code.includes("BUDGET")) {
+      return "系统当前已触发模型预算保护，本次额度已归还，请稍后再试。";
+    }
+    if (error.code === "MODEL_PRICING_UNCONFIGURED") {
+      return "模型成本配置尚未完成，本次额度已归还。";
+    }
+  }
+  return "本次回答未能通过证据、引用或系统校验，额度已归还。";
 }
 
 function jsonError(status: number, code: string, message: string) {
@@ -724,4 +992,7 @@ class ConversationNotFoundError extends Error {}
 class InvalidAnswerError extends Error {}
 class QuotaCommitError extends Error {
   readonly code = "QUOTA_COMMIT_FAILED";
+}
+class ModelAttemptQuotaTransitionError extends Error {
+  readonly code = "MODEL_ATTEMPT_QUOTA_TRANSITION_FAILED";
 }

@@ -25,6 +25,12 @@ export function reserveWebSearchQuota(
   return quotaService.reserve({ ...input, resource: "web_search" });
 }
 
+export function reserveModelAttemptQuota(
+  input: Omit<ReserveQuotaInput, "resource">
+) {
+  return quotaService.reserve({ ...input, resource: "model_attempt" });
+}
+
 export function commitQuota(input: TransitionQuotaInput) {
   return quotaService.commit(input);
 }

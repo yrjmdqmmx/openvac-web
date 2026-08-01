@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the OpenVac production backup daily at 02:30
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=openvac-backup.service
+
+[Install]
+WantedBy=timers.target

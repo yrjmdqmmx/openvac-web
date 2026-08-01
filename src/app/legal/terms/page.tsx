@@ -27,6 +27,12 @@ export default function TermsPage() {
           个成功回答，按北京时间恢复。模型或检索失败会归还预占额度。异常滥用账户可能被限流或封禁。
         </p>
       </section>
+      <section>
+        <h2 className="text-2xl font-semibold">问题反馈</h2>
+        <p className="mt-4 leading-8 text-[var(--muted)]">
+          问题反馈用于改进回答、引用和产品，不构成人工咨询、紧急支持或服务工单，也不承诺回复或处理时限。涉及人身、设备或环境紧急风险时，请立即执行现场应急程序并联系有资质的专业人员。
+        </p>
+      </section>
     </ContentPage>
   );
 }

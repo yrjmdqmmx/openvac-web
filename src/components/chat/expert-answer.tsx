@@ -6,15 +6,18 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  Cuboid,
+  Download,
   FileText,
   Flag,
+  MessageSquareWarning,
   ThumbsDown,
-  ThumbsUp,
-  UserRoundSearch
+  ThumbsUp
 } from "lucide-react";
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { evaluateCitationLink } from "@/lib/citation-link-policy";
-import type { ChatMessage, Citation } from "@/types/chat";
+import type { ChatMessage, Citation, ModelingCard } from "@/types/chat";
 
 function AnswerText({ content }: { content: string }) {
   const lines = content.split("\n");
@@ -104,23 +107,104 @@ function SourceItem({ citation }: { citation: Citation }) {
   );
 }
 
+function ModelingCards({ cards }: { cards: ModelingCard[] }) {
+  return (
+    <section
+      aria-label="建模项目与制品"
+      className="mt-7 rounded-xl border border-[var(--border)] p-4"
+    >
+      <div className="flex items-center gap-2">
+        <Cuboid className="h-4 w-4 text-[var(--accent)]" />
+        <h2 className="text-sm font-medium">建模项目与制品</h2>
+      </div>
+      <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
+        链接已由服务端按当前账号校验；打开链接不会让问答 Agent 执行 CAD 操作。
+      </p>
+      <ul className="mt-3 grid gap-2">
+        {cards.map((card) => (
+          <li
+            key={`${card.kind}:${card.kind === "project" ? card.projectId : card.artifactId}`}
+          >
+            {card.kind === "project" ? (
+              <Link
+                href={`/modeling?project=${encodeURIComponent(card.projectId)}`}
+                className="flex items-center gap-3 rounded-lg bg-[var(--surface)] px-3 py-3 transition-colors hover:bg-[var(--surface-strong)]"
+              >
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white text-[var(--accent)]">
+                  <Cuboid className="h-4 w-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <strong className="block truncate text-sm font-medium">
+                    {card.title}
+                  </strong>
+                  <span className="mt-0.5 block truncate text-xs text-[var(--muted)]">
+                    {card.description || "打开已授权建模项目"}
+                  </span>
+                </span>
+                <span className="text-xs font-medium text-[var(--accent)]">
+                  打开项目
+                </span>
+              </Link>
+            ) : (
+              <a
+                href={`/api/modeling/artifacts/${encodeURIComponent(card.artifactId)}/download`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 rounded-lg bg-[var(--surface)] px-3 py-3 transition-colors hover:bg-[var(--surface-strong)]"
+              >
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white text-[var(--accent)]">
+                  <Download className="h-4 w-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <strong className="block truncate text-sm font-medium">
+                    {card.title}
+                  </strong>
+                  <span className="mt-0.5 block truncate text-xs text-[var(--muted)]">
+                    {card.projectTitle} · {card.format} ·{" "}
+                    {formatBytes(card.sizeBytes)}
+                  </span>
+                </span>
+                <span className="text-xs font-medium text-[var(--accent)]">
+                  授权下载
+                </span>
+              </a>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1_024) return `${bytes} B`;
+  if (bytes < 1_048_576) return `${(bytes / 1_024).toFixed(1)} KB`;
+  return `${(bytes / 1_048_576).toFixed(1)} MB`;
+}
+
 export function ExpertAnswer({
   message,
   onFeedback,
-  onConsult
+  onProblemReport,
+  modelingEnabled = false
 }: {
   message: ChatMessage;
   onFeedback: (
     messageId: string,
     rating: "up" | "down" | "report"
   ) => Promise<void>;
-  onConsult: () => void;
+  onProblemReport: (messageId: string) => void;
+  modelingEnabled?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<string>();
   const citations = useMemo(
     () => message.meta?.citations ?? [],
     [message.meta]
+  );
+  const modelingCards = useMemo(
+    () => (modelingEnabled ? (message.meta?.modelingCards ?? []) : []),
+    [message.meta, modelingEnabled]
   );
 
   return (
@@ -161,6 +245,10 @@ export function ExpertAnswer({
         </div>
       )}
 
+      {modelingCards.length > 0 ? (
+        <ModelingCards cards={modelingCards} />
+      ) : null}
+
       {message.status !== "streaming" && (
         <div className="mt-6 flex flex-wrap items-center gap-1">
           <button
@@ -179,36 +267,40 @@ export function ExpertAnswer({
               <Copy className="h-4 w-4" />
             )}
           </button>
-          {(
-            [
-              ["up", ThumbsUp, "回答有帮助"],
-              ["down", ThumbsDown, "回答有问题"],
-              ["report", Flag, "举报回答"]
-            ] as const
-          ).map(([rating, Icon, label]) => (
-            <button
-              key={rating}
-              type="button"
-              onClick={async () => {
-                await onFeedback(message.id, rating);
-                setFeedback(rating);
-              }}
-              className={`grid h-9 w-9 place-items-center rounded-full hover:bg-[var(--surface)] ${
-                feedback === rating ? "text-[var(--accent)]" : ""
-              }`}
-              aria-label={label}
-            >
-              <Icon className="h-4 w-4" />
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={onConsult}
-            className="ml-2 inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--border-strong)] px-3 text-sm hover:bg-[var(--surface)]"
-          >
-            <UserRoundSearch className="h-4 w-4" />
-            咨询真空专家
-          </button>
+          {message.status === "completed" ? (
+            <>
+              {(
+                [
+                  ["up", ThumbsUp, "回答有帮助"],
+                  ["down", ThumbsDown, "回答有问题"],
+                  ["report", Flag, "举报回答"]
+                ] as const
+              ).map(([rating, Icon, label]) => (
+                <button
+                  key={rating}
+                  type="button"
+                  onClick={async () => {
+                    await onFeedback(message.id, rating);
+                    setFeedback(rating);
+                  }}
+                  className={`grid h-9 w-9 place-items-center rounded-full hover:bg-[var(--surface)] ${
+                    feedback === rating ? "text-[var(--accent)]" : ""
+                  }`}
+                  aria-label={label}
+                >
+                  <Icon className="h-4 w-4" />
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => onProblemReport(message.id)}
+                className="ml-2 inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--border-strong)] px-3 text-sm hover:bg-[var(--surface)]"
+              >
+                <MessageSquareWarning className="h-4 w-4" />
+                问题反馈
+              </button>
+            </>
+          ) : null}
         </div>
       )}
     </article>

@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { ChatWorkspace } from "@/components/chat/chat-workspace";
 import { auth } from "@/server/auth";
+import { isModelingEnabled } from "@/server/modeling/feature-flag";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,7 @@ export default async function ChatPage() {
     <ChatWorkspace
       userId={session.user.id}
       userName={session.user.name || "OpenVac 用户"}
+      modelingEnabled={isModelingEnabled()}
     />
   );
 }

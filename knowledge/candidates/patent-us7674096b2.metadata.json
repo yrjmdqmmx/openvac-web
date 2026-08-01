@@ -27,7 +27,22 @@
     "bibliographicVerifiedAt": "2026-08-01T00:00:00.000Z",
     "legalStatusDisclaimer": "Current ownership and legal status require a live USPTO check; OpenVac does not provide legal advice.",
     "evidenceLevel": "patentee_disclosure",
-    "independentPerformanceValidation": false
+    "independentPerformanceValidation": false,
+    "summaryAuthorship": "OpenVac independent Chinese summary; not patent text",
+    "claimLocators": [
+      "claim 1: removable reservoir cartridge, supply and return arrangement",
+      "claims 2–5: clear cartridge, oil-condition indicator and replacement cartridge",
+      "claims 6–13: dependent structural arrangements; verify against the current grant before relying on a specific limitation"
+    ],
+    "figureLocators": [
+      "figures 3–7: pump chamber, oil pocket and pumping sequence",
+      "figures 8–18: reservoir cartridge, indicator and oil supply structures"
+    ],
+    "technicalUseWarnings": [
+      "Patent claims and embodiments are not independent performance tests.",
+      "The disclosed 50–150 micrometres of mercury example must not be generalized to other pumps.",
+      "Do not use this record for model selection, safety certification or freedom-to-operate advice."
+    ]
   },
   "review": {
     "status": "required",

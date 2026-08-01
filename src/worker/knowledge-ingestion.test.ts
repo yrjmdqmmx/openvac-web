@@ -248,6 +248,7 @@ function makeObjectStorage(
     id: "storage",
     putPrivate: vi.fn(async () => ({ key: "unused" })),
     getPrivate: vi.fn(async () => new Uint8Array()),
+    deletePrivate: vi.fn(async () => undefined),
     createPrivateDownloadUrl: vi.fn(async () => signedUrl)
   };
 }

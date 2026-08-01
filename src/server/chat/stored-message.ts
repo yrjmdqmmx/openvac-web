@@ -2,9 +2,13 @@ import type {
   AnswerMeta,
   ChatMessage,
   Citation,
+  ModelingCard,
   RiskLevel
 } from "@/types/chat";
 import { citationSourcePolicy } from "./citation-policy";
+
+const MODELING_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 const LICENSE_CLASSES = new Set<Citation["licenseClass"]>([
   "open",
@@ -80,12 +84,70 @@ function answerMetaValue(
   metadata: Record<string, unknown>,
   citations: Citation[]
 ): AnswerMeta {
+  const modelingCards = serializeStoredModelingCards(metadata.modelingCards);
   return {
     riskLevel: riskLevelValue(metadata.riskLevel),
     missingInputs: stringArrayValue(metadata.missingInputs),
     webSearched: metadata.webSearched === true,
-    citations
+    citations,
+    ...(modelingCards.length ? { modelingCards } : {})
   };
+}
+
+export function serializeStoredModelingCards(
+  value: unknown,
+  now = new Date()
+): ModelingCard[] {
+  if (!Array.isArray(value)) return [];
+  const cards: ModelingCard[] = [];
+
+  for (const item of value.slice(0, 8)) {
+    if (!isRecord(item)) continue;
+    const title = boundedString(item.title, 255);
+    const projectId = modelingUuidValue(item.projectId);
+    if (!title || !projectId) continue;
+
+    if (item.kind === "project") {
+      const description = boundedString(item.description, 2_000);
+      cards.push({
+        kind: "project",
+        projectId,
+        title,
+        ...(description ? { description } : {})
+      });
+      continue;
+    }
+
+    if (item.kind !== "artifact") continue;
+    const artifactId = modelingUuidValue(item.artifactId);
+    const projectTitle = boundedString(item.projectTitle, 255);
+    const format = boundedString(item.format, 12);
+    const sizeBytes = item.sizeBytes;
+    const expiresAt = optionalFutureIsoDate(item.expiresAt, now);
+    if (
+      !artifactId ||
+      !projectTitle ||
+      !format ||
+      typeof sizeBytes !== "number" ||
+      !Number.isSafeInteger(sizeBytes) ||
+      sizeBytes < 0 ||
+      expiresAt === null
+    ) {
+      continue;
+    }
+    cards.push({
+      kind: "artifact",
+      artifactId,
+      projectId,
+      title,
+      projectTitle,
+      format,
+      sizeBytes,
+      ...(expiresAt ? { expiresAt } : {})
+    });
+  }
+
+  return cards;
 }
 
 function riskLevelValue(value: unknown): RiskLevel {
@@ -112,6 +174,34 @@ function stringArrayValue(value: unknown): string[] {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function boundedString(value: unknown, maximum: number): string | undefined {
+  const result = stringValue(value);
+  return result && Array.from(result).length <= maximum ? result : undefined;
+}
+
+function modelingUuidValue(value: unknown): string | undefined {
+  const result = stringValue(value)?.toLowerCase();
+  return result && MODELING_UUID_PATTERN.test(result) ? result : undefined;
+}
+
+function optionalFutureIsoDate(
+  value: unknown,
+  now: Date
+): string | undefined | null {
+  if (value === undefined || value === null) return undefined;
+  const result = stringValue(value);
+  if (!result) return null;
+  const parsed = new Date(result);
+  if (Number.isNaN(parsed.getTime()) || parsed.getTime() <= now.getTime()) {
+    return null;
+  }
+  return parsed.toISOString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isoDateValue(value: unknown): string {

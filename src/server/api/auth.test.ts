@@ -5,6 +5,9 @@ import type { ApiStore } from "./types";
 const authMocks = vi.hoisted(() => ({
   getSession: vi.fn()
 }));
+const accountCleanupMocks = vi.hoisted(() => ({
+  isUserDeletionInProgress: vi.fn()
+}));
 
 vi.mock("@/server/auth", () => ({
   auth: {
@@ -13,6 +16,7 @@ vi.mock("@/server/auth", () => ({
     }
   }
 }));
+vi.mock("@/server/auth/account-cleanup", () => accountCleanupMocks);
 
 import { authenticate, hasCapability, requireCapability } from "./auth";
 
@@ -27,6 +31,8 @@ function storeWithRole(
 describe("server-side admin authorization", () => {
   beforeEach(() => {
     authMocks.getSession.mockReset();
+    accountCleanupMocks.isUserDeletionInProgress.mockReset();
+    accountCleanupMocks.isUserDeletionInProgress.mockResolvedValue(false);
     authMocks.getSession.mockResolvedValue({
       user: {
         id: "user-1",
@@ -72,10 +78,28 @@ describe("server-side admin authorization", () => {
     ).rejects.toMatchObject({ status: 403, code: "ACCOUNT_BANNED" });
   });
 
+  it("rejects a persisted session once account deletion has started", async () => {
+    accountCleanupMocks.isUserDeletionInProgress.mockResolvedValue(true);
+
+    await expect(
+      authenticate(new Request("https://openvac.test/api/conversations"))
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "ACCOUNT_DELETION_IN_PROGRESS"
+    });
+  });
+
   it("keeps analyst and support permissions read-focused", () => {
     expect(hasCapability("analyst", "metrics:read")).toBe(true);
+    expect(hasCapability("analyst", "feedback:read")).toBe(false);
     expect(hasCapability("analyst", "settings:write")).toBe(false);
     expect(hasCapability("support", "feedback:write")).toBe(true);
+    expect(hasCapability("support", "problem_reports:write")).toBe(true);
+    expect(hasCapability("analyst", "problem_reports:read")).toBe(false);
+    expect(hasCapability("analyst", "problem_reports:write")).toBe(false);
+    expect(hasCapability("knowledge_editor", "problem_reports:read")).toBe(
+      false
+    );
     expect(hasCapability("support", "knowledge:write")).toBe(false);
   });
 

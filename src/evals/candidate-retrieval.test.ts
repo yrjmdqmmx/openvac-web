@@ -7,11 +7,11 @@ import {
 } from "./candidate-retrieval";
 
 describe("candidate retrieval evaluation", () => {
-  it("contains eight unique, page-located CERN cases", () => {
-    expect(CANDIDATE_RETRIEVAL_EVAL_CASES).toHaveLength(8);
+  it("contains twelve unique, page-located CERN cases", () => {
+    expect(CANDIDATE_RETRIEVAL_EVAL_CASES).toHaveLength(12);
     expect(
       new Set(CANDIDATE_RETRIEVAL_EVAL_CASES.map((item) => item.id)).size
-    ).toBe(8);
+    ).toBe(12);
 
     for (const item of CANDIDATE_RETRIEVAL_EVAL_CASES) {
       const section = candidate.sections.find(

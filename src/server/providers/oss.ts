@@ -1,12 +1,15 @@
+import OSS from "ali-oss";
+
 import { ProviderResponseError } from "./errors";
-import {
-  asRecord,
-  loadOptionalModule,
-  optionalString,
-  pickString,
-  requireString
-} from "./runtime";
-import type { ObjectStorage, PutObjectRequest, StoredObject } from "./types";
+import { asRecord, optionalString, pickString, requireString } from "./runtime";
+import type {
+  CreatePrivateUploadUrlRequest,
+  ObjectStorage,
+  PrivateObjectStat,
+  PrivateUploadUrl,
+  PutObjectRequest,
+  StoredObject
+} from "./types";
 
 const PROVIDER_ID = "alibaba-oss";
 
@@ -17,11 +20,18 @@ interface OssClient {
     options?: Record<string, unknown>
   ): Promise<unknown>;
   get(key: string): Promise<unknown>;
+  delete(key: string, options?: Record<string, unknown>): Promise<unknown>;
+  head?(key: string, options?: Record<string, unknown>): Promise<unknown>;
+  getObjectMeta?(
+    key: string,
+    options?: Record<string, unknown>
+  ): Promise<unknown>;
   signatureUrlV4?: (
     method: string,
     expires: number,
     options: Record<string, unknown>,
-    key: string
+    key: string,
+    additionalHeaders?: string[]
   ) => Promise<string> | string;
   signatureUrl?: (
     key: string,
@@ -105,6 +115,31 @@ export class AlibabaOssStorage implements ObjectStorage {
       : new Uint8Array(content);
   }
 
+  async deletePrivate(key: string): Promise<void> {
+    validateObjectKey(key);
+    try {
+      await this.getClient().delete(key);
+    } catch (cause) {
+      const { code, status } = providerFailure(cause);
+      if (status === 404 || code === "NoSuchKey" || code === "NoSuchObject") {
+        return;
+      }
+      throw new ProviderResponseError(
+        PROVIDER_ID,
+        "OSS failed to delete the private object.",
+        {
+          status,
+          retryable:
+            status === undefined ||
+            status === 408 ||
+            status === 429 ||
+            status >= 500,
+          cause
+        }
+      );
+    }
+  }
+
   async createPrivateDownloadUrl(
     key: string,
     expiresSeconds = 300
@@ -141,6 +176,119 @@ export class AlibabaOssStorage implements ObjectStorage {
     );
   }
 
+  async createPrivateUploadUrl(
+    request: CreatePrivateUploadUrlRequest
+  ): Promise<PrivateUploadUrl> {
+    validateObjectKey(request.key);
+    validateUploadRequest(request);
+
+    const expiresSeconds = request.expiresSeconds ?? 900;
+    const metadata = normalizeUploadMetadata({
+      ...request.metadata,
+      sha256: request.checksumSha256,
+      "size-bytes": String(request.contentLength)
+    });
+    const requiredHeaders: Record<string, string> = {
+      "Content-Type": request.contentType,
+      "Content-Length": String(request.contentLength),
+      "x-oss-object-acl": "private",
+      ...Object.fromEntries(
+        Object.entries(metadata).map(([key, value]) => [
+          `x-oss-meta-${key}`,
+          value
+        ])
+      )
+    };
+
+    const client = this.getClient();
+    let url: string;
+    if (client.signatureUrlV4) {
+      // ali-oss includes content-type and all x-oss-* headers in the V4
+      // canonical request. content-length must be named explicitly.
+      url = await client.signatureUrlV4(
+        "PUT",
+        expiresSeconds,
+        { headers: requiredHeaders, queries: {} },
+        request.key,
+        ["content-length"]
+      );
+    } else if (client.signatureUrl) {
+      // The legacy signer includes Content-Type and x-oss-* metadata. The
+      // signed size-bytes metadata plus completion-time stat preserves the
+      // size invariant when V4 is unavailable.
+      url = await client.signatureUrl(request.key, {
+        expires: expiresSeconds,
+        method: "PUT",
+        ...requiredHeaders
+      });
+    } else {
+      throw new ProviderResponseError(
+        PROVIDER_ID,
+        "The installed ali-oss client cannot create signed upload URLs."
+      );
+    }
+
+    return {
+      key: request.key,
+      method: "PUT",
+      url,
+      requiredHeaders,
+      expiresAt: new Date(Date.now() + expiresSeconds * 1_000).toISOString()
+    };
+  }
+
+  async statPrivate(key: string): Promise<PrivateObjectStat> {
+    validateObjectKey(key);
+    const client = this.getClient();
+    if (!client.head && !client.getObjectMeta) {
+      throw new ProviderResponseError(
+        PROVIDER_ID,
+        "The installed ali-oss client cannot inspect private objects."
+      );
+    }
+
+    try {
+      const [objectMetaResult, headResult] = await Promise.all([
+        client.getObjectMeta?.(key),
+        client.head?.(key)
+      ]);
+      const objectMeta = asRecord(objectMetaResult);
+      const head = asRecord(headResult);
+      const objectMetaHeaders = asRecord(asRecord(objectMeta.res).headers);
+      const headHeaders = asRecord(asRecord(head.res).headers);
+      const headers = { ...headHeaders, ...objectMetaHeaders };
+      const sizeBytes = parseStoredObjectSize(headers);
+      const metadata = {
+        ...metadataFromHeaders(headHeaders),
+        ...metadataFromHeaders(objectMetaHeaders),
+        ...normalizeReturnedMetadata(asRecord(head.meta))
+      };
+
+      return {
+        key,
+        sizeBytes,
+        etag: headerString(headers, "etag"),
+        contentType: headerString(headers, "content-type"),
+        metadata,
+        lastModified: headerString(headers, "last-modified")
+      };
+    } catch (cause) {
+      if (cause instanceof ProviderResponseError) {
+        throw cause;
+      }
+      const { status } = providerFailure(cause);
+      throw new ProviderResponseError(
+        PROVIDER_ID,
+        "OSS failed to inspect the private object.",
+        {
+          status,
+          retryable: status === undefined || status >= 500,
+          cause
+        }
+      );
+    }
+  }
+
   private getClient(): OssClient {
     if (this.client) {
       return this.client;
@@ -165,17 +313,7 @@ export class AlibabaOssStorage implements ObjectStorage {
       "ALIBABA_OSS_ACCESS_KEY_SECRET",
       this.options.accessKeySecret
     );
-    const sdkModule = loadOptionalModule(PROVIDER_ID, "ali-oss");
-    const Client = sdkModule.default ?? sdkModule;
-    if (typeof Client !== "function") {
-      throw new ProviderResponseError(
-        PROVIDER_ID,
-        "The installed ali-oss package does not expose a client constructor."
-      );
-    }
-    this.client = new (
-      Client as new (options: Record<string, unknown>) => OssClient
-    )({
+    this.client = new OSS({
       region,
       bucket,
       endpoint: optionalString(this.options.endpoint),
@@ -184,20 +322,163 @@ export class AlibabaOssStorage implements ObjectStorage {
       stsToken: optionalString(this.options.securityToken),
       authorizationV4: true,
       secure: true
-    });
+    }) as unknown as OssClient;
     return this.client;
   }
 }
 
 function validateObjectKey(key: string): void {
+  const segments = key.split("/");
   if (
     !key ||
+    key.length > 1_024 ||
     key.startsWith("/") ||
-    key.includes("\0") ||
-    key.split("/").includes("..")
+    key.endsWith("/") ||
+    key.includes("\\") ||
+    /[\u0000-\u001f\u007f]/u.test(key) ||
+    segments.some((segment) => !segment || segment === "." || segment === "..")
   ) {
     throw new ProviderResponseError(PROVIDER_ID, "OSS object key is invalid.");
   }
+}
+
+function providerFailure(cause: unknown): {
+  code?: string;
+  status?: number;
+} {
+  const causeRecord = asRecord(cause);
+  const response = asRecord(causeRecord.res);
+  const rawStatus =
+    causeRecord.status ?? causeRecord.statusCode ?? response.status;
+  const status =
+    typeof rawStatus === "number" && Number.isFinite(rawStatus)
+      ? rawStatus
+      : typeof rawStatus === "string" && /^\d{3}$/u.test(rawStatus)
+        ? Number(rawStatus)
+        : undefined;
+  const code = pickString(causeRecord, ["code", "name"]);
+  return { code, status };
+}
+
+function validateUploadRequest(request: CreatePrivateUploadUrlRequest): void {
+  if (
+    !Number.isSafeInteger(request.contentLength) ||
+    request.contentLength <= 0
+  ) {
+    throw new ProviderResponseError(
+      PROVIDER_ID,
+      "Private upload content length must be a positive safe integer."
+    );
+  }
+  if (!/^[0-9a-f]{64}$/.test(request.checksumSha256)) {
+    throw new ProviderResponseError(
+      PROVIDER_ID,
+      "Private upload SHA-256 must be lowercase hexadecimal."
+    );
+  }
+  if (
+    !request.contentType.trim() ||
+    /[\r\n]/.test(request.contentType) ||
+    request.contentType.length > 255
+  ) {
+    throw new ProviderResponseError(
+      PROVIDER_ID,
+      "Private upload content type is invalid."
+    );
+  }
+  const expiresSeconds = request.expiresSeconds ?? 900;
+  if (
+    !Number.isInteger(expiresSeconds) ||
+    expiresSeconds < 1 ||
+    expiresSeconds > 3600
+  ) {
+    throw new ProviderResponseError(
+      PROVIDER_ID,
+      "Private upload URL expiry must be between 1 and 3600 seconds."
+    );
+  }
+  normalizeUploadMetadata(request.metadata ?? {});
+}
+
+function normalizeUploadMetadata(
+  metadata: Record<string, string>
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(metadata).map(([rawKey, value]) => {
+      const key = rawKey.toLowerCase();
+      if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(key)) {
+        throw new ProviderResponseError(
+          PROVIDER_ID,
+          `OSS metadata key is invalid: ${rawKey}`
+        );
+      }
+      if (
+        typeof value !== "string" ||
+        value.length > 1_024 ||
+        /[\r\n]/.test(value)
+      ) {
+        throw new ProviderResponseError(
+          PROVIDER_ID,
+          `OSS metadata value is invalid: ${rawKey}`
+        );
+      }
+      return [key, value];
+    })
+  );
+}
+
+function parseStoredObjectSize(headers: Record<string, unknown>): number {
+  const raw = headerString(headers, "content-length");
+  const size = raw === undefined ? Number.NaN : Number(raw);
+  if (!Number.isSafeInteger(size) || size < 0) {
+    throw new ProviderResponseError(
+      PROVIDER_ID,
+      "OSS object metadata did not include a valid content length.",
+      { retryable: true }
+    );
+  }
+  return size;
+}
+
+function metadataFromHeaders(
+  headers: Record<string, unknown>
+): Record<string, string> {
+  const metadata: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(headers)) {
+    const key = rawKey.toLowerCase();
+    if (!key.startsWith("x-oss-meta-") || typeof rawValue !== "string") {
+      continue;
+    }
+    metadata[key.slice("x-oss-meta-".length)] = rawValue;
+  }
+  return metadata;
+}
+
+function normalizeReturnedMetadata(
+  metadata: Record<string, unknown>
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(metadata)
+      .filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string"
+      )
+      .map(([key, value]) => [key.toLowerCase(), value])
+  );
+}
+
+function headerString(
+  headers: Record<string, unknown>,
+  wantedKey: string
+): string | undefined {
+  const match = Object.entries(headers).find(
+    ([key]) => key.toLowerCase() === wantedKey
+  );
+  if (!match) {
+    return undefined;
+  }
+  return typeof match[1] === "string" || typeof match[1] === "number"
+    ? String(match[1])
+    : undefined;
 }
 
 let singleton: AlibabaOssStorage | undefined;

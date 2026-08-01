@@ -5,6 +5,11 @@ import {
   assertHistoricalRollbackTarget,
   assertKnowledgePublicationGate,
   buildKnowledgeReviewTransition,
+  effectiveKnowledgeReviewStatus,
+  existingKnowledgeEmbeddingMatchesReview,
+  hasCompleteKnowledgeEmbeddingSet,
+  invalidateKnowledgeReviewAfterHashChange,
+  knowledgeEvidenceMetadataChanged,
   sha256KnowledgeContent,
   type KnowledgePublicationGateInput
 } from "./store";
@@ -130,6 +135,154 @@ describe("knowledge manual review transition", () => {
     ).toThrowError(
       expect.objectContaining({ code: "KNOWLEDGE_REVIEW_CONFLICT" })
     );
+  });
+
+  it("records a rejection note without queuing embeddings", () => {
+    const content = "Reviewed but unsafe guidance.";
+    const contentHash = sha256KnowledgeContent(content);
+
+    expect(
+      buildKnowledgeReviewTransition({
+        documentId: "document-1",
+        versionId: "version-1",
+        expectedVersionId: "version-1",
+        content,
+        storedContentHash: contentHash,
+        expectedContentHash: contentHash,
+        ingestionMode: "full_text",
+        reviewerId: "reviewer-1",
+        reviewedAt: new Date("2026-07-31T08:00:00.000Z"),
+        decision: "rejected",
+        note: "缺少停机与能源隔离边界。"
+      })
+    ).toMatchObject({
+      documentStatus: "draft",
+      versionStatus: "draft",
+      embeddingStatus: "pending_review",
+      task: undefined,
+      review: {
+        status: "rejected",
+        note: "缺少停机与能源隔离边界。"
+      }
+    });
+  });
+
+  it("keeps completed full-text embeddings reusable across review decisions", () => {
+    expect(
+      existingKnowledgeEmbeddingMatchesReview({
+        ingestionMode: "full_text",
+        reviewedContentHash: "A".repeat(64),
+        nextContentHash: "a".repeat(64)
+      })
+    ).toBe(true);
+    expect(
+      existingKnowledgeEmbeddingMatchesReview({
+        ingestionMode: "full_text",
+        reviewedContentHash: "b".repeat(64),
+        nextContentHash: "a".repeat(64)
+      })
+    ).toBe(false);
+
+    expect(
+      hasCompleteKnowledgeEmbeddingSet({ totalChunks: 3, embeddedChunks: 3 })
+    ).toBe(true);
+    expect(
+      hasCompleteKnowledgeEmbeddingSet({ totalChunks: 3, embeddedChunks: 1 })
+    ).toBe(false);
+    expect(
+      hasCompleteKnowledgeEmbeddingSet({ totalChunks: 0, embeddedChunks: 0 })
+    ).toBe(false);
+  });
+});
+
+describe("knowledge review hash invalidation", () => {
+  const approvedMetadata = {
+    reviewStatus: "approved",
+    embeddingStatus: "completed",
+    review: {
+      status: "approved",
+      reviewedBy: "reviewer-1",
+      reviewedAt: "2026-07-31T08:00:00.000Z",
+      contentHash: "a".repeat(64),
+      note: "依据原文逐段复核。"
+    }
+  };
+
+  it("invalidates approval automatically when the content hash changes", () => {
+    const invalidatedAt = new Date("2026-08-01T08:00:00.000Z");
+    const result = invalidateKnowledgeReviewAfterHashChange({
+      metadata: approvedMetadata,
+      previousContentHash: "a".repeat(64),
+      nextContentHash: "b".repeat(64),
+      invalidatedBy: "editor-1",
+      invalidatedAt
+    });
+
+    expect(result).toMatchObject({
+      invalidated: true,
+      metadata: {
+        reviewStatus: "required",
+        embeddingStatus: "pending_review",
+        review: {
+          status: "invalidated",
+          contentHash: "a".repeat(64),
+          invalidatedContentHash: "b".repeat(64),
+          invalidatedBy: "editor-1",
+          invalidatedAt: invalidatedAt.toISOString(),
+          note: "依据原文逐段复核。"
+        }
+      }
+    });
+  });
+
+  it("keeps approval intact when the hash does not change", () => {
+    const result = invalidateKnowledgeReviewAfterHashChange({
+      metadata: approvedMetadata,
+      previousContentHash: "a".repeat(64),
+      nextContentHash: "a".repeat(64),
+      invalidatedBy: "editor-1",
+      invalidatedAt: new Date()
+    });
+
+    expect(result).toEqual({
+      invalidated: false,
+      metadata: approvedMetadata
+    });
+  });
+
+  it("reports stale persisted approval as invalidated in read models", () => {
+    const content = "Current content";
+    expect(
+      effectiveKnowledgeReviewStatus({
+        metadata: approvedMetadata,
+        content,
+        contentHash: sha256KnowledgeContent(content)
+      })
+    ).toBe("invalidated");
+  });
+});
+
+describe("knowledge evidence metadata invalidation", () => {
+  it("invalidates review when the governed source changes", () => {
+    expect(
+      knowledgeEvidenceMetadataChanged({
+        currentSourceId: "source-cern",
+        nextSourceId: "source-hse",
+        ingestionModeProvided: false,
+        citationMetadataProvided: false
+      })
+    ).toBe(true);
+  });
+
+  it("does not invalidate review when the source is unchanged", () => {
+    expect(
+      knowledgeEvidenceMetadataChanged({
+        currentSourceId: "source-cern",
+        nextSourceId: "source-cern",
+        ingestionModeProvided: false,
+        citationMetadataProvided: false
+      })
+    ).toBe(false);
   });
 });
 

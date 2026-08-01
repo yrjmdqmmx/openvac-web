@@ -3,11 +3,14 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 
 import { db } from "@/server/db";
-import { quotaBucket, quotaLedger } from "@/server/db/schema";
+import { quotaBucket, quotaLedger, user as users } from "@/server/db/schema";
 
 import {
+  QuotaAccountDeletionPendingError,
+  QuotaAccountUnavailableError,
   QuotaExceededError,
   QuotaReservationNotFoundError,
+  type QuotaResource,
   type QuotaReservation,
   type QuotaReservationStatus,
   type QuotaScopePolicy,
@@ -18,7 +21,7 @@ import {
 interface RepositoryReserveInput {
   actorUserId: string;
   clientRequestId: string;
-  resource: "answer" | "web_search";
+  resource: QuotaResource;
   units: number;
   window: QuotaWindow;
   scopes: QuotaScopePolicy[];
@@ -32,7 +35,7 @@ interface RepositoryTransitionInput {
 }
 
 interface RepositoryStatusInput {
-  resource: "answer" | "web_search";
+  resource: QuotaResource;
   window: QuotaWindow;
   scopes: QuotaScopePolicy[];
 }
@@ -93,6 +96,15 @@ function isUniqueViolation(error: unknown) {
   );
 }
 
+function compareScopes(
+  left: Pick<QuotaScopePolicy, "scopeType" | "scopeKey">,
+  right: Pick<QuotaScopePolicy, "scopeType" | "scopeKey">
+) {
+  return `${left.scopeType}:${left.scopeKey}`.localeCompare(
+    `${right.scopeType}:${right.scopeKey}`
+  );
+}
+
 async function selectIdempotentRows(
   database: typeof db | Transaction,
   input: Pick<
@@ -111,6 +123,39 @@ async function selectIdempotentRows(
       )
     )
     .orderBy(asc(quotaLedger.scopeType), asc(quotaLedger.scopeKey));
+}
+
+async function assertActorCanReserve(
+  transaction: Transaction,
+  actorUserId: string
+) {
+  const [account] = await transaction
+    .select({
+      id: users.id,
+      deletionRequestedAt: users.deletionRequestedAt
+    })
+    .from(users)
+    .where(eq(users.id, actorUserId))
+    .for("key share");
+
+  if (!account) {
+    throw new QuotaAccountUnavailableError();
+  }
+  if (account.deletionRequestedAt) {
+    throw new QuotaAccountDeletionPendingError();
+  }
+}
+
+async function lockActorForTransition(
+  transaction: Transaction,
+  actorUserId: string | undefined
+) {
+  if (!actorUserId) return;
+  await transaction
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, actorUserId))
+    .for("key share");
 }
 
 async function selectBuckets(
@@ -172,14 +217,9 @@ async function reservationFromRows(
 
 export class PostgresQuotaRepository implements QuotaRepository {
   async reserve(input: RepositoryReserveInput): Promise<QuotaReservation> {
-    const existing = await selectIdempotentRows(db, input);
-
-    if (existing.length > 0) {
-      return reservationFromRows(db, existing, true);
-    }
-
     try {
       return await db.transaction(async (transaction) => {
+        await assertActorCanReserve(transaction, input.actorUserId);
         const rows = await selectIdempotentRows(transaction, input);
 
         if (rows.length > 0) {
@@ -188,11 +228,7 @@ export class PostgresQuotaRepository implements QuotaRepository {
 
         const leaseId = randomUUID();
         const ledgerRows: LedgerRow[] = [];
-        const sortedScopes = [...input.scopes].sort((left, right) =>
-          `${left.scopeType}:${left.scopeKey}`.localeCompare(
-            `${right.scopeType}:${right.scopeKey}`
-          )
-        );
+        const sortedScopes = [...input.scopes].sort(compareScopes);
 
         for (const scope of sortedScopes) {
           await transaction
@@ -359,18 +395,20 @@ export class PostgresQuotaRepository implements QuotaRepository {
     target: Exclude<QuotaReservationStatus, "reserved">
   ): Promise<QuotaReservation> {
     return db.transaction(async (transaction) => {
+      await lockActorForTransition(transaction, input.actorUserId);
       const predicates = [eq(quotaLedger.leaseId, input.leaseId)];
 
       if (input.actorUserId) {
         predicates.push(eq(quotaLedger.actorUserId, input.actorUserId));
       }
 
-      const rows = await transaction
+      const selectedRows = await transaction
         .select()
         .from(quotaLedger)
         .where(and(...predicates))
         .orderBy(asc(quotaLedger.scopeType), asc(quotaLedger.scopeKey))
         .for("update");
+      const rows = [...selectedRows].sort(compareScopes);
 
       if (rows.length === 0) {
         throw new QuotaReservationNotFoundError(input.leaseId);
@@ -415,7 +453,11 @@ export class PostgresQuotaRepository implements QuotaRepository {
         .where(and(...predicates))
         .orderBy(asc(quotaLedger.scopeType), asc(quotaLedger.scopeKey));
 
-      return reservationFromRows(transaction, finalRows, true);
+      return reservationFromRows(
+        transaction,
+        [...finalRows].sort(compareScopes),
+        true
+      );
     });
   }
 }

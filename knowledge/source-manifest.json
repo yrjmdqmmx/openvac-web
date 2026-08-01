@@ -110,10 +110,19 @@
     "canonicalUrl": "https://www.hse.gov.uk/work-equipment-machinery/maintenance.htm",
     "baseUrl": "https://www.hse.gov.uk",
     "sourceTier": "open_license",
-    "licensePolicy": "open_government_licence_after_notice_review",
+    "licensePolicy": "Open Government Licence v3.0",
     "trustLevel": 95,
-    "enabled": false,
-    "notes": "Confirm the page is covered by HSE reuse terms before full-text ingestion."
+    "enabled": true,
+    "rightsDecision": {
+      "status": "approved",
+      "scope": "full_text",
+      "basis": "The HSE copyright notice permits reuse of Crown material on the website under the Open Government Licence. OpenVac excludes logos, images, multimedia and any separately identified third-party material.",
+      "evidenceUrl": "https://www.hse.gov.uk/help/copyright.htm",
+      "appliesToRecordUrl": "https://www.hse.gov.uk/work-equipment-machinery/maintenance.htm",
+      "reviewedBy": "openvac-codex-source-review",
+      "reviewedAt": "2026-08-01T00:00:00.000Z"
+    },
+    "notes": "Contains public sector information published by the Health and Safety Executive and licensed under the Open Government Licence. UK jurisdiction notice required."
   },
   {
     "sourceKey": "hse-dsear",
@@ -123,10 +132,19 @@
     "canonicalUrl": "https://www.hse.gov.uk/fireandexplosion/dsear.htm",
     "baseUrl": "https://www.hse.gov.uk",
     "sourceTier": "open_license",
-    "licensePolicy": "open_government_licence_after_notice_review",
+    "licensePolicy": "Open Government Licence v3.0",
     "trustLevel": 95,
-    "enabled": false,
-    "notes": "Safety source candidate; jurisdiction and local applicability must be stated."
+    "enabled": true,
+    "rightsDecision": {
+      "status": "approved",
+      "scope": "full_text",
+      "basis": "The HSE copyright notice permits reuse of Crown material on the website under the Open Government Licence. OpenVac excludes logos, images, multimedia and any separately identified third-party material.",
+      "evidenceUrl": "https://www.hse.gov.uk/help/copyright.htm",
+      "appliesToRecordUrl": "https://www.hse.gov.uk/fireandexplosion/dsear.htm",
+      "reviewedBy": "openvac-codex-source-review",
+      "reviewedAt": "2026-08-01T00:00:00.000Z"
+    },
+    "notes": "Contains public sector information published by the Health and Safety Executive and licensed under the Open Government Licence. DSEAR is UK law and must not be presented as Chinese legal advice."
   },
   {
     "sourceKey": "hse-oxygen-safety",
@@ -136,10 +154,19 @@
     "canonicalUrl": "https://www.hse.gov.uk/pubns/indg459.htm",
     "baseUrl": "https://www.hse.gov.uk",
     "sourceTier": "open_license",
-    "licensePolicy": "open_government_licence_after_notice_review",
+    "licensePolicy": "Open Government Licence v3.0",
     "trustLevel": 95,
-    "enabled": false,
-    "notes": "High-risk source candidate. Requires expert applicability review."
+    "enabled": true,
+    "rightsDecision": {
+      "status": "approved",
+      "scope": "full_text",
+      "basis": "The HSE copyright notice permits reuse of Crown material on the website and in HSE publications under the Open Government Licence. OpenVac excludes logos, images and separately identified third-party material.",
+      "evidenceUrl": "https://www.hse.gov.uk/help/copyright.htm",
+      "appliesToRecordUrl": "https://www.hse.gov.uk/pubns/indg459.htm",
+      "reviewedBy": "openvac-codex-source-review",
+      "reviewedAt": "2026-08-01T00:00:00.000Z"
+    },
+    "notes": "Contains public sector information published by the Health and Safety Executive and licensed under the Open Government Licence. Oxygen-service applicability requires expert review."
   },
   {
     "sourceKey": "iso-vacuum-standards",

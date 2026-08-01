@@ -3,6 +3,7 @@
 import {
   BookOpen,
   CircleStop,
+  Cuboid,
   HelpCircle,
   LoaderCircle,
   PanelLeftOpen,
@@ -17,7 +18,7 @@ import {
   useRef,
   useState
 } from "react";
-import { ConsultationDialog } from "@/components/chat/consultation-dialog";
+import { ProblemReportDialog } from "@/components/chat/problem-report-dialog";
 import { ConversationSidebar } from "@/components/chat/conversation-sidebar";
 import { ExpertAnswer } from "@/components/chat/expert-answer";
 import {
@@ -26,25 +27,108 @@ import {
   savePendingQuestionDraft,
   type PendingQuestionDraft
 } from "@/lib/pending-question-draft";
-import { parseChatEventStream } from "@/lib/sse";
+import { ChatStreamProtocolError, parseChatEventStream } from "@/lib/sse";
 import type {
   AnswerMeta,
   ChatMessage,
   ConversationSummary
 } from "@/types/chat";
 
+const CONVERSATION_PAGE_SIZE = 20;
+const CONVERSATION_SEARCH_DEBOUNCE_MS = 250;
+
+type ConversationPage = {
+  items: ConversationSummary[];
+  page: number;
+  pageSize: number;
+  total: number;
+};
+
+function conversationHistoryUrl(query: string, page: number) {
+  if (!query && page === 1) return "/api/conversations";
+
+  const params = new URLSearchParams();
+  if (query) params.set("q", query);
+  params.set("page", String(page));
+  params.set("pageSize", String(CONVERSATION_PAGE_SIZE));
+  return `${query ? "/api/conversations/search" : "/api/conversations"}?${params.toString()}`;
+}
+
+function conversationPageFromPayload(
+  payload: {
+    conversations?: ConversationSummary[];
+    items?: ConversationSummary[];
+    page?: number;
+    pageSize?: number;
+    total?: number;
+    data?: {
+      conversations?: ConversationSummary[];
+      items?: ConversationSummary[];
+      page?: number;
+      pageSize?: number;
+      total?: number;
+    };
+  },
+  requestedPage: number
+): ConversationPage {
+  const data = payload.data ?? payload;
+  const items = data.conversations ?? data.items ?? [];
+  return {
+    items,
+    page: data.page ?? requestedPage,
+    pageSize: data.pageSize ?? CONVERSATION_PAGE_SIZE,
+    total: data.total ?? items.length
+  };
+}
+
+function appendUniqueConversations(
+  current: ConversationSummary[],
+  incoming: ConversationSummary[]
+) {
+  const byId = new Map(
+    current.map((conversation) => [conversation.id, conversation])
+  );
+  for (const conversation of incoming) byId.set(conversation.id, conversation);
+  return [...byId.values()];
+}
+
 function makeLocalId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
 }
 
+export function problemReportDescriptionForMessage(
+  messages: ChatMessage[],
+  messageId?: string
+): string {
+  const answerIndex = messageId
+    ? messages.findIndex(
+        (message) => message.id === messageId && message.role === "assistant"
+      )
+    : messages.length;
+  const searchFrom = answerIndex >= 0 ? answerIndex - 1 : messages.length - 1;
+
+  for (let index = searchFrom; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user") return message.content;
+  }
+  return "";
+}
+
 export function ChatWorkspace({
   userId,
-  userName
+  userName,
+  modelingEnabled = false
 }: {
   userId: string;
   userName: string;
+  modelingEnabled?: boolean;
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [conversationQuery, setConversationQuery] = useState("");
+  const [conversationPage, setConversationPage] = useState(1);
+  const [conversationTotal, setConversationTotal] = useState(0);
+  const [conversationHistoryLoading, setConversationHistoryLoading] =
+    useState(false);
   const [conversationId, setConversationId] = useState<string>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -56,34 +140,110 @@ export function ChatWorkspace({
   const [stage, setStage] = useState<string>();
   const [error, setError] = useState<string>();
   const [resetAt, setResetAt] = useState<string>();
-  const [consultOpen, setConsultOpen] = useState(false);
+  const [problemReportOpen, setProblemReportOpen] = useState(false);
+  const [problemReportMessageId, setProblemReportMessageId] = useState<
+    string | undefined
+  >();
   const abortRef = useRef<AbortController | undefined>(undefined);
+  const conversationHistoryAbortRef = useRef<AbortController | undefined>(
+    undefined
+  );
+  const conversationHistoryRequestRef = useRef(0);
+  const conversationDetailAbortRef = useRef<AbortController | undefined>(
+    undefined
+  );
+  const conversationDetailRequestRef = useRef(0);
+  const firstConversationHistoryLoadRef = useRef(true);
+  const conversationQueryRef = useRef("");
   const endRef = useRef<HTMLDivElement>(null);
 
   const busy = Boolean(stage);
 
-  const loadConversations = useCallback(async () => {
-    const response = await fetch("/api/conversations", { cache: "no-store" });
-    if (!response.ok) return;
-    const payload = (await response.json()) as {
-      conversations?: ConversationSummary[];
-      data?: {
-        conversations?: ConversationSummary[];
-        items?: ConversationSummary[];
-      };
-    };
-    setConversations(
-      payload.conversations ??
-        payload.data?.conversations ??
-        payload.data?.items ??
-        []
-    );
-  }, []);
+  const loadConversationPage = useCallback(
+    async ({
+      query,
+      page,
+      append
+    }: {
+      query: string;
+      page: number;
+      append: boolean;
+    }) => {
+      const requestId = ++conversationHistoryRequestRef.current;
+      conversationHistoryAbortRef.current?.abort();
+      const controller = new AbortController();
+      conversationHistoryAbortRef.current = controller;
+      setConversationHistoryLoading(true);
+
+      try {
+        const response = await fetch(conversationHistoryUrl(query, page), {
+          cache: "no-store",
+          signal: controller.signal
+        });
+        if (!response.ok) return;
+        const payload = (await response.json()) as Parameters<
+          typeof conversationPageFromPayload
+        >[0];
+        if (
+          controller.signal.aborted ||
+          requestId !== conversationHistoryRequestRef.current
+        ) {
+          return;
+        }
+
+        const result = conversationPageFromPayload(payload, page);
+        setConversations((current) =>
+          append
+            ? appendUniqueConversations(current, result.items)
+            : result.items
+        );
+        setConversationPage(result.page);
+        setConversationTotal(result.total);
+      } catch (caught) {
+        if (!controller.signal.aborted) {
+          void caught;
+        }
+      } finally {
+        if (requestId === conversationHistoryRequestRef.current) {
+          setConversationHistoryLoading(false);
+        }
+      }
+    },
+    []
+  );
+
+  const normalizedConversationQuery = conversationQuery.trim();
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadConversations(), 0);
+    conversationQueryRef.current = normalizedConversationQuery;
+  }, [normalizedConversationQuery]);
+
+  useEffect(() => {
+    conversationHistoryAbortRef.current?.abort();
+    conversationHistoryRequestRef.current += 1;
+    const delay = firstConversationHistoryLoadRef.current
+      ? 0
+      : CONVERSATION_SEARCH_DEBOUNCE_MS;
+    firstConversationHistoryLoadRef.current = false;
+    const timer = window.setTimeout(
+      () =>
+        void loadConversationPage({
+          query: normalizedConversationQuery,
+          page: 1,
+          append: false
+        }),
+      delay
+    );
     return () => window.clearTimeout(timer);
-  }, [loadConversations]);
+  }, [loadConversationPage, normalizedConversationQuery]);
+
+  useEffect(
+    () => () => {
+      conversationHistoryAbortRef.current?.abort();
+      conversationDetailAbortRef.current?.abort();
+    },
+    []
+  );
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -162,6 +322,7 @@ export function ChatWorkspace({
         let finalMessageId = localAssistantId;
         let finalMeta: AnswerMeta | undefined;
         let completedConversationId = conversationId;
+        let completionSeen = false;
 
         for await (const event of parseChatEventStream(response)) {
           if (event.type === "status") {
@@ -203,6 +364,12 @@ export function ChatWorkspace({
             );
           }
           if (event.type === "complete") {
+            if (completionSeen) {
+              throw new ChatStreamProtocolError(
+                "服务器重复发送了回答完成标记，请刷新对话历史。"
+              );
+            }
+            completionSeen = true;
             finalMessageId = event.messageId;
             finalMeta = event.meta;
             completedConversationId = event.conversationId;
@@ -213,6 +380,12 @@ export function ChatWorkspace({
             });
             throw streamError;
           }
+        }
+
+        if (!completionSeen) {
+          throw new ChatStreamProtocolError(
+            "连接中断，未收到完整的回答。请刷新对话历史后重试。"
+          );
         }
 
         setConversationId(completedConversationId);
@@ -228,7 +401,11 @@ export function ChatWorkspace({
               : message
           )
         );
-        await loadConversations();
+        await loadConversationPage({
+          query: conversationQueryRef.current,
+          page: 1,
+          append: false
+        });
       } catch (caught) {
         if (controller.signal.aborted) {
           setError("已取消本次回答；未完成的回答不会扣除额度。");
@@ -245,7 +422,7 @@ export function ChatWorkspace({
                   status: "error",
                   content:
                     message.content ||
-                    "本次回答未完成。系统已归还预占额度，请稍后重试或转人工咨询。"
+                    "本次回答未完成。系统已归还预占额度，请稍后重试；若持续发生，可提交问题反馈。"
                 }
               : message
           )
@@ -255,7 +432,7 @@ export function ChatWorkspace({
         setStage(undefined);
       }
     },
-    [busy, conversationId, loadConversations, userId]
+    [busy, conversationId, loadConversationPage, userId]
   );
 
   useEffect(() => {
@@ -304,26 +481,46 @@ export function ChatWorkspace({
 
   async function selectConversation(id: string) {
     if (busy) return;
+    const requestId = ++conversationDetailRequestRef.current;
+    conversationDetailAbortRef.current?.abort();
+    const controller = new AbortController();
+    conversationDetailAbortRef.current = controller;
     setConversationId(id);
+    setMessages([]);
     setError(undefined);
-    const response = await fetch(`/api/conversations/${id}`, {
-      cache: "no-store"
-    });
-    if (!response.ok) {
-      setError("无法恢复这段对话。");
-      return;
+    try {
+      const response = await fetch(`/api/conversations/${id}`, {
+        cache: "no-store",
+        signal: controller.signal
+      });
+      if (
+        controller.signal.aborted ||
+        requestId !== conversationDetailRequestRef.current
+      ) {
+        return;
+      }
+      if (!response.ok) {
+        setError("无法恢复这段对话。");
+        return;
+      }
+      const payload = (await response.json()) as {
+        messages?: ChatMessage[];
+        conversation?: { messages?: ChatMessage[] };
+        data?: { messages?: ChatMessage[] };
+      };
+      if (requestId !== conversationDetailRequestRef.current) return;
+      setMessages(
+        payload.messages ??
+          payload.conversation?.messages ??
+          payload.data?.messages ??
+          []
+      );
+    } catch (caught) {
+      if (!controller.signal.aborted) {
+        setError("无法恢复这段对话。");
+      }
+      void caught;
     }
-    const payload = (await response.json()) as {
-      messages?: ChatMessage[];
-      conversation?: { messages?: ChatMessage[] };
-      data?: { messages?: ChatMessage[] };
-    };
-    setMessages(
-      payload.messages ??
-        payload.conversation?.messages ??
-        payload.data?.messages ??
-        []
-    );
   }
 
   async function renameConversation(id: string, title: string) {
@@ -333,11 +530,11 @@ export function ChatWorkspace({
       body: JSON.stringify({ title })
     });
     if (response.ok) {
-      setConversations((current) =>
-        current.map((conversation) =>
-          conversation.id === id ? { ...conversation, title } : conversation
-        )
-      );
+      await loadConversationPage({
+        query: conversationQueryRef.current,
+        page: 1,
+        append: false
+      });
     }
   }
 
@@ -346,35 +543,24 @@ export function ChatWorkspace({
       method: "DELETE"
     });
     if (response.ok) {
-      setConversations((current) =>
-        current.filter((conversation) => conversation.id !== id)
-      );
       if (conversationId === id) {
+        conversationDetailAbortRef.current?.abort();
+        conversationDetailRequestRef.current += 1;
         setConversationId(undefined);
         setMessages([]);
       }
+      await loadConversationPage({
+        query: conversationQueryRef.current,
+        page: 1,
+        append: false
+      });
     }
   }
 
-  const latestProblem = useMemo(
-    () =>
-      [...messages].reverse().find((message) => message.role === "user")
-        ?.content ?? "",
-    [messages]
+  const problemReportDescription = useMemo(
+    () => problemReportDescriptionForMessage(messages, problemReportMessageId),
+    [messages, problemReportMessageId]
   );
-  const conversationSummary = useMemo(
-    () =>
-      messages
-        .slice(-8)
-        .map(
-          (message) =>
-            `${message.role === "user" ? "用户" : "OpenVac"}：${message.content}`
-        )
-        .join("\n")
-        .slice(0, 8000),
-    [messages]
-  );
-
   return (
     <main className="flex h-dvh min-h-[640px] overflow-hidden bg-white">
       <ConversationSidebar
@@ -384,13 +570,27 @@ export function ChatWorkspace({
         onOpenChange={setSidebarOpen}
         onSelect={(id) => void selectConversation(id)}
         onNew={() => {
+          conversationDetailAbortRef.current?.abort();
+          conversationDetailRequestRef.current += 1;
           setConversationId(undefined);
           setMessages([]);
           setError(undefined);
+          setConversationQuery("");
           setSidebarOpen(false);
         }}
         onRename={(id, title) => void renameConversation(id, title)}
         onDelete={(id) => void deleteConversation(id)}
+        searchQuery={conversationQuery}
+        onSearchQueryChange={setConversationQuery}
+        loading={conversationHistoryLoading}
+        hasMore={conversations.length < conversationTotal}
+        onLoadMore={() =>
+          void loadConversationPage({
+            query: conversationQueryRef.current,
+            page: conversationPage + 1,
+            append: true
+          })
+        }
         userName={userName}
       />
 
@@ -415,6 +615,15 @@ export function ChatWorkspace({
               <BookOpen className="h-4 w-4" />
               知识来源
             </Link>
+            {modelingEnabled ? (
+              <Link
+                href="/modeling"
+                className="hidden items-center gap-2 text-[var(--muted)] hover:text-[var(--ink)] sm:flex"
+              >
+                <Cuboid className="h-4 w-4" />
+                智能建模
+              </Link>
+            ) : null}
             <Link
               href="/help"
               aria-label="帮助"
@@ -437,6 +646,24 @@ export function ChatWorkspace({
               <p className="mt-4 max-w-xl text-sm leading-7 text-[var(--muted)]">
                 请尽量提供泵型、介质、入口压力、目标压力、抽速、温度和故障现象。证据不足时，我会先追问。
               </p>
+              {modelingEnabled ? (
+                <Link
+                  href="/modeling"
+                  className="mt-7 flex max-w-md items-center gap-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:border-[var(--border-strong)]"
+                >
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white text-[var(--accent)]">
+                    <Cuboid className="h-5 w-5" />
+                  </span>
+                  <span>
+                    <strong className="block text-sm font-medium">
+                      打开智能建模工作台
+                    </strong>
+                    <span className="mt-1 block text-xs leading-5 text-[var(--muted)]">
+                      手工建模与自然语言计划使用同一个确定性 CAD 内核
+                    </span>
+                  </span>
+                </Link>
+              ) : null}
             </div>
           ) : (
             <div className="px-5 pt-8 sm:px-8">
@@ -454,7 +681,11 @@ export function ChatWorkspace({
                   <ExpertAnswer
                     key={message.id}
                     message={message}
-                    onConsult={() => setConsultOpen(true)}
+                    modelingEnabled={modelingEnabled}
+                    onProblemReport={(messageId) => {
+                      setProblemReportMessageId(messageId);
+                      setProblemReportOpen(true);
+                    }}
                     onFeedback={async (messageId, rating) => {
                       const reporting = rating === "report";
                       const response = await fetch(
@@ -516,10 +747,13 @@ export function ChatWorkspace({
                 </span>
                 <button
                   type="button"
-                  onClick={() => setConsultOpen(true)}
+                  onClick={() => {
+                    setProblemReportMessageId(undefined);
+                    setProblemReportOpen(true);
+                  }}
                   className="font-medium underline underline-offset-4"
                 >
-                  转人工咨询
+                  提交问题反馈
                 </button>
               </div>
             )}
@@ -630,12 +864,12 @@ export function ChatWorkspace({
         </div>
       </section>
 
-      <ConsultationDialog
-        open={consultOpen}
+      <ProblemReportDialog
+        open={problemReportOpen}
         conversationId={conversationId}
-        problem={latestProblem}
-        conversationSummary={conversationSummary}
-        onClose={() => setConsultOpen(false)}
+        messageId={problemReportMessageId}
+        description={problemReportDescription}
+        onClose={() => setProblemReportOpen(false)}
       />
     </main>
   );

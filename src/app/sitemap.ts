@@ -17,7 +17,8 @@ export default function sitemap(): MetadataRoute.Sitemap {
     "/legal/terms",
     "/legal/privacy",
     "/help",
-    "/consult"
+    "/feedback",
+    "/complaints"
   ].map((path) => ({
     url: `${base}${path}`,
     lastModified: new Date(),

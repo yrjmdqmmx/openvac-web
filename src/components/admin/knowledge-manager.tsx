@@ -1,12 +1,15 @@
 "use client";
 
 import {
+  Archive,
+  Check,
   ChevronDown,
   FileSearch,
   LoaderCircle,
   RotateCcw,
   Search,
-  Upload
+  Upload,
+  X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -72,6 +75,9 @@ function reviewState(status?: string): DisplayState {
   }
   if (status === "rejected" || status === "failed") {
     return { label: "人审未通过", tone: "negative" };
+  }
+  if (status === "invalidated") {
+    return { label: "内容已变化，审核失效", tone: "negative" };
   }
   if (status === "required" || status === "pending_review") {
     return { label: "待人工复核", tone: "warning" };
@@ -188,8 +194,11 @@ export function KnowledgeManager() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [actioning, setActioning] = useState<"publish" | "rollback">();
+  const [actioning, setActioning] = useState<
+    "approve" | "reject" | "publish" | "archive" | "rollback"
+  >();
   const [actionError, setActionError] = useState("");
+  const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -240,24 +249,54 @@ export function KnowledgeManager() {
   }, [documents, query]);
 
   const selected = documents.find((document) => document.id === selectedId);
+  const reviewNote = selected
+    ? (reviewNotes[selected.id] ?? selected.reviewNote ?? "")
+    : "";
 
-  async function action(name: "publish" | "rollback") {
+  async function action(
+    name: "approve" | "reject" | "publish" | "archive" | "rollback"
+  ) {
     if (!selected) return;
     if (name === "publish" && selected.publishReady !== true) return;
-    if (name === "rollback" && !selected.previousPublishedVersionId) return;
+    if (
+      name === "rollback" &&
+      (selected.status !== "published" || !selected.previousPublishedVersionId)
+    ) {
+      return;
+    }
+    if (name === "archive" && selected.status === "archived") return;
+    if (
+      (name === "approve" || name === "reject") &&
+      (!selected.currentVersionId || !selected.contentHash)
+    ) {
+      return;
+    }
+    if (name === "reject" && !reviewNote.trim()) {
+      setActionError("驳回知识时必须填写审核备注。");
+      return;
+    }
 
     setActioning(name);
     setActionError("");
     try {
       const response = await fetch(
-        `/api/admin/knowledge/${selected.id}/${name}`,
+        `/api/admin/knowledge/${selected.id}/${
+          name === "approve" || name === "reject" ? "review" : name
+        }`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(
             name === "rollback"
               ? { versionId: selected.previousPublishedVersionId }
-              : {}
+              : name === "approve" || name === "reject"
+                ? {
+                    versionId: selected.currentVersionId,
+                    expectedContentHash: selected.contentHash,
+                    decision: name === "approve" ? "approved" : "rejected",
+                    ...(reviewNote.trim() ? { note: reviewNote.trim() } : {})
+                  }
+                : {}
           )
         }
       );
@@ -265,15 +304,37 @@ export function KnowledgeManager() {
         setActionError(
           await responseError(
             response,
-            name === "publish" ? "发布失败，请重试。" : "回滚失败，请重试。"
+            name === "approve"
+              ? "批准失败，请重试。"
+              : name === "reject"
+                ? "驳回失败，请重试。"
+                : name === "publish"
+                  ? "发布失败，请重试。"
+                  : name === "archive"
+                    ? "归档失败，请重试。"
+                    : "回滚失败，请重试。"
           )
         );
         return;
       }
+      setReviewNotes((current) => {
+        if (!(selected.id in current)) return current;
+        const next = { ...current };
+        delete next[selected.id];
+        return next;
+      });
       await refresh();
     } catch {
       setActionError(
-        name === "publish" ? "发布失败，请重试。" : "回滚失败，请重试。"
+        name === "approve"
+          ? "批准失败，请重试。"
+          : name === "reject"
+            ? "驳回失败，请重试。"
+            : name === "publish"
+              ? "发布失败，请重试。"
+              : name === "archive"
+                ? "归档失败，请重试。"
+                : "回滚失败，请重试。"
       );
     } finally {
       setActioning(undefined);
@@ -287,6 +348,12 @@ export function KnowledgeManager() {
         ? (selected.publishBlockers[0] ?? "尚未满足发布门禁。")
         : undefined
     : undefined;
+  const reviewable = Boolean(
+    selected &&
+    (selected.status === "draft" || selected.status === "review") &&
+    selected.currentVersionId &&
+    selected.contentHash
+  );
 
   return (
     <div className="grid min-h-[calc(100vh-60px)] xl:grid-cols-[minmax(0,1fr)_390px]">
@@ -511,7 +578,58 @@ export function KnowledgeManager() {
                   value={selected.contentHash ?? "未返回"}
                   mono
                 />
+                <DetailRow
+                  term="审核失效时间"
+                  value={formatDateTime(selected.reviewInvalidatedAt)}
+                />
               </dl>
+              <label className="mt-5 block text-xs font-medium text-[var(--muted)]">
+                审核备注
+                <textarea
+                  value={reviewNote}
+                  onChange={(event) =>
+                    setReviewNotes((current) => ({
+                      ...current,
+                      [selected.id]: event.target.value
+                    }))
+                  }
+                  maxLength={2000}
+                  rows={4}
+                  disabled={actioning !== undefined}
+                  placeholder="记录批准依据；驳回时必须填写原因"
+                  className="mt-2 w-full resize-y rounded-lg border border-[var(--border)] bg-transparent p-3 text-sm leading-6 text-[var(--ink)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
+                />
+              </label>
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => void action("approve")}
+                  disabled={!reviewable || actioning !== undefined}
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[var(--accent)] text-sm font-medium text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  {actioning === "approve" ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Check className="h-4 w-4" />
+                  )}
+                  {actioning === "approve" ? "批准中…" : "批准"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void action("reject")}
+                  disabled={
+                    !reviewable || !reviewNote.trim() || actioning !== undefined
+                  }
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[var(--danger)] text-sm font-medium text-[var(--danger)] disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  {actioning === "reject" ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <X className="h-4 w-4" />
+                  )}
+                  {actioning === "reject" ? "驳回中…" : "驳回"}
+                </button>
+              </div>
             </section>
 
             <section className="mt-7 border-t border-[var(--border)] pt-6">
@@ -573,6 +691,7 @@ export function KnowledgeManager() {
                 type="button"
                 onClick={() => void action("rollback")}
                 disabled={
+                  selected.status !== "published" ||
                   !selected.previousPublishedVersionId ||
                   actioning !== undefined
                 }
@@ -584,6 +703,21 @@ export function KnowledgeManager() {
                   <RotateCcw className="h-4 w-4" />
                 )}
                 {actioning === "rollback" ? "回滚中…" : "回滚至上一版"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void action("archive")}
+                disabled={
+                  selected.status === "archived" || actioning !== undefined
+                }
+                className="inline-flex h-11 w-full items-center justify-center gap-2 text-sm font-medium text-[var(--muted)] disabled:cursor-not-allowed disabled:opacity-30"
+              >
+                {actioning === "archive" ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Archive className="h-4 w-4" />
+                )}
+                {actioning === "archive" ? "归档中…" : "归档文档"}
               </button>
             </div>
 

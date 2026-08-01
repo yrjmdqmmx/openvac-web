@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { Brand } from "@/components/brand";
+import { isModelingEnabled } from "@/server/modeling/feature-flag";
 
 export function SiteHeader() {
+  const modelingEnabled = isModelingEnabled();
   return (
     <header className="shell flex h-[92px] items-center justify-between">
       <Brand />
@@ -9,6 +11,14 @@ export function SiteHeader() {
         className="flex items-center gap-6 text-sm font-medium sm:gap-9 sm:text-base"
         aria-label="主导航"
       >
+        {modelingEnabled ? (
+          <Link
+            href="/modeling"
+            className="hidden transition-colors hover:text-[var(--accent)] sm:block"
+          >
+            智能建模
+          </Link>
+        ) : null}
         <Link
           href="/sources"
           className="hidden transition-colors hover:text-[var(--accent)] sm:block"

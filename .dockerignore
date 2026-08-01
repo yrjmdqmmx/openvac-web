@@ -2,6 +2,10 @@
 .github
 .next
 node_modules
+**/.venv
+**/.pytest_cache
+**/__pycache__
+**/*.egg-info
 coverage
 playwright-report
 test-results

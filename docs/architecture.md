@@ -36,10 +36,16 @@ The UI never receives provider keys or a selectable model list.
 
 - Better Auth identity, credentials, verification, and sessions
 - quota buckets and idempotent reservation ledger
-- conversations, messages, citations, feedback, and consultations
+- conversations, messages, citations, message feedback, and problem reports
 - source registry, knowledge documents, versions, chunks, and embeddings
 - provider/tool invocations, prompt versions, evaluations, and budgets
 - administrator roles, system settings, and append-only audit logs
+
+Problem-report rows carry a maximum 180-day retention deadline. Optional
+contact details are scheduled for deletion 30 days after a report is closed.
+The maintenance cleanup command enforces both deadlines when it runs; its
+recurring staging timer still requires deployment verification before public
+launch.
 
 ## Answer contract
 
@@ -52,4 +58,7 @@ Every completed answer contains these headings in order:
 5. 建议下一步
 
 Evidence absence is a valid product outcome: the agent asks for missing inputs,
-states uncertainty, or opens a confirmed human consultation.
+states uncertainty, or recommends contacting the equipment manufacturer or a
+qualified on-site professional. Problem reports are a separate product-quality
+channel, require explicit context/contact consent, do not promise a reply, and
+do not provide emergency support.

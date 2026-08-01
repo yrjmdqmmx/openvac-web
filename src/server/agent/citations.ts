@@ -1,4 +1,5 @@
 import { hostnameAllowed, normalizeDomain } from "../providers/runtime";
+import type { ModelingCard } from "@/types/chat";
 
 export type LicenseClass =
   "open" | "public_domain" | "metadata_only" | "private_authorized" | "unknown";
@@ -18,6 +19,7 @@ export interface AnswerMeta {
   missingInputs: string[];
   webSearched: boolean;
   citations: Citation[];
+  modelingCards?: ModelingCard[];
 }
 
 export interface CitationValidationOptions {

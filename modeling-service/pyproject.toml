@@ -1,0 +1,40 @@
+[project]
+name = "openvac-modeling-service"
+version = "0.1.0"
+description = "Isolated CadQuery/OCP execution service for OpenVac modeling documents"
+requires-python = ">=3.12,<3.13"
+license = { text = "AGPL-3.0-only" }
+dependencies = [
+  "cadquery==2.8.0",
+  "cadquery-ocp==7.9.3.1.1",
+  "fastapi==0.116.1",
+  "pydantic==2.11.7",
+  "python-multipart==0.0.20",
+  "slvs==3.2",
+  "uvicorn[standard]==0.35.0",
+  "vtk==9.6.2",
+]
+
+[project.scripts]
+openvac-modeling-benchmark = "app.benchmark:main"
+
+[project.optional-dependencies]
+test = [
+  "httpx==0.28.1",
+  "pytest==8.4.1",
+  "pytest-timeout==2.4.0",
+  "ruff==0.12.5",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+timeout = 30
+
+[tool.setuptools.data-files]
+"share/openvac-modeling/fixtures" = ["tests/fixtures/rotary_vane_pump_v1.json"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["build"]

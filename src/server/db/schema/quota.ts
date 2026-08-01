@@ -15,7 +15,11 @@ import {
 
 import { user } from "./auth";
 
-export const quotaResource = pgEnum("quota_resource", ["answer", "web_search"]);
+export const quotaResource = pgEnum("quota_resource", [
+  "answer",
+  "web_search",
+  "model_attempt"
+]);
 
 export const quotaScope = pgEnum("quota_scope", ["user", "global"]);
 
