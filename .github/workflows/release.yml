@@ -415,9 +415,23 @@ jobs:
           esac
           docker_config="$remote_stage/docker-config"
           [ -d "$docker_config" ] && [ ! -L "$docker_config" ] || exit 64
+          run_with_heartbeat() {
+            operation_label="$1"
+            shift
+            "$@" &
+            operation_pid="$!"
+            while kill -0 "$operation_pid" 2>/dev/null; do
+              printf 'OpenVac %s is still running (pid=%s)\n' \
+                "$operation_label" "$operation_pid" >&2
+              sleep 30
+            done
+            wait "$operation_pid"
+          }
           sh "$remote_stage/bundle/deploy/preflight-host.sh" "$target" >&2
-          DOCKER_CONFIG="$docker_config" docker pull "$release_modeling_image" >&2
-          docker run --rm \
+          run_with_heartbeat "modeling image pull" \
+            env DOCKER_CONFIG="$docker_config" \
+            docker pull "$release_modeling_image" >&2
+          run_with_heartbeat "modeling benchmark" docker run --rm \
             --network none \
             --read-only \
             --tmpfs /tmp:size=2g,uid=10001,gid=10001,mode=1770 \
@@ -427,14 +441,7 @@ jobs:
             --memory 4g \
             --cpus 2 \
             "$release_modeling_image" \
-            python -m app.benchmark --case all --iterations "$iterations" &
-          benchmark_pid="$!"
-          while kill -0 "$benchmark_pid" 2>/dev/null; do
-            printf 'OpenVac modeling benchmark is still running (pid=%s)\n' \
-              "$benchmark_pid" >&2
-            sleep 30
-          done
-          wait "$benchmark_pid"
+            python -m app.benchmark --case all --iterations "$iterations"
           REMOTE_BENCHMARK
           benchmark_status="$?"
           set -e
