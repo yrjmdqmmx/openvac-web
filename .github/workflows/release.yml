@@ -417,7 +417,7 @@ jobs:
           [ -d "$docker_config" ] && [ ! -L "$docker_config" ] || exit 64
           sh "$remote_stage/bundle/deploy/preflight-host.sh" "$target" >&2
           DOCKER_CONFIG="$docker_config" docker pull "$release_modeling_image" >&2
-          exec docker run --rm \
+          docker run --rm \
             --network none \
             --read-only \
             --tmpfs /tmp:size=2g,uid=10001,gid=10001,mode=1770 \
@@ -427,7 +427,14 @@ jobs:
             --memory 4g \
             --cpus 2 \
             "$release_modeling_image" \
-            python -m app.benchmark --case all --iterations "$iterations"
+            python -m app.benchmark --case all --iterations "$iterations" &
+          benchmark_pid="$!"
+          while kill -0 "$benchmark_pid" 2>/dev/null; do
+            printf 'OpenVac modeling benchmark is still running (pid=%s)\n' \
+              "$benchmark_pid" >&2
+            sleep 30
+          done
+          wait "$benchmark_pid"
           REMOTE_BENCHMARK
           benchmark_status="$?"
           set -e
