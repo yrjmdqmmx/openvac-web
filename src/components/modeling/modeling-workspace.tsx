@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -121,7 +122,7 @@ export function ModelingWorkspace({
   );
   const [isolatedSemanticId, setIsolatedSemanticId] = useState<string>();
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     stateRef.current = state;
   }, [state]);
 
