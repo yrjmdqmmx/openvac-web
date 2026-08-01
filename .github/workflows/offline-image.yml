@@ -80,24 +80,22 @@ jobs:
           cache-to: type=gha,scope=modeling-offline,mode=max
       - id: modeling_identity
         name: Record archive image identity
-        env:
-          MODELING_BUILD_METADATA: ${{ steps.modeling_build.outputs.metadata }}
         run: |
           set -eu
-          config_digest="$(
-            printf '%s' "$MODELING_BUILD_METADATA" |
-              jq --raw-output '."containerimage.config.digest" // empty'
+          config_file="$(
+            tar -xOf "$RUNNER_TEMP/openvac-modeling-image.tar" manifest.json |
+              jq --raw-output 'if length == 1 then .[0].Config else empty end'
           )"
-          case "$config_digest" in
-            sha256:*) ;;
-            *) echo "Modeling archive did not expose a SHA-256 config digest" >&2; exit 1 ;;
+          case "$config_file" in
+            *.json) ;;
+            *) echo "Modeling archive did not expose one Docker config JSON" >&2; exit 1 ;;
           esac
-          digest="${config_digest#sha256:}"
+          digest="${config_file%.json}"
           case "$digest" in
             ""|*[!0-9a-f]*) exit 1 ;;
           esac
           test "${#digest}" -eq 64
-          printf 'config_digest=%s\n' "$config_digest" >>"$GITHUB_OUTPUT"
+          printf 'config_digest=sha256:%s\n' "$digest" >>"$GITHUB_OUTPUT"
       - name: Compress and checksum modeling archive
         run: |
           zstd --threads=0 --rm "$RUNNER_TEMP/openvac-modeling-image.tar"

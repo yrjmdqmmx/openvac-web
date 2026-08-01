@@ -161,6 +161,9 @@ describe("deployment Compose project isolation", () => {
       "modeling_config_digest: ${{ steps.modeling_identity.outputs.config_digest }}"
     );
     expect(offline).toContain(
+      'tar -xOf "$RUNNER_TEMP/openvac-modeling-image.tar" manifest.json'
+    );
+    expect(offline).toContain(
       'if [ "$loaded_id" != "$archive_config_digest" ]'
     );
     expect(offline).toContain('docker pull "$release_modeling_image"');
