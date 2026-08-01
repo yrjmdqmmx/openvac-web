@@ -6,16 +6,17 @@ fail() {
   exit 64
 }
 
-if [ "$#" -ne 6 ]; then
-  fail "expected DEPLOY_DIR RELEASE_ID BUNDLE_DIR IMAGE COMPOSE_PROJECT HEALTH_URL"
+if [ "$#" -ne 7 ]; then
+  fail "expected DEPLOY_DIR RELEASE_ID BUNDLE_DIR WEB_IMAGE MODELING_IMAGE COMPOSE_PROJECT HEALTH_URL"
 fi
 
 deploy_dir="$1"
 release_id="$2"
 bundle_dir="$3"
 release_image="$4"
-compose_project="$5"
-health_url="$6"
+release_modeling_image="$5"
+compose_project="$6"
+health_url="$7"
 
 case "$deploy_dir:$compose_project" in
   /opt/openvac:openvac-production) ;;
@@ -32,20 +33,31 @@ case "$release_id" in
 esac
 [ "${#release_id}" -eq 40 ] || fail "release ID must be a 40-character commit SHA"
 
-image_name="${release_image%@sha256:*}"
-image_digest="${release_image##*@sha256:}"
-case "$image_name" in
-  ghcr.io/?*) ;;
-  *) fail "release image must be an immutable GHCR digest" ;;
-esac
-case "$image_name" in
-  *[!A-Za-z0-9._/-]*|*//*|*/) fail "release image contains an invalid GHCR repository name" ;;
-esac
-case "$image_digest" in
-  ""|*[!0-9a-f]*) fail "release image must contain a lowercase SHA-256 digest" ;;
-esac
-[ "${#image_digest}" -eq 64 ] ||
-  fail "release image must contain a 64-character SHA-256 digest"
+validate_release_image() {
+  image="$1"
+  label="$2"
+  image_name="${image%@sha256:*}"
+  image_digest="${image##*@sha256:}"
+  case "$image_name" in
+    ghcr.io/?*) ;;
+    *) fail "$label must be an immutable GHCR digest" ;;
+  esac
+  case "$image_name" in
+    *[!a-z0-9._/-]*|*//*|*/) fail "$label contains an invalid GHCR repository name" ;;
+  esac
+  case "$image_digest" in
+    ""|*[!0-9a-f]*) fail "$label must contain a lowercase SHA-256 digest" ;;
+  esac
+  [ "${#image_digest}" -eq 64 ] ||
+    fail "$label must contain a 64-character SHA-256 digest"
+}
+
+validate_release_image "$release_image" "web release image"
+web_image_digest="${release_image##*@sha256:}"
+validate_release_image "$release_modeling_image" "modeling release image"
+modeling_image_digest="${release_modeling_image##*@sha256:}"
+[ "$web_image_digest" != "$modeling_image_digest" ] ||
+  fail "web and modeling release images must have distinct digests"
 
 case "$health_url" in
   https://*|http://127.0.0.1:*) ;;
@@ -124,7 +136,8 @@ fi
 
 if ! OPENVAC_HEALTH_URL="$health_url" \
   sh "$release_dir/deploy/deploy.sh" \
-  "$deploy_dir" "$release_image" "$compose_project"; then
+  "$deploy_dir" "$release_image" "$release_modeling_image" \
+  "$compose_project"; then
   echo "deployment failed; current-release was not changed" >&2
   exit 1
 fi

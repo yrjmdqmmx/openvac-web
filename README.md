@@ -17,11 +17,11 @@ The released Q&A product boundary is intentionally narrow:
 - role-based operations for users, conversations, sources, prompts, budgets,
   problem reports, and audit logs.
 
-The `codex/openvac-modeling-v1` branch adds a deterministic CAD workbench behind
-the fail-closed `MODELING_ENABLED` flag. It is development-stage code until the
-CAD, interoperability, and original rotary-vane-pump acceptance gates are run
-on the target Debian host; it must not be described as production-ready before
-those results exist.
+The repository includes a deterministic CAD workbench behind the fail-closed
+`MODELING_ENABLED` flag. It remains development-stage code until the CAD,
+interoperability, and original rotary-vane-pump acceptance gates are run on the
+target Debian host; it must not be described as production-ready before those
+results exist.
 
 The released Q&A surface does **not** make final engineering decisions, expose
 a deterministic pump calculator, display live inventory or prices, process
@@ -181,9 +181,13 @@ and secrets remain on Alibaba Cloud ECS. Deploy staging first at
 `staging-openvac.openvac.cn`; production at `openvac.cn`
 requires a manually approved GitHub environment.
 
-The deployment workflow uses immutable image digests, applies migrations before
-starting the new containers, and checks `/api/health`. A failed migration stops
-the release; a failed health check starts the previous image.
+The deployment workflow builds separate web and CAD-kernel images from the same
+verified default-branch SHA and activates their immutable digests as one release
+set. Before switching, it enforces host resources, runs target-host CAD
+benchmarks, checks authenticated CAD readiness, and performs a real private-OSS
+put/get/signed-download/delete round trip. A failed migration, runtime check, or
+health check restores the previous release set. Production additionally
+requires a successful staging deployment for the exact same SHA.
 
 Public launch remains blocked until HTTPS, ICP status, legal pages, complaint
 contact details, AI-generated-content labelling, model filing disclosure, the

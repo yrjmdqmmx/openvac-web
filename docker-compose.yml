@@ -178,7 +178,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+          "import os, urllib.request; request = urllib.request.Request('http://127.0.0.1:8080/ready', headers={'x-openvac-service-token': os.environ.get('MODELING_SERVICE_TOKEN', '')}); urllib.request.urlopen(request, timeout=3)"
         ]
       interval: 15s
       timeout: 5s

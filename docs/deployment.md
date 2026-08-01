@@ -14,10 +14,11 @@ Copy `deploy/audit-ecs.sh` to the intended host and run it explicitly with
 Do not deploy unless OpenVac can retain at least 2 vCPU, 4 GB memory budget, and
 30 GB disk after accounting for existing services.
 
-`deploy/deploy.sh` repeats the disk check immediately before Docker pulls or a
-migration. It requires at least 31,457,280 KiB (30 GiB) available on the target
-filesystem and fails closed if `df` cannot return a numeric value. The audit is
-informational; the deploy-time check is the release gate.
+`deploy/preflight-host.sh` repeats the resource check before any Docker pull or
+container execution. It requires at least 2 logical CPUs, 3,800,000 KiB of
+visible memory (a nominal 4 GB host), and 31,457,280 KiB (30 GiB) available on
+the target filesystem. Missing or non-numeric host data fails closed. The audit
+is informational; this deploy-time preflight is the release gate.
 
 ## 2. Isolated Compose projects
 
@@ -44,13 +45,21 @@ default-branch history. Before building anything, the workflow queries the
 GitHub Actions API for a completed, successful `CI` run whose `head_sha` is that
 exact commit, whose source repository is this repository, whose `head_branch`
 is the default branch, and whose event was a push or manual CI run. Both the
-image build and deployment-bundle checkout then use that same SHA. The image is
-deployed by digest, not by a mutable tag.
+image builds and deployment-bundle checkout then use that same SHA. The web and
+CAD-kernel images are built separately, must have distinct immutable digests,
+and are deployed as one release set; mutable tags are never used for
+activation. The ECS host authenticates to the private GHCR package with the
+job-scoped GitHub token in an ephemeral mode-`0700` Docker configuration. The
+token is supplied through `docker login --password-stdin` and both the token
+file and temporary Docker configuration are removed after the run.
 
 This rule applies to both staging and production. A feature-branch CI result is
 never a deployment credential: branch code can change its own CI and deployment
 scripts, while the ECS deployment credential can modify the host. Test a feature
 branch through CI, merge it, and deploy the resulting default-branch commit.
+Production additionally requires the latest GitHub deployment status for the
+same SHA in the `staging` environment to be `success`; a successful run for a
+different SHA cannot authorize production.
 
 Create these two GitHub environments before enabling the workflow:
 
@@ -93,8 +102,15 @@ GitHub environment secrets:
 - `ECS_USER`
 - `ECS_SSH_KEY`
 - `ECS_KNOWN_HOSTS`
+- `MODELING_SERVICE_TOKEN` (exactly 64 lowercase hexadecimal characters)
 
-Staging and production are separate GitHub environments as described above.
+Generate independent modeling-service tokens for staging and production. The
+release sends a token only over standard input to
+`deploy/configure-modeling-runtime.sh`, which atomically updates the target
+mode-`0600` `.env` without printing the value. An existing valid token cannot
+be replaced by the release workflow; rotation requires a separate approved
+procedure. Staging and production are separate GitHub environments as
+described above.
 
 ### Alibaba Cloud DirectMail
 
@@ -165,7 +181,12 @@ sh deploy/configure-staging-secrets.sh user@ecs-host
 2. Install the new Nginx file under a new filename.
 3. Obtain the dedicated TLS certificate.
 4. Run `nginx -t`, then reload Nginx.
-5. Trigger the workflow with target `staging`.
+5. Trigger the workflow with the exact default-branch SHA, target `staging`,
+   and `enable_modeling=true`. Before changing the active release it runs all
+   modeling benchmarks for 20 iterations in the isolated CAD image, starts the
+   authenticated CAD service, and verifies a private-OSS put/get/signed-HTTPS-
+   download/delete round trip. Benchmark JSON is retained as a 30-day workflow
+   artifact. Missing OSS credentials or any failed round trip stops the release.
 6. Exercise registration, verification, reset, 20-way quota concurrency,
    citation links, message feedback, problem reports, admin roles,
    publishing/rollback, and budget circuit breaking.
@@ -176,25 +197,39 @@ sh deploy/configure-staging-secrets.sh user@ecs-host
    failure, and `restore-drill.sh`. Confirm both failures restart and health
    check the previous application image while `current-release` remains
    unchanged.
-9. Trigger production only after the signed acceptance record.
+9. Trigger production with the same SHA only after the signed staging
+   acceptance record. Production repeats the complete benchmark suite once as
+   a smoke check and repeats CAD/OSS runtime verification before activation.
 
 Migrations must remain backward-compatible with the previously deployed
 application. Before every managed upgrade, `deploy.sh` requires a successful
 logical backup from the active release; a running container without a
 `current-release` record is treated as an unmanaged state and refused. On
-migration, container-start, or health failure, `deploy.sh` explicitly restarts
-the previous image and requires its health check to pass. It does not
+migration, runtime-verification, container-start, or health failure,
+`deploy.sh` explicitly restarts the previous web/worker and modeling release
+set and requires its health checks to pass. It does not
 automatically restore the database because doing so can discard live writes;
 use the pre-release backup and an approved recovery procedure for a data
 rollback.
+
+Migration `0007_consultation_rollback_compat.sql` keeps `problem_report` as the
+single source of truth while exposing a writable `security_invoker`
+`consultation` compatibility view for the previously deployed application.
+This is what allows an application-image rollback after the irreversible
+`0002` table rename. The current Compose deployment uses the database owner as
+its runtime role. If migration and runtime roles are separated later, grant the
+runtime role access to both the view and base table explicitly and add a
+split-role integration test. Rows whose historical `resolved`/`closed`
+distinction was already collapsed by `0002` fall back to `closed`; that lost
+historical distinction cannot be reconstructed from the current database.
 
 ### Offline staging bootstrap
 
 If the ECS host cannot reach Docker Hub, manually dispatch
 `.github/workflows/offline-image.yml` from the exact release branch. The job
-builds a `linux/amd64` application archive and exports the pinned
-`pgvector/pgvector:pg17` database image as a separate archive. Each artifact
-has a SHA-256 checksum and is retained for one day. Download and verify both
+builds separate `linux/amd64` web and CAD-kernel archives and exports the pinned
+`pgvector/pgvector:pg17` database image as a third archive. Each artifact has a
+SHA-256 checksum and is retained for one day. Download and verify all three
 locally, then stream each decompressed archive to `docker load` over the
 approved SSH path. The workflow never receives ECS credentials and never
 connects to the server.

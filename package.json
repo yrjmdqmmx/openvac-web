@@ -15,6 +15,7 @@
     "start": "next start",
     "worker": "tsx src/worker/index.ts",
     "modeling:worker": "tsx src/modeling-worker/index.ts",
+    "modeling:verify-runtime": "tsx scripts/verify-modeling-runtime.ts",
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

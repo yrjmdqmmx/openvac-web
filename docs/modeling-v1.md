@@ -2,11 +2,11 @@
 
 ## 当前状态
 
-本分支实现的是可验证的 V1 工程基线，不是已经通过目标服务器验收的生产发布。生产配置默认 `MODELING_ENABLED=false`；只有通用 CAD、装配/互操作、原创旋片泵三层门槛全部留有测试证据后，才可显式打开。
+当前代码实现的是可验证的 V1 工程基线，不是已经通过目标服务器验收的生产发布。发布工作流可显式设置 `enable_modeling=true`，但只会在目标机资源预检、完整 CAD 基准、鉴权 `/ready` 和私有 OSS 真实往返全部成功后切换；任一检查失败都会保持上一版本。没有目标机工作流证据时不得描述为已上线。
 
 现有 `/api/chat` 仍只负责有证据的问答。CAD 项目、版本、计划、任务和制品均使用独立 `/api/modeling/**` 边界，AI 不能执行 Python、Shell 或任意 CadQuery 代码。
 
-数据库变更位于 `drizzle/0006_sour_roulette.sql`，明确排在知识源治理、问题报告与 V1 安全加固迁移 `0001`–`0005` 之后；它一次创建 8 张 `modeling_*` 表及对应枚举、外键、索引和约束。
+建模表变更位于 `drizzle/0006_sour_roulette.sql`，明确排在知识源治理、问题报告与 V1 安全加固迁移 `0001`–`0005` 之后；它一次创建 8 张 `modeling_*` 表及对应枚举、外键、索引和约束。随后 `0007_consultation_rollback_compat.sql` 为旧应用镜像提供问题报告兼容视图，使建模版本部署失败时仍可回滚应用 release set，而不创建第二份问题报告事实表。
 
 ## 架构与信任边界
 
@@ -67,6 +67,7 @@ docker compose --profile modeling up -d postgres modeling-service
 pnpm db:migrate
 pnpm dev
 pnpm modeling:worker
+pnpm modeling:verify-runtime # 需要真实、私有 OSS 和已启动的鉴权 CAD 服务
 ```
 
 确定性验证：
@@ -77,6 +78,8 @@ pnpm vitest run src/lib/modeling src/server/modeling src/modeling-worker src/com
 modeling-service/.venv/bin/python -m pytest -q
 modeling-service/.venv/bin/python -m app.benchmark --case all --iterations 20
 ```
+
+正式发布构建同一 Git SHA 的独立 Web 与 CAD 镜像，并以两个不可变 digest 作为一个 release set。Staging 在切换前运行上述完整基准 20 次并保存 JSON 制品；Production 只接受相同 SHA 已成功部署到 staging 的记录，并再运行 1 次完整 smoke。两端都必须通过私有 OSS 的 put/get/签名 HTTPS 下载/delete 校验。
 
 ## 默认运行限制
 
