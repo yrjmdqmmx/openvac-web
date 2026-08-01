@@ -165,6 +165,7 @@ jobs:
     outputs:
       web_digest: ${{ steps.web_build.outputs.digest }}
       modeling_digest: ${{ steps.modeling_build.outputs.digest }}
+      modeling_archive_config_digest: ${{ steps.modeling_archive_identity.outputs.config_digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -209,6 +210,51 @@ jobs:
           labels: ${{ steps.modeling_meta.outputs.labels }}
           cache-from: type=gha,scope=modeling
           cache-to: type=gha,scope=modeling,mode=max
+      - name: Build the same-run modeling deployment archive
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./modeling-service
+          platforms: linux/amd64
+          push: false
+          tags: ghcr.io/${{ github.repository }}:modeling-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          labels: |
+            ${{ steps.modeling_meta.outputs.labels }}
+            org.opencontainers.image.revision=${{ inputs.commit_sha }}
+          outputs: type=docker,dest=${{ runner.temp }}/openvac-modeling-release.tar
+          cache-from: type=gha,scope=modeling
+      - id: modeling_archive_identity
+        name: Record the archive config identity
+        run: |
+          set -eu
+          config_file="$(
+            tar -xOf "$RUNNER_TEMP/openvac-modeling-release.tar" manifest.json |
+              jq --raw-output 'if length == 1 then .[0].Config else empty end'
+          )"
+          case "$config_file" in
+            blobs/sha256/*) digest="${config_file#blobs/sha256/}" ;;
+            *.json) digest="${config_file%.json}" ;;
+            *) echo "Modeling archive exposed an unsupported config path" >&2; exit 1 ;;
+          esac
+          case "$digest" in
+            ""|*[!0-9a-f]*) exit 1 ;;
+          esac
+          test "${#digest}" -eq 64
+          printf 'config_digest=sha256:%s\n' "$digest" >>"$GITHUB_OUTPUT"
+      - name: Compress and checksum the modeling deployment archive
+        run: |
+          set -eu
+          zstd --threads=0 --rm "$RUNNER_TEMP/openvac-modeling-release.tar"
+          cd "$RUNNER_TEMP"
+          sha256sum openvac-modeling-release.tar.zst > openvac-modeling-release.tar.zst.sha256
+      - name: Upload the same-run modeling deployment archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: openvac-modeling-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/openvac-modeling-release.tar.zst
+            ${{ runner.temp }}/openvac-modeling-release.tar.zst.sha256
+          if-no-files-found: error
+          retention-days: 1
 
   deploy:
     needs: [ci_gate, image]
@@ -225,6 +271,11 @@ jobs:
         with:
           ref: ${{ inputs.commit_sha }}
           persist-credentials: false
+      - name: Download the same-run modeling deployment archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: openvac-modeling-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/openvac-modeling-release
       - name: Configure SSH
         env:
           ECS_SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
@@ -247,6 +298,7 @@ jobs:
           GHCR_USERNAME: ${{ github.actor }}
           WEB_IMAGE_DIGEST: ${{ needs.image.outputs.web_digest }}
           MODELING_IMAGE_DIGEST: ${{ needs.image.outputs.modeling_digest }}
+          MODELING_ARCHIVE_CONFIG_DIGEST: ${{ needs.image.outputs.modeling_archive_config_digest }}
           RELEASE_SHA: ${{ inputs.commit_sha }}
         run: |
           set -Eeuo pipefail
@@ -297,11 +349,33 @@ jobs:
             fi
           }
           validate_release_image "$release_image" "Web image"
-          validate_release_image "$release_modeling_image" "Modeling image"
+          validate_release_image "$release_modeling_image" "Modeling registry image"
+          validate_digest() {
+            value="$1"
+            label="$2"
+            case "$value" in
+              sha256:*) digest="${value#sha256:}" ;;
+              *) echo "$label must use sha256" >&2; exit 64 ;;
+            esac
+            case "$digest" in
+              ""|*[!0-9a-f]*) echo "$label must be lowercase hexadecimal" >&2; exit 64 ;;
+            esac
+            test "${#digest}" -eq 64
+          }
+          validate_digest "$MODELING_ARCHIVE_CONFIG_DIGEST" "Modeling archive config digest"
           if [ "$WEB_IMAGE_DIGEST" = "$MODELING_IMAGE_DIGEST" ]; then
             echo "Web and modeling images must have distinct digests" >&2
             exit 64
           fi
+          release_modeling_registry_image="$release_modeling_image"
+          release_modeling_image="$image_repository@$MODELING_ARCHIVE_CONFIG_DIGEST"
+
+          archive_dir="$RUNNER_TEMP/openvac-modeling-release"
+          modeling_archive="$archive_dir/openvac-modeling-release.tar.zst"
+          modeling_archive_checksum="$modeling_archive.sha256"
+          test -f "$modeling_archive" && test ! -L "$modeling_archive"
+          test -f "$modeling_archive_checksum" && test ! -L "$modeling_archive_checksum"
+          (cd "$archive_dir" && sha256sum --check "$(basename "$modeling_archive_checksum")")
           case "$TARGET" in
             production)
               deploy_dir="/opt/openvac"
@@ -384,19 +458,29 @@ jobs:
           sh bundle/deploy/authenticate-ghcr.sh "$remote_stage" "$ghcr_username"
           REMOTE_PREPARE
 
+          echo "Streaming the checksum-verified same-run modeling archive"
+          zstd --decompress --stdout "$modeling_archive" |
+            dd bs=4M status=progress |
+            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+              -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+              "$ECS_USER@$ECS_HOST" docker load
+
           set +e
           ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
             "$ECS_USER@$ECS_HOST" \
             sh -s -- "$remote_stage" "$release_modeling_image" \
+            "$MODELING_ARCHIVE_CONFIG_DIGEST" "$release_id" \
             "$benchmark_iterations" "$TARGET" >"$benchmark_file" <<'REMOTE_BENCHMARK'
           set -eu
-          if [ "$#" -ne 4 ]; then
+          if [ "$#" -ne 6 ]; then
             exit 64
           fi
           remote_stage="$1"
           release_modeling_image="$2"
-          iterations="$3"
-          target="$4"
+          expected_modeling_id="$3"
+          release_id="$4"
+          iterations="$5"
+          target="$6"
           case "$remote_stage" in
             /tmp/openvac-deploy-*) ;;
             *) exit 64 ;;
@@ -405,6 +489,14 @@ jobs:
             ghcr.io/*@sha256:*) ;;
             *) exit 64 ;;
           esac
+          case "$expected_modeling_id" in
+            sha256:*) ;;
+            *) exit 64 ;;
+          esac
+          case "$release_id" in
+            ""|*[!0-9a-f]*) exit 64 ;;
+          esac
+          [ "${#release_id}" -eq 40 ] || exit 64
           case "$iterations" in
             1|20) ;;
             *) exit 64 ;;
@@ -428,9 +520,20 @@ jobs:
             wait "$operation_pid"
           }
           sh "$remote_stage/bundle/deploy/preflight-host.sh" "$target" >&2
-          run_with_heartbeat "modeling image pull" \
-            env DOCKER_CONFIG="$docker_config" \
-            docker pull "$release_modeling_image" >&2
+          loaded_modeling_id="$(docker image inspect --format '{{.Id}}' "$release_modeling_image")"
+          [ "$loaded_modeling_id" = "$expected_modeling_id" ] || {
+            echo "Loaded modeling image ID does not match the same-run archive" >&2
+            exit 1
+          }
+          loaded_revision="$(
+            docker image inspect \
+              --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+              "$release_modeling_image"
+          )"
+          [ "$loaded_revision" = "$release_id" ] || {
+            echo "Loaded modeling image revision does not match the release commit" >&2
+            exit 1
+          }
           run_with_heartbeat "modeling benchmark" docker run --rm \
             --network none \
             --read-only \
@@ -487,9 +590,10 @@ jobs:
             "$ECS_USER@$ECS_HOST" \
             sh -s -- \
             "$remote_stage" "$deploy_dir" "$release_id" "$release_image" \
-            "$release_modeling_image" "$compose_project" "$health_url" <<'REMOTE_ACTIVATE'
+            "$release_modeling_image" "$MODELING_ARCHIVE_CONFIG_DIGEST" \
+            "$compose_project" "$health_url" <<'REMOTE_ACTIVATE'
           set -eu
-          if [ "$#" -ne 7 ]; then
+          if [ "$#" -ne 8 ]; then
             exit 64
           fi
           remote_stage="$1"
@@ -497,8 +601,9 @@ jobs:
           release_id="$3"
           release_image="$4"
           release_modeling_image="$5"
-          compose_project="$6"
-          health_url="$7"
+          modeling_archive_config_digest="$6"
+          compose_project="$7"
+          health_url="$8"
           case "$remote_stage" in
             /tmp/openvac-deploy-*) ;;
             *) exit 64 ;;
@@ -506,7 +611,9 @@ jobs:
           docker_config="$remote_stage/docker-config"
           [ -d "$docker_config" ] && [ ! -L "$docker_config" ] || exit 64
           [ "$(stat -c '%a' "$docker_config")" = 700 ] || exit 64
-          DOCKER_CONFIG="$docker_config" sh "$remote_stage/bundle/deploy/activate-bundle.sh" \
+          DOCKER_CONFIG="$docker_config" \
+            OPENVAC_MODELING_PRELOADED_ID="$modeling_archive_config_digest" \
+            sh "$remote_stage/bundle/deploy/activate-bundle.sh" \
             "$deploy_dir" "$release_id" "$remote_stage/bundle" \
             "$release_image" "$release_modeling_image" "$compose_project" \
             "$health_url"
@@ -525,6 +632,8 @@ jobs:
 
           printf 'release_image=%s\n' "$release_image" >>"$GITHUB_OUTPUT"
           printf 'release_modeling_image=%s\n' "$release_modeling_image" >>"$GITHUB_OUTPUT"
+          printf 'release_modeling_registry_image=%s\n' \
+            "$release_modeling_registry_image" >>"$GITHUB_OUTPUT"
           cleanup_release_staging
           trap - EXIT HUP INT TERM
       - name: Upload modeling benchmark evidence

@@ -340,8 +340,37 @@ fi
 
 echo "Pulling immutable web release $release_image"
 echo "Pulling immutable modeling release $release_modeling_image"
-OPENVAC_IMAGE="$release_image" OPENVAC_MODELING_IMAGE="$release_modeling_image" \
-  release_compose pull web worker modeling-service modeling-worker
+if [ -n "${OPENVAC_MODELING_PRELOADED_ID:-}" ]; then
+  case "$OPENVAC_MODELING_PRELOADED_ID" in
+    sha256:*) ;;
+    *)
+      echo "preloaded modeling image ID must use sha256" >&2
+      exit 64
+      ;;
+  esac
+  preloaded_digest="${OPENVAC_MODELING_PRELOADED_ID#sha256:}"
+  case "$preloaded_digest" in
+    ""|*[!0-9a-f]*)
+      echo "preloaded modeling image ID must be lowercase hexadecimal" >&2
+      exit 64
+      ;;
+  esac
+  [ "${#preloaded_digest}" -eq 64 ] || {
+    echo "preloaded modeling image ID must contain 64 hexadecimal characters" >&2
+    exit 64
+  }
+  actual_modeling_id="$(docker image inspect --format '{{.Id}}' "$release_modeling_image")"
+  [ "$actual_modeling_id" = "$OPENVAC_MODELING_PRELOADED_ID" ] || {
+    echo "preloaded modeling image does not match its verified archive identity" >&2
+    exit 1
+  }
+  echo "Using checksum-verified preloaded modeling release $actual_modeling_id"
+  OPENVAC_IMAGE="$release_image" OPENVAC_MODELING_IMAGE="$release_modeling_image" \
+    release_compose pull web worker modeling-worker
+else
+  OPENVAC_IMAGE="$release_image" OPENVAC_MODELING_IMAGE="$release_modeling_image" \
+    release_compose pull web worker modeling-service modeling-worker
+fi
 
 echo "Verifying the configured DeepSeek model against /models"
 if ! OPENVAC_IMAGE="$release_image" OPENVAC_MODELING_IMAGE="$release_modeling_image" \
