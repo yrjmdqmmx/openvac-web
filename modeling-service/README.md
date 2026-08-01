@@ -4,11 +4,17 @@ This service is the deterministic CAD executor behind the OpenVac web applicatio
 
 ## Responsibilities
 
-- Solve bounded 2D sketches with SolveSpace `slvs` in a fresh subprocess.
+- Solve bounded 2D sketches with SolveSpace `slvs` in an isolated subprocess.
 - Build valid B-Rep solids and assemblies with CadQuery/OCP/OCCT.
 - Generate private STEP, STL, and GLB artifacts.
 - Build and validate the original `OpenVac-RV1` single-stage rotary-vane reference model.
 - Contain native-kernel crashes and timeouts outside the Next.js process.
+
+Native calls are serialized through one reusable child process. SolveSpace,
+VTK, CadQuery, and OCCT are loaded before readiness. A timeout, cancellation,
+or native crash destroys that process, and the next request starts a clean one.
+This keeps the native isolation boundary without adding library cold-start time
+to every interactive edit.
 
 The pump validator combines deterministic analytic invariants with OCCT B-Rep
 evidence. It samples the rotating group at a circular step no larger than one
@@ -63,8 +69,8 @@ MODELING_ARTIFACT_ROOT=./storage/artifacts .venv/bin/pytest
 MODELING_ARTIFACT_ROOT=./storage/artifacts .venv/bin/uvicorn app.main:app --reload
 ```
 
-Run the same isolated subprocess path used by production for the three latency
-acceptance cases:
+Run the same reusable isolated subprocess path used by production for the three
+latency acceptance cases:
 
 ```bash
 .venv/bin/python -m app.benchmark --case all --iterations 20

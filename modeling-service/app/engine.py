@@ -40,6 +40,12 @@ def _cadquery():
     return cq
 
 
+def preload_cad_kernel() -> None:
+    """Load VTK, CadQuery and OCCT once inside the isolated kernel process."""
+
+    _cadquery()
+
+
 def _kernel_version(cq: Any) -> str:
     """Report both the DSL facade and the OCCT binding used for B-Rep work."""
 

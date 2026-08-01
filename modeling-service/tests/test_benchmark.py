@@ -98,3 +98,32 @@ def test_pump_benchmark_loads_the_canonical_versioned_fixture() -> None:
 def test_nearest_rank_p95_is_deterministic() -> None:
     assert percentile_nearest_rank([5, 1, 3, 2, 4], 0.5) == 3
     assert percentile_nearest_rank(list(range(1, 101)), 0.95) == 95
+
+
+def test_acceptance_benchmark_uses_the_reusable_isolated_kernel(monkeypatch, tmp_path) -> None:
+    import app.benchmark as benchmark_module
+
+    calls: list[tuple[str, str]] = []
+
+    class FakeExecutor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc_info):
+            return None
+
+        def start(self, timeout_seconds):
+            assert timeout_seconds == 30
+            return 123.4567
+
+        def call(self, module_name, function_name, *_args, timeout_seconds):
+            calls.append((module_name, function_name))
+            return {"timeout_seconds": timeout_seconds}
+
+    monkeypatch.setattr(benchmark_module, "ReusableIsolatedExecutor", FakeExecutor)
+    report = benchmark_module.run_benchmarks("sketch", 2, tmp_path)
+
+    assert calls == [("app.sketch_solver", "solve_sketch_payload")] * 2
+    assert report["includes_process_isolation"] is True
+    assert report["execution_model"] == "serial_reusable_process"
+    assert report["kernel_startup_ms"] == 123.457

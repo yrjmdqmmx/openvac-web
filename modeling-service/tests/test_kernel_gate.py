@@ -20,7 +20,7 @@ def test_native_kernel_requests_are_globally_single_flight(monkeypatch) -> None:
             return args[-1]
 
         monkeypatch.setattr(main_module, "_kernel_semaphore", asyncio.Semaphore(1))
-        monkeypatch.setattr(main_module, "run_isolated_async", fake_isolated)
+        monkeypatch.setattr(main_module._kernel_executor, "call_async", fake_isolated)
         results = await asyncio.gather(
             main_module._run_kernel_single_flight("module", "function", "first", timeout_seconds=1),
             main_module._run_kernel_single_flight(
@@ -51,7 +51,7 @@ def test_kernel_queue_wait_counts_toward_deadline_and_releases_slot(
             return label
 
         monkeypatch.setattr(main_module, "_kernel_semaphore", asyncio.Semaphore(1))
-        monkeypatch.setattr(main_module, "run_isolated_async", fake_isolated)
+        monkeypatch.setattr(main_module._kernel_executor, "call_async", fake_isolated)
         first = asyncio.create_task(
             main_module._run_kernel_single_flight("module", "function", "first", timeout_seconds=1)
         )
@@ -87,7 +87,7 @@ def test_cancelling_active_kernel_request_releases_global_slot(monkeypatch) -> N
             return label
 
         monkeypatch.setattr(main_module, "_kernel_semaphore", asyncio.Semaphore(1))
-        monkeypatch.setattr(main_module, "run_isolated_async", fake_isolated)
+        monkeypatch.setattr(main_module._kernel_executor, "call_async", fake_isolated)
         active = asyncio.create_task(
             main_module._run_kernel_single_flight(
                 "module", "function", "cancelled", timeout_seconds=1
