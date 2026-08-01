@@ -1,7 +1,16 @@
 import Link from "next/link";
-import { BookOpenText, Code2, ShieldCheck } from "lucide-react";
+import {
+  ArrowRight,
+  BookOpenText,
+  Code2,
+  Cuboid,
+  ShieldCheck
+} from "lucide-react";
 import { HomePrompt } from "@/components/home-prompt";
 import { SiteHeader } from "@/components/site-header";
+import { isModelingEnabled } from "@/server/modeling/feature-flag";
+
+export const dynamic = "force-dynamic";
 
 const principles = [
   {
@@ -22,6 +31,8 @@ const principles = [
 ];
 
 export default function HomePage() {
+  const modelingEnabled = isModelingEnabled();
+
   return (
     <main className="min-h-screen bg-white">
       <SiteHeader />
@@ -41,6 +52,18 @@ export default function HomePage() {
             AI
             生成内容仅供排查参考；涉及拆机、电气或危险介质时，请由合格人员操作。
           </p>
+          {modelingEnabled ? (
+            <div className="mt-7 flex justify-center">
+              <Link
+                href="/modeling"
+                className="inline-flex min-h-11 items-center gap-2 rounded-full border border-[var(--border-strong)] px-5 py-2.5 text-sm font-medium transition-colors hover:border-[var(--ink)] hover:text-[var(--accent)] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--accent)]"
+              >
+                <Cuboid className="h-4 w-4" strokeWidth={1.7} />
+                进入智能建模工作台
+                <ArrowRight className="h-4 w-4" strokeWidth={1.7} />
+              </Link>
+            </div>
+          ) : null}
         </div>
       </section>
 
