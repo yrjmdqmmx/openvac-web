@@ -222,10 +222,13 @@ describe("deployment Compose project isolation", () => {
       '[ "$release_modeling_image" = "openvac-modeling-release:$modeling_image_digest" ]'
     );
     expect(release).toContain(
-      'release_modeling_image="openvac-modeling-release:$modeling_config_hex"'
+      'release_modeling_image="openvac-modeling-release:${loaded_modeling_id#sha256:}"'
     );
     expect(release).toContain(
-      'docker image tag "$loaded_modeling_tag" "$release_modeling_image"'
+      'docker image tag "$loaded_modeling_tag" "openvac-modeling-release:$loaded_hex"'
+    );
+    expect(release).toContain(
+      'validate_digest "$loaded_modeling_id" "Loaded modeling image ID"'
     );
     expect(deploy).toContain("release_compose pull web worker modeling-worker");
     expect(deploy).toContain(
