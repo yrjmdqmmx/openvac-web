@@ -37,6 +37,11 @@ describe("deployment Compose project isolation", () => {
     expect(release).toContain(
       "modeling_digest: ${{ steps.modeling_build.outputs.digest }}"
     );
+    expect(release).toContain("web_archive_config_digest:");
+    expect(release).toContain("openvac-web-release.tar.zst.sha256");
+    expect(release).toContain(
+      'OPENVAC_WEB_PRELOADED_ID="$web_archive_config_digest"'
+    );
     expect(release).toContain("context: ./modeling-service");
     expect(release).toContain(
       'image_repository="ghcr.io/${GITHUB_REPOSITORY,,}"'
@@ -233,6 +238,41 @@ describe("deployment Compose project isolation", () => {
     expect(deploy).toContain("release_compose pull web worker modeling-worker");
     expect(deploy).toContain(
       "release_compose pull web worker modeling-service modeling-worker"
+    );
+  });
+
+  it("streams and verifies the web archive before skipping all registry pulls", () => {
+    const deploy = source("deploy/deploy.sh");
+    const release = source(".github/workflows/release.yml");
+
+    expect(release).toContain(
+      "outputs: type=docker,dest=${{ runner.temp }}/openvac-web-release.tar"
+    );
+    expect(release).toContain(
+      "name: openvac-web-release-${{ github.run_id }}-${{ github.run_attempt }}"
+    );
+    expect(release).toContain('zstd --decompress --stdout "$web_archive"');
+    expect(release).toContain(
+      'docker image tag "$loaded_web_tag" "openvac-web-release:$loaded_hex"'
+    );
+    expect(release).toContain(
+      '[ "$loaded_web_id" = "$WEB_ARCHIVE_CONFIG_DIGEST" ]'
+    );
+    expect(release).toContain(
+      'release_image="openvac-web-release:${loaded_web_id#sha256:}"'
+    );
+    expect(deploy).toContain('if [ -n "${OPENVAC_WEB_PRELOADED_ID:-}" ]');
+    expect(deploy).toContain(
+      'actual_web_id="$(docker image inspect --format \'{{.Id}}\' "$release_image")"'
+    );
+    expect(deploy).toContain(
+      '[ "$actual_web_id" = "$OPENVAC_WEB_PRELOADED_ID" ]'
+    );
+    expect(deploy).toContain(
+      'if [ "$web_preloaded" = true ] && [ "$modeling_preloaded" = true ]'
+    );
+    expect(deploy).toContain(
+      'echo "Both release images are verified local archives; registry pull skipped"'
     );
   });
 

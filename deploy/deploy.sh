@@ -58,8 +58,32 @@ validate_release_image() {
   }
 }
 
-validate_release_image "$release_image" "web release image"
-web_image_digest="${release_image##*@sha256:}"
+if [ -n "${OPENVAC_WEB_PRELOADED_ID:-}" ]; then
+  case "$OPENVAC_WEB_PRELOADED_ID" in
+    sha256:*) web_image_digest="${OPENVAC_WEB_PRELOADED_ID#sha256:}" ;;
+    *)
+      echo "preloaded web image ID must use sha256" >&2
+      exit 64
+      ;;
+  esac
+  case "$web_image_digest" in
+    ""|*[!0-9a-f]*)
+      echo "preloaded web image ID must be lowercase hexadecimal" >&2
+      exit 64
+      ;;
+  esac
+  [ "${#web_image_digest}" -eq 64 ] || {
+    echo "preloaded web image ID must contain 64 hexadecimal characters" >&2
+    exit 64
+  }
+  [ "$release_image" = "openvac-web-release:$web_image_digest" ] || {
+    echo "preloaded web reference must be content-addressed by its image ID" >&2
+    exit 64
+  }
+else
+  validate_release_image "$release_image" "web release image"
+  web_image_digest="${release_image##*@sha256:}"
+fi
 if [ -n "${OPENVAC_MODELING_PRELOADED_ID:-}" ]; then
   case "$OPENVAC_MODELING_PRELOADED_ID" in
     sha256:*) modeling_image_digest="${OPENVAC_MODELING_PRELOADED_ID#sha256:}" ;;
@@ -362,8 +386,37 @@ else
   echo "No current release is recorded; treating this as a first deployment"
 fi
 
-echo "Pulling immutable web release $release_image"
-echo "Pulling immutable modeling release $release_modeling_image"
+echo "Preparing immutable web release $release_image"
+echo "Preparing immutable modeling release $release_modeling_image"
+web_preloaded=false
+if [ -n "${OPENVAC_WEB_PRELOADED_ID:-}" ]; then
+  case "$OPENVAC_WEB_PRELOADED_ID" in
+    sha256:*) ;;
+    *)
+      echo "preloaded web image ID must use sha256" >&2
+      exit 64
+      ;;
+  esac
+  preloaded_web_digest="${OPENVAC_WEB_PRELOADED_ID#sha256:}"
+  case "$preloaded_web_digest" in
+    ""|*[!0-9a-f]*)
+      echo "preloaded web image ID must be lowercase hexadecimal" >&2
+      exit 64
+      ;;
+  esac
+  [ "${#preloaded_web_digest}" -eq 64 ] || {
+    echo "preloaded web image ID must contain 64 hexadecimal characters" >&2
+    exit 64
+  }
+  actual_web_id="$(docker image inspect --format '{{.Id}}' "$release_image")"
+  [ "$actual_web_id" = "$OPENVAC_WEB_PRELOADED_ID" ] || {
+    echo "preloaded web image does not match its verified archive identity" >&2
+    exit 1
+  }
+  echo "Using checksum-verified preloaded web release $actual_web_id"
+  web_preloaded=true
+fi
+modeling_preloaded=false
 if [ -n "${OPENVAC_MODELING_PRELOADED_ID:-}" ]; then
   case "$OPENVAC_MODELING_PRELOADED_ID" in
     sha256:*) ;;
@@ -389,6 +442,15 @@ if [ -n "${OPENVAC_MODELING_PRELOADED_ID:-}" ]; then
     exit 1
   }
   echo "Using checksum-verified preloaded modeling release $actual_modeling_id"
+  modeling_preloaded=true
+fi
+
+if [ "$web_preloaded" = true ] && [ "$modeling_preloaded" = true ]; then
+  echo "Both release images are verified local archives; registry pull skipped"
+elif [ "$web_preloaded" = true ]; then
+  OPENVAC_IMAGE="$release_image" OPENVAC_MODELING_IMAGE="$release_modeling_image" \
+    release_compose pull modeling-service
+elif [ "$modeling_preloaded" = true ]; then
   OPENVAC_IMAGE="$release_image" OPENVAC_MODELING_IMAGE="$release_modeling_image" \
     release_compose pull web worker modeling-worker
 else
