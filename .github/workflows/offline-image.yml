@@ -32,6 +32,8 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    outputs:
+      modeling_config_digest: ${{ steps.modeling_identity.outputs.config_digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -64,7 +66,8 @@ jobs:
             ${{ runner.temp }}/openvac-image.tar.zst.sha256
           if-no-files-found: error
           retention-days: 1
-      - name: Build pinned linux/amd64 modeling image archive
+      - id: modeling_build
+        name: Build pinned linux/amd64 modeling image archive
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ./modeling-service
@@ -75,6 +78,26 @@ jobs:
           outputs: type=docker,dest=${{ runner.temp }}/openvac-modeling-image.tar
           cache-from: type=gha,scope=modeling-offline
           cache-to: type=gha,scope=modeling-offline,mode=max
+      - id: modeling_identity
+        name: Record archive image identity
+        env:
+          MODELING_BUILD_METADATA: ${{ steps.modeling_build.outputs.metadata }}
+        run: |
+          set -eu
+          config_digest="$(
+            printf '%s' "$MODELING_BUILD_METADATA" |
+              jq --raw-output '."containerimage.config.digest" // empty'
+          )"
+          case "$config_digest" in
+            sha256:*) ;;
+            *) echo "Modeling archive did not expose a SHA-256 config digest" >&2; exit 1 ;;
+          esac
+          digest="${config_digest#sha256:}"
+          case "$digest" in
+            ""|*[!0-9a-f]*) exit 1 ;;
+          esac
+          test "${#digest}" -eq 64
+          printf 'config_digest=%s\n' "$config_digest" >>"$GITHUB_OUTPUT"
       - name: Compress and checksum modeling archive
         run: |
           zstd --threads=0 --rm "$RUNNER_TEMP/openvac-modeling-image.tar"
@@ -139,6 +162,7 @@ jobs:
           ECS_USER: ${{ secrets.ECS_USER }}
           GHCR_PULL_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USERNAME: ${{ github.actor }}
+          ARCHIVE_MODELING_CONFIG_DIGEST: ${{ needs.image.outputs.modeling_config_digest }}
           RELEASE_MODELING_DIGEST: ${{ inputs.release_modeling_digest }}
           RELEASE_MODELING_CONFIG_DIGEST: ${{ inputs.release_modeling_config_digest }}
         run: |
@@ -162,8 +186,9 @@ jobs:
               exit 64
             fi
           }
+          validate_digest "$ARCHIVE_MODELING_CONFIG_DIGEST" "Archive modeling config digest"
           validate_digest "$RELEASE_MODELING_DIGEST" "Release modeling digest"
-          validate_digest "$RELEASE_MODELING_CONFIG_DIGEST" "Modeling config digest"
+          validate_digest "$RELEASE_MODELING_CONFIG_DIGEST" "Release modeling config digest"
           case "$GHCR_USERNAME" in
             ""|-*|*[!A-Za-z0-9-]*)
               echo "GitHub actor is not a safe GHCR username" >&2
@@ -201,26 +226,37 @@ jobs:
           scp -i "$HOME/.ssh/openvac" -o BatchMode=yes \
             "$token_file" "$ECS_USER@$ECS_HOST:$remote_stage/openvac-ghcr-token"
 
-          echo "Streaming checksum-verified modeling archive to staging Docker"
-          zstd --decompress --stdout "$archive" |
-            dd bs=4M status=progress |
+          if ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+            "$ECS_USER@$ECS_HOST" \
+            docker image inspect "$ARCHIVE_MODELING_CONFIG_DIGEST" >/dev/null 2>&1; then
+            echo "Reusing the checksum-verified archive image already loaded on staging"
             ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
-              -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
-              "$ECS_USER@$ECS_HOST" docker load
+              "$ECS_USER@$ECS_HOST" \
+              docker image tag "$ARCHIVE_MODELING_CONFIG_DIGEST" "$loaded_tag"
+          else
+            echo "Streaming checksum-verified modeling archive to staging Docker"
+            zstd --decompress --stdout "$archive" |
+              dd bs=4M status=progress |
+              ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+                -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+                "$ECS_USER@$ECS_HOST" docker load
+          fi
 
           ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
             "$ECS_USER@$ECS_HOST" sh -s -- \
             "$remote_stage" "$GHCR_USERNAME" "$loaded_tag" \
+            "$ARCHIVE_MODELING_CONFIG_DIGEST" \
             "$RELEASE_MODELING_CONFIG_DIGEST" "$release_modeling_image" <<'REMOTE_VERIFY'
           set -eu
-          if [ "$#" -ne 5 ]; then
+          if [ "$#" -ne 6 ]; then
             exit 64
           fi
           remote_stage="$1"
           ghcr_username="$2"
           loaded_tag="$3"
-          expected_config_digest="$4"
-          release_modeling_image="$5"
+          archive_config_digest="$4"
+          release_config_digest="$5"
+          release_modeling_image="$6"
           case "$remote_stage" in
             /tmp/openvac-preload-*) ;;
             *) exit 64 ;;
@@ -230,8 +266,8 @@ jobs:
             *) exit 64 ;;
           esac
           loaded_id="$(docker image inspect --format '{{.Id}}' "$loaded_tag")"
-          if [ "$loaded_id" != "$expected_config_digest" ]; then
-            echo "Loaded archive config digest does not match the release manifest" >&2
+          if [ "$loaded_id" != "$archive_config_digest" ]; then
+            echo "Loaded archive config digest does not match its build output" >&2
             exit 1
           fi
 
@@ -256,7 +292,7 @@ jobs:
           run_with_heartbeat env DOCKER_CONFIG="$docker_config" \
             docker pull "$release_modeling_image"
           resolved_id="$(docker image inspect --format '{{.Id}}' "$release_modeling_image")"
-          if [ "$resolved_id" != "$expected_config_digest" ]; then
+          if [ "$resolved_id" != "$release_config_digest" ]; then
             echo "Pulled digest resolves to an unexpected image config" >&2
             exit 1
           fi
@@ -269,7 +305,8 @@ jobs:
             echo "### Staging modeling image preload"
             echo
             echo "- Archive SHA-256: verified"
-            echo "- Image config: \`$RELEASE_MODELING_CONFIG_DIGEST\`"
+            echo "- Archive image config: \`$ARCHIVE_MODELING_CONFIG_DIGEST\`"
+            echo "- Release image config: \`$RELEASE_MODELING_CONFIG_DIGEST\`"
             echo "- Registry digest: \`$RELEASE_MODELING_DIGEST\`"
             echo "- Service activation: not performed"
           } >>"$GITHUB_STEP_SUMMARY"
