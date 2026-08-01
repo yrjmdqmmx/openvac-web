@@ -26,8 +26,29 @@
     {
       "idx": 3,
       "version": "7",
-      "when": 1785569206696,
-      "tag": "0003_first_eddie_brock",
+      "when": 1785567316663,
+      "tag": "0003_account_deletion_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1785567411667,
+      "tag": "0004_famous_daimon_hellstrom",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785568982857,
+      "tag": "0005_sharp_lady_deathstrike",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785572552851,
+      "tag": "0006_sour_roulette",
       "breakpoints": true
     }
   ]

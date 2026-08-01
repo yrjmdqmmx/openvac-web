@@ -97,7 +97,13 @@ export async function collectEvidence(input: {
     // A search reservation measures an outbound paid attempt. Commit before
     // handing control to the provider so downstream failures cannot be used
     // to recycle the same global paid-search budget.
-    await commitQuota({ leaseId, userId: input.userId });
+    const committedReservation = await commitQuota({
+      leaseId,
+      userId: input.userId
+    });
+    if (committedReservation.status !== "committed") {
+      throw new Error("联网搜索额度未能确认提交。");
+    }
     searchQuotaCommitted = true;
 
     const search = await getWebSearchProvider().search({

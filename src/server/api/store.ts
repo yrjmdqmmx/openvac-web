@@ -52,6 +52,10 @@ import {
   problemReportRetentionUntil
 } from "@/server/problem-reports/retention";
 import { storedProblemReportAssociations } from "@/server/problem-reports/context-policy";
+import {
+  PROBLEM_REPORT_SUBMISSION_LIMIT,
+  PROBLEM_REPORT_SUBMISSION_WINDOW_MS
+} from "@/server/problem-reports/submission-policy";
 
 import { ApiError } from "./errors";
 import { auditLogReadPolicy } from "./audit-policy";
@@ -861,12 +865,23 @@ export const apiStore: ApiStore = {
       assertCurrentOwnerRole(currentActorRole);
 
       const [target] = await tx
-        .select({ id: users.id })
+        .select({
+          id: users.id,
+          deletionRequestedAt: users.deletionRequestedAt
+        })
         .from(users)
         .where(eq(users.id, userId))
-        .limit(1);
+        .limit(1)
+        .for("key share");
       if (!target) {
         return null;
+      }
+      if (target.deletionRequestedAt) {
+        throw new ApiError(
+          409,
+          "ACCOUNT_DELETION_IN_PROGRESS",
+          "账号正在删除，不能再授予管理员角色。"
+        );
       }
 
       const [created] = await tx
@@ -1374,104 +1389,155 @@ export const apiStore: ApiStore = {
   },
 
   async createProblemReport(userId, input, audit) {
-    let conversationId = input.conversationId;
-
-    if (input.messageId) {
-      const [ownedMessage] = await db
-        .select({
-          id: messages.id,
-          conversationId: messages.conversationId
-        })
-        .from(messages)
-        .innerJoin(conversations, eq(messages.conversationId, conversations.id))
-        .where(
-          and(
-            eq(messages.id, input.messageId),
-            eq(conversations.userId, userId),
-            ne(conversations.status, "deleted"),
-            isNull(conversations.deletedAt)
-          )
-        )
-        .limit(1);
-
-      if (
-        !ownedMessage ||
-        (conversationId && conversationId !== ownedMessage.conversationId)
-      ) {
-        return null;
-      }
-      conversationId = ownedMessage.conversationId;
-    }
-
-    let ownedConversation:
-      { id: string; title: string; summary: string | null } | undefined;
-    if (conversationId) {
-      [ownedConversation] = await db
-        .select({
-          id: conversations.id,
-          title: conversations.title,
-          summary: conversations.summary
-        })
-        .from(conversations)
-        .where(
-          and(
-            eq(conversations.id, conversationId),
-            eq(conversations.userId, userId),
-            ne(conversations.status, "deleted"),
-            isNull(conversations.deletedAt)
-          )
-        )
-        .limit(1);
-
-      if (!ownedConversation) {
-        return null;
-      }
-    }
-
-    if (input.includeContext && !ownedConversation) {
-      return null;
-    }
-
-    const now = new Date();
-    let context: Record<string, unknown> = {};
-    if (input.includeContext && ownedConversation) {
-      const recentMessages = await db
-        .select({
-          id: messages.id,
-          role: messages.role,
-          content: messages.content,
-          createdAt: messages.createdAt
-        })
-        .from(messages)
-        .where(eq(messages.conversationId, ownedConversation.id))
-        .orderBy(desc(messages.createdAt), desc(messages.id))
-        .limit(8);
-
-      context = {
-        conversationId: ownedConversation.id,
-        title: ownedConversation.title,
-        summary: ownedConversation.summary,
-        messages: recentMessages.reverse().map((message) => ({
-          id: message.id,
-          role: message.role,
-          content: message.content,
-          createdAt: message.createdAt.toISOString()
-        })),
-        capturedAt: now.toISOString()
-      };
-    }
-
-    const id = crypto.randomUUID();
-    const storedAssociations = storedProblemReportAssociations({
-      includeContext: input.includeContext,
-      conversationId,
-      messageId: input.messageId
-    });
     return db.transaction(async (tx) => {
+      // Serialize submissions for one account across all application replicas.
+      // This makes the replay check and sliding-window count one atomic gate.
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${userId}, 1967086383::bigint))`
+      );
+
+      const [replay] = await tx
+        .select({
+          id: problemReports.id,
+          status: problemReports.status,
+          createdAt: problemReports.createdAt
+        })
+        .from(problemReports)
+        .where(
+          and(
+            eq(problemReports.userId, userId),
+            eq(problemReports.clientRequestId, input.clientRequestId)
+          )
+        )
+        .limit(1);
+      if (replay) {
+        return { ...replay, created: false };
+      }
+
+      const now = new Date();
+      const windowStart = new Date(
+        now.getTime() - PROBLEM_REPORT_SUBMISSION_WINDOW_MS
+      );
+      const [recentCount] = await tx
+        .select({ value: count() })
+        .from(problemReports)
+        .where(
+          and(
+            eq(problemReports.userId, userId),
+            gte(problemReports.createdAt, windowStart)
+          )
+        );
+      if (Number(recentCount?.value ?? 0) >= PROBLEM_REPORT_SUBMISSION_LIMIT) {
+        throw new ApiError(
+          429,
+          "PROBLEM_REPORT_RATE_LIMITED",
+          "问题反馈提交过于频繁，请稍后再试。",
+          {
+            limit: PROBLEM_REPORT_SUBMISSION_LIMIT,
+            windowSeconds: PROBLEM_REPORT_SUBMISSION_WINDOW_MS / 1000
+          }
+        );
+      }
+
+      let conversationId = input.conversationId;
+      if (input.messageId) {
+        const [ownedMessage] = await tx
+          .select({
+            id: messages.id,
+            conversationId: messages.conversationId
+          })
+          .from(messages)
+          .innerJoin(
+            conversations,
+            eq(messages.conversationId, conversations.id)
+          )
+          .where(
+            and(
+              eq(messages.id, input.messageId),
+              eq(conversations.userId, userId),
+              ne(conversations.status, "deleted"),
+              isNull(conversations.deletedAt)
+            )
+          )
+          .limit(1);
+
+        if (
+          !ownedMessage ||
+          (conversationId && conversationId !== ownedMessage.conversationId)
+        ) {
+          return null;
+        }
+        conversationId = ownedMessage.conversationId;
+      }
+
+      let ownedConversation:
+        { id: string; title: string; summary: string | null } | undefined;
+      if (conversationId) {
+        [ownedConversation] = await tx
+          .select({
+            id: conversations.id,
+            title: conversations.title,
+            summary: conversations.summary
+          })
+          .from(conversations)
+          .where(
+            and(
+              eq(conversations.id, conversationId),
+              eq(conversations.userId, userId),
+              ne(conversations.status, "deleted"),
+              isNull(conversations.deletedAt)
+            )
+          )
+          .limit(1);
+
+        if (!ownedConversation) {
+          return null;
+        }
+      }
+
+      if (input.includeContext && !ownedConversation) {
+        return null;
+      }
+
+      let context: Record<string, unknown> = {};
+      if (input.includeContext && ownedConversation) {
+        const recentMessages = await tx
+          .select({
+            id: messages.id,
+            role: messages.role,
+            content: messages.content,
+            createdAt: messages.createdAt
+          })
+          .from(messages)
+          .where(eq(messages.conversationId, ownedConversation.id))
+          .orderBy(desc(messages.createdAt), desc(messages.id))
+          .limit(8);
+
+        context = {
+          conversationId: ownedConversation.id,
+          title: ownedConversation.title,
+          summary: ownedConversation.summary,
+          messages: recentMessages.reverse().map((message) => ({
+            id: message.id,
+            role: message.role,
+            content: message.content,
+            createdAt: message.createdAt.toISOString()
+          })),
+          capturedAt: now.toISOString()
+        };
+      }
+
+      const id = crypto.randomUUID();
+      const storedAssociations = storedProblemReportAssociations({
+        includeContext: input.includeContext,
+        conversationId,
+        messageId: input.messageId
+      });
       const [created] = await tx
         .insert(problemReports)
         .values({
           id,
+          clientRequestId: input.clientRequestId,
           userId,
           conversationId: storedAssociations.conversationId,
           messageId: storedAssociations.messageId,
@@ -1503,7 +1569,7 @@ export const apiStore: ApiStore = {
         })
       );
 
-      return created;
+      return { ...created, created: true };
     });
   },
 

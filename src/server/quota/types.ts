@@ -1,4 +1,4 @@
-export type QuotaResource = "answer" | "web_search";
+export type QuotaResource = "answer" | "web_search" | "model_attempt";
 export type QuotaScopeType = "global" | "user";
 export type QuotaReservationStatus = "committed" | "released" | "reserved";
 
@@ -114,5 +114,23 @@ export class QuotaRequestAlreadyUsedError extends Error {
   ) {
     super(`Quota request ${clientRequestId} is already ${status}`);
     this.name = "QuotaRequestAlreadyUsedError";
+  }
+}
+
+export class QuotaAccountUnavailableError extends Error {
+  readonly code = "QUOTA_ACCOUNT_UNAVAILABLE";
+
+  constructor() {
+    super("Quota account is unavailable");
+    this.name = "QuotaAccountUnavailableError";
+  }
+}
+
+export class QuotaAccountDeletionPendingError extends Error {
+  readonly code = "QUOTA_ACCOUNT_DELETION_PENDING";
+
+  constructor() {
+    super("Quota account deletion is pending");
+    this.name = "QuotaAccountDeletionPendingError";
   }
 }

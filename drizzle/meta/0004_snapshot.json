@@ -1,6 +1,6 @@
 {
-  "id": "f418c6d8-8dd0-458d-ba49-2b60c2eb2d4a",
-  "prevId": "7e275ac1-ab0c-4e5a-b6d0-cceba00c1c8b",
+  "id": "426678e7-5161-4316-ad2f-58ed79f876c0",
+  "prevId": "f418c6d8-8dd0-458d-ba49-2b60c2eb2d4a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -4430,7 +4430,7 @@
     "public.quota_resource": {
       "name": "quota_resource",
       "schema": "public",
-      "values": ["answer", "web_search"]
+      "values": ["answer", "web_search", "model_attempt"]
     },
     "public.quota_scope": {
       "name": "quota_scope",

@@ -1,6 +1,6 @@
 {
-  "id": "f418c6d8-8dd0-458d-ba49-2b60c2eb2d4a",
-  "prevId": "7e275ac1-ab0c-4e5a-b6d0-cceba00c1c8b",
+  "id": "0d20aabe-9f3c-45b9-9371-877869935ce5",
+  "prevId": "426678e7-5161-4316-ad2f-58ed79f876c0",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1263,6 +1263,13 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
+        "client_request_id": {
+          "name": "client_request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
         "user_id": {
           "name": "user_id",
           "type": "text",
@@ -1373,6 +1380,27 @@
         }
       },
       "indexes": {
+        "problem_report_user_client_request_unique": {
+          "name": "problem_report_user_client_request_unique",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "client_request_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "problem_report_user_created_idx": {
           "name": "problem_report_user_created_idx",
           "columns": [
@@ -4430,7 +4458,7 @@
     "public.quota_resource": {
       "name": "quota_resource",
       "schema": "public",
-      "values": ["answer", "web_search"]
+      "values": ["answer", "web_search", "model_attempt"]
     },
     "public.quota_scope": {
       "name": "quota_scope",

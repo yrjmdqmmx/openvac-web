@@ -6,7 +6,7 @@
 
 现有 `/api/chat` 仍只负责有证据的问答。CAD 项目、版本、计划、任务和制品均使用独立 `/api/modeling/**` 边界，AI 不能执行 Python、Shell 或任意 CadQuery 代码。
 
-数据库变更位于 `drizzle/0003_first_eddie_brock.sql`，明确排在知识源治理 `0001` 与问题报告 `0002` 之后；它一次创建 8 张 `modeling_*` 表及对应枚举、外键、索引和约束。
+数据库变更位于 `drizzle/0006_sour_roulette.sql`，明确排在知识源治理、问题报告与 V1 安全加固迁移 `0001`–`0005` 之后；它一次创建 8 张 `modeling_*` 表及对应枚举、外键、索引和约束。
 
 ## 架构与信任边界
 

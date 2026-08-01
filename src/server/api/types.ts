@@ -97,6 +97,7 @@ export const PROBLEM_REPORT_CATEGORIES = [
 export type ProblemReportCategory = (typeof PROBLEM_REPORT_CATEGORIES)[number];
 
 export type ProblemReportInput = {
+  clientRequestId: string;
   conversationId?: string;
   messageId?: string;
   category: ProblemReportCategory;
@@ -240,7 +241,12 @@ export type ApiStore = {
     userId: string,
     input: ProblemReportInput,
     audit: AuditContext
-  ): Promise<{ id: string; status: string; createdAt: Date } | null>;
+  ): Promise<{
+    id: string;
+    status: string;
+    createdAt: Date;
+    created: boolean;
+  } | null>;
 
   listUsers(input: PageInput): Promise<PageResult<Record<string, unknown>>>;
   setUserBan(

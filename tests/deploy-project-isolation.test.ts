@@ -40,6 +40,22 @@ describe("deployment Compose project isolation", () => {
     expect(release).not.toMatch(/\btar\b[^\n]*\.env/);
   });
 
+  it("deploys only default-branch-reachable commits with default-branch CI", () => {
+    const release = source(".github/workflows/release.yml");
+
+    expect(release).toContain("fetch-depth: 0");
+    expect(release).toContain(
+      'git merge-base --is-ancestor "$RELEASE_SHA" "$default_head"'
+    );
+    expect(release).toContain(
+      'echo "commit_sha must be reachable from the current default branch history."'
+    );
+    expect(release).toContain(".head_branch == $default_branch");
+    expect(release).not.toContain(
+      '$target != "production" or .head_branch == $default_branch'
+    );
+  });
+
   it("passes the private OCR document-host allowlist into containers", () => {
     const compose = source("docker-compose.yml");
 

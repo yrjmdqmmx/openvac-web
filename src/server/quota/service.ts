@@ -7,6 +7,7 @@ import { PostgresQuotaRepository, type QuotaRepository } from "./repository";
 import {
   QuotaRequestAlreadyUsedError,
   QuotaRequestInProgressError,
+  type QuotaResource,
   type QuotaReservation,
   type QuotaScopePolicy,
   type QuotaStatus,
@@ -29,6 +30,8 @@ export interface QuotaLimits {
   answerDaily: number;
   webSearchUserDaily: number;
   webSearchGlobalDaily: number;
+  modelAttemptUserDaily: number;
+  modelAttemptGlobalDaily: number;
 }
 
 export function quotaLimitsFromEnvironment(): QuotaLimits {
@@ -41,6 +44,14 @@ export function quotaLimitsFromEnvironment(): QuotaLimits {
     webSearchGlobalDaily: positiveInteger(
       process.env.ALIBABA_WEB_SEARCH_GLOBAL_DAILY_LIMIT,
       500
+    ),
+    modelAttemptUserDaily: positiveInteger(
+      process.env.MODEL_ATTEMPT_PER_USER_DAILY_LIMIT,
+      30
+    ),
+    modelAttemptGlobalDaily: positiveInteger(
+      process.env.MODEL_ATTEMPT_GLOBAL_DAILY_LIMIT,
+      1000
     )
   };
 }
@@ -184,7 +195,7 @@ export class QuotaService {
 
   private scopes(
     userId: string,
-    resource: "answer" | "web_search",
+    resource: QuotaResource,
     answerBonus: number
   ): QuotaScopePolicy[] {
     if (resource === "answer") {
@@ -197,16 +208,31 @@ export class QuotaService {
       ];
     }
 
+    if (resource === "web_search") {
+      return [
+        {
+          scopeType: "global",
+          scopeKey: "all",
+          limit: this.limits.webSearchGlobalDaily
+        },
+        {
+          scopeType: "user",
+          scopeKey: userId,
+          limit: this.limits.webSearchUserDaily
+        }
+      ];
+    }
+
     return [
       {
         scopeType: "global",
         scopeKey: "all",
-        limit: this.limits.webSearchGlobalDaily
+        limit: this.limits.modelAttemptGlobalDaily
       },
       {
         scopeType: "user",
         scopeKey: userId,
-        limit: this.limits.webSearchUserDaily
+        limit: this.limits.modelAttemptUserDaily
       }
     ];
   }

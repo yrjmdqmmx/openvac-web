@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertWithinModelBudget,
+  BUDGET_ACCOUNTED_INVOCATION_STATUSES,
   beijingUsageWindows,
   calculateModelCostMicros,
   estimateInputTokens,
+  failedInvocationAccounting,
   findModelBudget,
   ModelRuntimeError,
   readModelPricing
@@ -41,6 +43,34 @@ describe("model runtime accounting", () => {
         { role: "user", content: "pump" }
       ])
     ).toBeGreaterThanOrEqual(30);
+  });
+
+  it("retains the reserved estimate for failed and cancelled paid attempts", () => {
+    expect(
+      failedInvocationAccounting({ reservedCostMicros: 42_000 }, "cancelled")
+    ).toEqual({
+      costMicros: 42_000,
+      costState: "reserved_estimate_after_cancellation"
+    });
+    expect(
+      failedInvocationAccounting({ reservedCostMicros: 42_000 }, "failed")
+    ).toEqual({
+      costMicros: 42_000,
+      costState: "reserved_estimate_after_failure"
+    });
+    expect(
+      failedInvocationAccounting(
+        { reservedCostMicros: 42_000 },
+        "failed",
+        false
+      )
+    ).toEqual({ costMicros: 0, costState: "not_started" });
+    expect(BUDGET_ACCOUNTED_INVOCATION_STATUSES).toEqual([
+      "running",
+      "succeeded",
+      "failed",
+      "cancelled"
+    ]);
   });
 
   it("only accepts a complete exact-model budget", () => {

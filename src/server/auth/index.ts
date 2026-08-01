@@ -45,6 +45,7 @@ export const auth = betterAuth({
       banned: false,
       banReason: null,
       banExpires: null,
+      deletionRequestedAt: null,
       dailyQuotaBonus: 0,
       ...additionalFields,
       id
@@ -84,6 +85,11 @@ export const auth = betterAuth({
         type: "number",
         required: false,
         defaultValue: 0,
+        input: false
+      },
+      deletionRequestedAt: {
+        type: "date",
+        required: false,
         input: false
       }
     },

@@ -4,10 +4,14 @@ import type { ModelingRepository } from "@/server/modeling/repository";
 import type { QuotaReservation } from "@/server/quota";
 
 const authMocks = vi.hoisted(() => ({ getSession: vi.fn() }));
+const accountCleanupMocks = vi.hoisted(() => ({
+  isUserDeletionInProgress: vi.fn()
+}));
 
 vi.mock("@/server/auth", () => ({
   auth: { api: { getSession: authMocks.getSession } }
 }));
+vi.mock("@/server/auth/account-cleanup", () => accountCleanupMocks);
 
 import { handleCreateAiPlan } from "./plans";
 
@@ -76,6 +80,8 @@ function request(): Request {
 
 describe("AI modeling plan quota", () => {
   beforeEach(() => {
+    accountCleanupMocks.isUserDeletionInProgress.mockReset();
+    accountCleanupMocks.isUserDeletionInProgress.mockResolvedValue(false);
     authMocks.getSession.mockResolvedValue({
       user: { id: USER_ID, name: "Owner", email: "owner@example.com" }
     });

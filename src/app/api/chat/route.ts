@@ -11,6 +11,10 @@ import {
   type GroundingEvidence
 } from "@/server/agent";
 import { auth } from "@/server/auth";
+import {
+  AccountDeletionInProgressError,
+  assertAccountWritable
+} from "@/server/auth/account-write-barrier";
 import { collectEvidence } from "@/server/chat/evidence";
 import { citationSourcePolicy } from "@/server/chat/citation-policy";
 import { buildNoEvidenceAnswer } from "@/server/chat/fallback-answer";
@@ -38,9 +42,13 @@ import {
 } from "@/server/operations/model-runtime";
 import {
   commitQuota,
+  QuotaAccountDeletionPendingError,
+  QuotaAccountUnavailableError,
   QuotaExceededError,
   releaseQuota,
-  reserveAnswerQuota
+  reserveAnswerQuota,
+  reserveModelAttemptQuota,
+  type QuotaReservation
 } from "@/server/quota";
 
 export const runtime = "nodejs";
@@ -74,7 +82,8 @@ export async function POST(request: Request) {
     .select({
       banned: user.banned,
       banReason: user.banReason,
-      banExpires: user.banExpires
+      banExpires: user.banExpires,
+      deletionRequestedAt: user.deletionRequestedAt
     })
     .from(user)
     .where(eq(user.id, session.user.id))
@@ -89,12 +98,20 @@ export async function POST(request: Request) {
       account.banReason || "账户当前无法使用。"
     );
   }
+  if (!account || account.deletionRequestedAt) {
+    return jsonError(
+      409,
+      "ACCOUNT_DELETION_IN_PROGRESS",
+      "账号正在删除，不能再写入新数据。"
+    );
+  }
 
   const replay = await findReplay(session.user.id, parsed.data.clientRequestId);
   if (replay) {
     return replayResponse(replay);
   }
 
+  const modelProvider = getModelProvider();
   let reservation;
   try {
     reservation = await reserveAnswerQuota({
@@ -103,6 +120,16 @@ export async function POST(request: Request) {
       metadata: { conversationId: parsed.data.conversationId ?? null }
     });
   } catch (error) {
+    if (
+      error instanceof QuotaAccountDeletionPendingError ||
+      error instanceof QuotaAccountUnavailableError
+    ) {
+      return jsonError(
+        409,
+        "ACCOUNT_DELETION_IN_PROGRESS",
+        "账号正在删除，不能再写入新数据。"
+      );
+    }
     if (error instanceof QuotaExceededError) {
       return Response.json(
         {
@@ -151,7 +178,65 @@ export async function POST(request: Request) {
     );
   }
 
-  const modelProvider = getModelProvider();
+  let modelAttemptReservation: QuotaReservation;
+  try {
+    modelAttemptReservation = await reserveModelAttemptQuota({
+      userId: session.user.id,
+      clientRequestId: parsed.data.clientRequestId,
+      metadata: { conversationId: parsed.data.conversationId ?? null }
+    });
+  } catch (error) {
+    await releaseQuota({
+      leaseId: reservation.leaseId,
+      userId: session.user.id,
+      reason: "model_attempt_reservation_failed"
+    }).catch(() => undefined);
+    if (
+      error instanceof QuotaAccountDeletionPendingError ||
+      error instanceof QuotaAccountUnavailableError
+    ) {
+      return jsonError(
+        409,
+        "ACCOUNT_DELETION_IN_PROGRESS",
+        "账号正在删除，不能再写入新数据。"
+      );
+    }
+    if (error instanceof QuotaExceededError) {
+      return Response.json(
+        {
+          error: {
+            code: "MODEL_ATTEMPT_LIMIT_EXCEEDED",
+            message:
+              "模型尝试次数已达到今日保护上限，本次未调用模型，请于额度恢复后重试。",
+            resetAt: error.resetAt.toISOString()
+          }
+        },
+        { status: 429 }
+      );
+    }
+    return jsonError(
+      503,
+      "MODEL_ATTEMPT_QUOTA_UNAVAILABLE",
+      "模型尝试保护服务暂时不可用，请稍后重试。"
+    );
+  }
+
+  if (
+    modelAttemptReservation.idempotent ||
+    modelAttemptReservation.status !== "reserved"
+  ) {
+    await releaseQuota({
+      leaseId: reservation.leaseId,
+      userId: session.user.id,
+      reason: "model_attempt_request_reused"
+    }).catch(() => undefined);
+    return jsonError(
+      409,
+      "MODEL_ATTEMPT_REQUEST_REUSED",
+      "这个模型请求标识已经使用，请刷新后重试。"
+    );
+  }
+
   let turn: PersistedTurn;
   try {
     turn = await createPendingTurn({
@@ -162,17 +247,27 @@ export async function POST(request: Request) {
       model: modelProvider.model
     });
   } catch (error) {
-    await releaseQuota({
-      leaseId: reservation.leaseId,
-      userId: session.user.id,
-      reason: "message_persistence_failed"
-    }).catch(() => undefined);
+    await Promise.allSettled([
+      releaseQuota({
+        leaseId: reservation.leaseId,
+        userId: session.user.id,
+        reason: "message_persistence_failed"
+      }),
+      releaseQuota({
+        leaseId: modelAttemptReservation.leaseId,
+        userId: session.user.id,
+        reason: "message_persistence_failed"
+      })
+    ]);
     if (error instanceof ConversationNotFoundError) {
       return jsonError(
         404,
         "CONVERSATION_NOT_FOUND",
         "这段对话不存在或已删除。"
       );
+    }
+    if (error instanceof AccountDeletionInProgressError) {
+      return jsonError(409, error.code, "账号正在删除，不能再写入新数据。");
     }
     return jsonError(
       503,
@@ -182,9 +277,19 @@ export async function POST(request: Request) {
   }
 
   const encoder = new TextEncoder();
+  const responseAbortController = new AbortController();
+  const operationSignal = AbortSignal.any([
+    request.signal,
+    responseAbortController.signal
+  ]);
   let streamClosed = false;
   const responseStream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      const abortOperation = () => {
+        if (!responseAbortController.signal.aborted) {
+          responseAbortController.abort();
+        }
+      };
       const send = (event: Record<string, unknown>) => {
         if (streamClosed) return;
         try {
@@ -193,6 +298,7 @@ export async function POST(request: Request) {
           );
         } catch {
           streamClosed = true;
+          abortOperation();
         }
       };
       const heartbeat = setInterval(() => {
@@ -201,6 +307,7 @@ export async function POST(request: Request) {
           controller.enqueue(encoder.encode(": keep-alive\n\n"));
         } catch {
           streamClosed = true;
+          abortOperation();
         }
       }, 15_000);
 
@@ -209,6 +316,8 @@ export async function POST(request: Request) {
       let usage: ModelUsage | undefined;
       let invocation: InvocationHandle | undefined;
       let invocationSettled = false;
+      let providerCallAttempted = false;
+      let modelAttemptFinalized = false;
 
       try {
         send({
@@ -220,7 +329,7 @@ export async function POST(request: Request) {
           question: parsed.data.message,
           userId: session.user.id,
           clientRequestId: parsed.data.clientRequestId,
-          signal: request.signal,
+          signal: operationSignal,
           onStage: (label) =>
             send({
               type: "status",
@@ -250,6 +359,15 @@ export async function POST(request: Request) {
             question: parsed.data.message,
             risk: prompt.risk
           });
+          const releasedModelAttempt = await releaseQuota({
+            leaseId: modelAttemptReservation.leaseId,
+            userId: session.user.id,
+            reason: "model_not_required"
+          });
+          if (releasedModelAttempt.status !== "released") {
+            throw new ModelAttemptQuotaTransitionError();
+          }
+          modelAttemptFinalized = true;
         } else {
           const maximumOutputTokens = parseMaximumOutputTokens();
           invocation = await startModelInvocation({
@@ -267,13 +385,23 @@ export async function POST(request: Request) {
             ),
             webSearched: evidenceResult.webSearched
           });
+          operationSignal.throwIfAborted();
+          const committedModelAttempt = await commitQuota({
+            leaseId: modelAttemptReservation.leaseId,
+            userId: session.user.id
+          });
+          if (committedModelAttempt.status !== "committed") {
+            throw new ModelAttemptQuotaTransitionError();
+          }
+          modelAttemptFinalized = true;
           let providerRequestId: string | undefined;
           let finishReason: string | undefined;
+          providerCallAttempted = true;
           for await (const event of modelProvider.stream({
             messages: prompt.messages,
             temperature: 0.1,
             maxOutputTokens: maximumOutputTokens,
-            signal: request.signal
+            signal: operationSignal
           })) {
             if (event.type === "text-delta") {
               answer += event.text;
@@ -320,6 +448,7 @@ export async function POST(request: Request) {
           label: "正在校验引用并保存回答…"
         });
         await completeTurn({
+          userId: session.user.id,
           turn,
           answer,
           meta,
@@ -366,13 +495,23 @@ export async function POST(request: Request) {
           }
         });
       } catch (error) {
-        const cancelled = request.signal.aborted;
+        const cancelled = operationSignal.aborted;
         if (invocation && !invocationSettled) {
           await failModelInvocation({
             handle: invocation,
             status: cancelled ? "cancelled" : "failed",
             errorCode: cancelled ? "CLIENT_CANCELLED" : errorCode(error),
-            errorMessage: safeErrorMessage(error)
+            errorMessage: safeErrorMessage(error),
+            retainReservedEstimate: providerCallAttempted
+          }).catch(() => undefined);
+        }
+        if (!modelAttemptFinalized) {
+          await releaseQuota({
+            leaseId: modelAttemptReservation.leaseId,
+            userId: session.user.id,
+            reason: cancelled
+              ? "cancelled_before_model_attempt"
+              : "failed_before_model_attempt"
           }).catch(() => undefined);
         }
         await failTurn(
@@ -403,6 +542,9 @@ export async function POST(request: Request) {
     },
     cancel() {
       streamClosed = true;
+      if (!responseAbortController.signal.aborted) {
+        responseAbortController.abort();
+      }
     }
   });
 
@@ -425,6 +567,7 @@ async function createPendingTurn(input: {
   model: string;
 }): Promise<PersistedTurn> {
   return db.transaction(async (tx) => {
+    await assertAccountWritable(tx, input.userId);
     const now = new Date();
     let conversationId = input.conversationId;
 
@@ -499,6 +642,7 @@ async function createPendingTurn(input: {
 }
 
 async function completeTurn(input: {
+  userId: string;
   turn: PersistedTurn;
   answer: string;
   meta: AnswerMeta;
@@ -518,6 +662,7 @@ async function completeTurn(input: {
   };
 }) {
   await db.transaction(async (tx) => {
+    await assertAccountWritable(tx, input.userId);
     await tx
       .update(messages)
       .set({
@@ -817,10 +962,14 @@ function errorCode(error: unknown) {
 function safeErrorMessage(error: unknown) {
   if (error instanceof InvalidAnswerError) return error.message;
   if (error instanceof ModelRuntimeError) return error.message;
+  if (error instanceof AccountDeletionInProgressError) return error.message;
   return "Provider or persistence operation failed.";
 }
 
 function userFacingFailureMessage(error: unknown) {
+  if (error instanceof AccountDeletionInProgressError) {
+    return "账号正在删除，本次回答已停止，回答额度已归还。";
+  }
   if (error instanceof ModelRuntimeError) {
     if (error.code === "MODEL_DISABLED") {
       return "回答模型当前已停用，本次额度已归还。";
@@ -843,4 +992,7 @@ class ConversationNotFoundError extends Error {}
 class InvalidAnswerError extends Error {}
 class QuotaCommitError extends Error {
   readonly code = "QUOTA_COMMIT_FAILED";
+}
+class ModelAttemptQuotaTransitionError extends Error {
+  readonly code = "MODEL_ATTEMPT_QUOTA_TRANSITION_FAILED";
 }

@@ -1,4 +1,5 @@
 import { auth } from "@/server/auth";
+import { isUserDeletionInProgress } from "@/server/auth/account-cleanup";
 
 import { ApiError } from "./errors";
 import {
@@ -75,8 +76,6 @@ const ROLE_CAPABILITIES: Record<AdminRole, ReadonlySet<AdminCapability>> = {
     "problem_reports:write"
   ]),
   analyst: new Set([
-    "feedback:read",
-    "problem_reports:read",
     "knowledge:read",
     "sources:read",
     "prompts:read",
@@ -109,6 +108,14 @@ export async function authenticate(
 
   if (sessionUser.banned) {
     throw new ApiError(403, "ACCOUNT_BANNED", "当前账号已被暂停使用。");
+  }
+
+  if (await isUserDeletionInProgress(sessionUser.id)) {
+    throw new ApiError(
+      409,
+      "ACCOUNT_DELETION_IN_PROGRESS",
+      "账号正在删除，不能再写入新数据。"
+    );
   }
 
   return {

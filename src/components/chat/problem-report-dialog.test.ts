@@ -54,6 +54,9 @@ describe("ProblemReportDialog", () => {
     const [path, options] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(path).toBe("/api/problem-reports");
     expect(JSON.parse(String(options.body))).toEqual({
+      clientRequestId: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+      ),
       conversationId: "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
       messageId: "a607d4d6-82df-4f1b-a5d4-7d80277e327d",
       category: "answer_incorrect",

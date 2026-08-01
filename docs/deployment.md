@@ -39,13 +39,18 @@ and Nginx site. Never edit or replace another site configuration.
 
 The release workflow must be dispatched from the repository default branch. It
 requires an exact lowercase 40-character `commit_sha`; branch names, tags, and
-short SHAs are not accepted. Before building anything, the workflow queries the
+short SHAs are not accepted. The commit must still be reachable from the current
+default-branch history. Before building anything, the workflow queries the
 GitHub Actions API for a completed, successful `CI` run whose `head_sha` is that
-exact commit, whose source repository is this repository, and whose event was a
-push or manual CI run. Both the image build and deployment-bundle checkout then
-use that same SHA. The image is deployed by digest, not by a mutable tag.
-Production additionally requires the successful CI run's `head_branch` to be
-the repository default branch; staging may use another same-repository branch.
+exact commit, whose source repository is this repository, whose `head_branch`
+is the default branch, and whose event was a push or manual CI run. Both the
+image build and deployment-bundle checkout then use that same SHA. The image is
+deployed by digest, not by a mutable tag.
+
+This rule applies to both staging and production. A feature-branch CI result is
+never a deployment credential: branch code can change its own CI and deployment
+scripts, while the ECS deployment credential can modify the host. Test a feature
+branch through CI, merge it, and deploy the resulting default-branch commit.
 
 Create these two GitHub environments before enabling the workflow:
 

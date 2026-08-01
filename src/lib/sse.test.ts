@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseChatEventStream } from "@/lib/sse";
+import { ChatStreamProtocolError, parseChatEventStream } from "@/lib/sse";
 
 describe("parseChatEventStream", () => {
   it("parses events split across chunks", async () => {
@@ -28,4 +28,57 @@ describe("parseChatEventStream", () => {
     expect(events).toHaveLength(2);
     expect(events[0]).toEqual({ type: "delta", text: "真空" });
   });
+
+  it("rejects a truncated stream that never sends complete", async () => {
+    const response = streamResponse([
+      'data: {"type":"delta","text":"未完成"}\n\n'
+    ]);
+
+    await expect(collectEvents(response)).rejects.toBeInstanceOf(
+      ChatStreamProtocolError
+    );
+    await expect(
+      collectEvents(
+        streamResponse(['data: {"type":"delta","text":"未完成"}\n\n'])
+      )
+    ).rejects.toThrow("未收到完整的回答");
+  });
+
+  it("rejects duplicate complete events", async () => {
+    const complete =
+      'data: {"type":"complete","conversationId":"c1","messageId":"m1","meta":{"riskLevel":"low","missingInputs":[],"webSearched":false,"citations":[]}}\n\n';
+
+    await expect(
+      collectEvents(streamResponse([complete, complete]))
+    ).rejects.toThrow("重复发送");
+  });
+
+  it("rejects data sent after the single complete event", async () => {
+    const complete =
+      'data: {"type":"complete","conversationId":"c1","messageId":"m1","meta":{"riskLevel":"low","missingInputs":[],"webSearched":false,"citations":[]}}\n\n';
+
+    await expect(
+      collectEvents(
+        streamResponse([complete, 'data: {"type":"delta","text":"late"}\n\n'])
+      )
+    ).rejects.toThrow("完成后继续发送");
+  });
 });
+
+function streamResponse(chunks: string[]) {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      }
+    })
+  );
+}
+
+async function collectEvents(response: Response) {
+  const events = [];
+  for await (const event of parseChatEventStream(response)) events.push(event);
+  return events;
+}

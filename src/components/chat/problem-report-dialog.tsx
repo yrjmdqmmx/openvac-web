@@ -26,6 +26,9 @@ export function ProblemReportDialog({
   onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [clientRequestId, setClientRequestId] = useState(() =>
+    crypto.randomUUID()
+  );
   const [submitted, setSubmitted] = useState<{
     reportId: string;
     receivedAt: string;
@@ -38,6 +41,7 @@ export function ProblemReportDialog({
     setBusy(false);
     setSubmitted(undefined);
     setError("");
+    setClientRequestId(crypto.randomUUID());
     onClose();
   }
 
@@ -52,6 +56,7 @@ export function ProblemReportDialog({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        clientRequestId,
         conversationId,
         messageId,
         category: form.get("category"),
