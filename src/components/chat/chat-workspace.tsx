@@ -26,7 +26,7 @@ import {
   savePendingQuestionDraft,
   type PendingQuestionDraft
 } from "@/lib/pending-question-draft";
-import { parseChatEventStream } from "@/lib/sse";
+import { ChatStreamProtocolError, parseChatEventStream } from "@/lib/sse";
 import type {
   AnswerMeta,
   ChatMessage,
@@ -301,6 +301,7 @@ export function ChatWorkspace({
         let finalMessageId = localAssistantId;
         let finalMeta: AnswerMeta | undefined;
         let completedConversationId = conversationId;
+        let completionSeen = false;
 
         for await (const event of parseChatEventStream(response)) {
           if (event.type === "status") {
@@ -342,6 +343,12 @@ export function ChatWorkspace({
             );
           }
           if (event.type === "complete") {
+            if (completionSeen) {
+              throw new ChatStreamProtocolError(
+                "服务器重复发送了回答完成标记，请刷新对话历史。"
+              );
+            }
+            completionSeen = true;
             finalMessageId = event.messageId;
             finalMeta = event.meta;
             completedConversationId = event.conversationId;
@@ -352,6 +359,12 @@ export function ChatWorkspace({
             });
             throw streamError;
           }
+        }
+
+        if (!completionSeen) {
+          throw new ChatStreamProtocolError(
+            "连接中断，未收到完整的回答。请刷新对话历史后重试。"
+          );
         }
 
         setConversationId(completedConversationId);

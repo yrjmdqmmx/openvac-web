@@ -4,6 +4,9 @@ import type { ApiStore } from "./types";
 const authMocks = vi.hoisted(() => ({
   getSession: vi.fn()
 }));
+const accountCleanupMocks = vi.hoisted(() => ({
+  isUserDeletionInProgress: vi.fn()
+}));
 
 vi.mock("@/server/auth", () => ({
   auth: {
@@ -12,6 +15,7 @@ vi.mock("@/server/auth", () => ({
     }
   }
 }));
+vi.mock("@/server/auth/account-cleanup", () => accountCleanupMocks);
 
 import {
   handleListConversations,
@@ -25,6 +29,8 @@ function storeWithList(listConversations: ApiStore["listConversations"]) {
 describe("conversation list handlers", () => {
   beforeEach(() => {
     authMocks.getSession.mockReset();
+    accountCleanupMocks.isUserDeletionInProgress.mockReset();
+    accountCleanupMocks.isUserDeletionInProgress.mockResolvedValue(false);
     authMocks.getSession.mockResolvedValue({
       user: {
         id: "user-1",

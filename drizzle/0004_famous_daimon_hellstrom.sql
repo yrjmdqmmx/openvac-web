@@ -1,0 +1,1 @@
+ALTER TYPE "public"."quota_resource" ADD VALUE 'model_attempt';

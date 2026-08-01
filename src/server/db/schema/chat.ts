@@ -257,6 +257,7 @@ export const problemReport = pgTable(
   "problem_report",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    clientRequestId: uuid("client_request_id").defaultRandom().notNull(),
     userId: text("user_id")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
@@ -305,6 +306,10 @@ export const problemReport = pgTable(
     })
   },
   (table) => [
+    uniqueIndex("problem_report_user_client_request_unique").on(
+      table.userId,
+      table.clientRequestId
+    ),
     index("problem_report_user_created_idx").on(table.userId, table.createdAt),
     index("problem_report_status_created_idx").on(
       table.status,

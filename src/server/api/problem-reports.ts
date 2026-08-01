@@ -14,6 +14,7 @@ export const handleCreateProblemReport = withApiErrors(
     const report = await store.createProblemReport(
       user.id,
       {
+        clientRequestId: parsed.clientRequestId,
         conversationId: parsed.conversationId,
         messageId: parsed.messageId,
         category: parsed.category,
@@ -30,15 +31,17 @@ export const handleCreateProblemReport = withApiErrors(
       throw notFound("关联会话或消息");
     }
 
-    try {
-      await sendProblemReportNotification({
-        id: report.id,
-        category: parsed.category,
-        createdAt: report.createdAt
-      });
-    } catch {
-      // Notification is best-effort. The persisted report and its audit row
-      // remain the source of truth, and mail failure must not affect the user.
+    if (report.created) {
+      try {
+        await sendProblemReportNotification({
+          id: report.id,
+          category: parsed.category,
+          createdAt: report.createdAt
+        });
+      } catch {
+        // Notification is best-effort. The persisted report and its audit row
+        // remain the source of truth, and mail failure must not affect the user.
+      }
     }
 
     return new Response(
@@ -47,7 +50,7 @@ export const handleCreateProblemReport = withApiErrors(
         receivedAt: report.createdAt
       }),
       {
-        status: 201,
+        status: report.created ? 201 : 200,
         headers: {
           "content-type": "application/json; charset=utf-8",
           "cache-control": "no-store"

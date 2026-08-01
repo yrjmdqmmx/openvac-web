@@ -80,7 +80,9 @@ describe("QuotaService", () => {
       {
         answerDaily: 20,
         webSearchUserDaily: 5,
-        webSearchGlobalDaily: 500
+        webSearchGlobalDaily: 500,
+        modelAttemptUserDaily: 30,
+        modelAttemptGlobalDaily: 1000
       },
       async () => 3
     );
@@ -104,7 +106,9 @@ describe("QuotaService", () => {
       {
         answerDaily: 20,
         webSearchUserDaily: 5,
-        webSearchGlobalDaily: 500
+        webSearchGlobalDaily: 500,
+        modelAttemptUserDaily: 30,
+        modelAttemptGlobalDaily: 1000
       },
       async () => 0
     );
@@ -121,6 +125,32 @@ describe("QuotaService", () => {
     ]);
   });
 
+  it("reserves database-backed user and global model-attempt scopes together", async () => {
+    const repository = new RecordingRepository();
+    const service = new QuotaService(
+      repository,
+      {
+        answerDaily: 20,
+        webSearchUserDaily: 5,
+        webSearchGlobalDaily: 500,
+        modelAttemptUserDaily: 30,
+        modelAttemptGlobalDaily: 1000
+      },
+      async () => 0
+    );
+
+    await service.reserve({
+      userId: "user-1",
+      clientRequestId: "model-attempt-1",
+      resource: "model_attempt"
+    });
+
+    expect(repository.scopes).toEqual([
+      { scopeType: "global", scopeKey: "all", limit: 1000 },
+      { scopeType: "user", scopeKey: "user-1", limit: 30 }
+    ]);
+  });
+
   it("commits only after a successful operation", async () => {
     const repository = new RecordingRepository();
     const service = new QuotaService(
@@ -128,7 +158,9 @@ describe("QuotaService", () => {
       {
         answerDaily: 20,
         webSearchUserDaily: 5,
-        webSearchGlobalDaily: 500
+        webSearchGlobalDaily: 500,
+        modelAttemptUserDaily: 30,
+        modelAttemptGlobalDaily: 1000
       },
       async () => 0
     );
@@ -153,7 +185,9 @@ describe("QuotaService", () => {
       {
         answerDaily: 20,
         webSearchUserDaily: 5,
-        webSearchGlobalDaily: 500
+        webSearchGlobalDaily: 500,
+        modelAttemptUserDaily: 30,
+        modelAttemptGlobalDaily: 1000
       },
       async () => 0
     );
@@ -186,7 +220,9 @@ describe("QuotaService", () => {
       {
         answerDaily: 20,
         webSearchUserDaily: 5,
-        webSearchGlobalDaily: 500
+        webSearchGlobalDaily: 500,
+        modelAttemptUserDaily: 30,
+        modelAttemptGlobalDaily: 1000
       },
       async () => 0
     );

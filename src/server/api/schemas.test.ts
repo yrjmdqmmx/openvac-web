@@ -15,14 +15,22 @@ import {
 describe("API validation schemas", () => {
   it("validates problem-report context and contact consent independently", () => {
     const base = {
+      clientRequestId: "b607d4d6-82df-4f1b-a5d4-7d80277e327d",
       category: "answer_incorrect" as const,
       description: "回答中的极限压力单位不正确。"
     };
 
     expect(problemReportSchema.parse(base)).toMatchObject({
+      clientRequestId: "b607d4d6-82df-4f1b-a5d4-7d80277e327d",
       includeContext: false,
       consentToContact: false
     });
+    expect(
+      problemReportSchema.safeParse({
+        ...base,
+        clientRequestId: "not-a-request-id"
+      }).success
+    ).toBe(false);
     expect(
       problemReportSchema.safeParse({
         ...base,

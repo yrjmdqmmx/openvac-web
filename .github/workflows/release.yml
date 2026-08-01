@@ -30,6 +30,11 @@ jobs:
       actions: read
       contents: read
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
       - name: Refuse unverified or ambiguous revisions
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -51,6 +56,13 @@ jobs:
             exit 64
           fi
 
+          default_head="$(git rev-parse HEAD)"
+          if ! git cat-file -e "${RELEASE_SHA}^{commit}" 2>/dev/null ||
+            ! git merge-base --is-ancestor "$RELEASE_SHA" "$default_head"; then
+            echo "commit_sha must be reachable from the current default branch history." >&2
+            exit 64
+          fi
+
           response="$RUNNER_TEMP/openvac-ci-runs.json"
           curl --fail-with-body --silent --show-error \
             --header "Accept: application/vnd.github+json" \
@@ -64,7 +76,6 @@ jobs:
               --arg repository "$GITHUB_REPOSITORY" \
               --arg default_branch "$DEFAULT_BRANCH" \
               --arg sha "$RELEASE_SHA" \
-              --arg target "$TARGET" \
               '[.workflow_runs[] |
                 select(
                   .head_sha == $sha and
@@ -72,7 +83,7 @@ jobs:
                   .conclusion == "success" and
                   .head_repository.full_name == $repository and
                   (.event == "push" or .event == "workflow_dispatch") and
-                  ($target != "production" or .head_branch == $default_branch)
+                  .head_branch == $default_branch
                 )][0].html_url // empty' \
               "$response"
           )"

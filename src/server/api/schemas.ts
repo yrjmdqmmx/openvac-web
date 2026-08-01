@@ -51,6 +51,7 @@ export const messageReportSchema = z.object({
 
 export const problemReportSchema = z
   .object({
+    clientRequestId: z.string().uuid(),
     conversationId: z.string().uuid().optional(),
     messageId: z.string().uuid().optional(),
     category: z.enum(PROBLEM_REPORT_CATEGORIES),

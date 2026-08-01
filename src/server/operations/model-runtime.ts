@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 
 import { db } from "@/server/db";
+import { assertAccountWritable } from "@/server/auth/account-write-barrier";
 import {
   dailyUsage,
   modelInvocations,
@@ -13,6 +14,13 @@ export const VACUUM_EXPERT_PROMPT_KEY = "vacuum_expert_system";
 
 const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
 const MICROS_PER_CENT = 10_000;
+
+export const BUDGET_ACCOUNTED_INVOCATION_STATUSES = [
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled"
+] as const;
 
 export interface ActiveRuntimePrompt {
   id: string;
@@ -94,6 +102,7 @@ export async function startModelInvocation(
   );
 
   return db.transaction(async (tx) => {
+    await assertAccountWritable(tx, input.userId);
     await tx.execute(
       sql`select pg_advisory_xact_lock(hashtext(${`openvac:model-budget:${input.model}`}))`
     );
@@ -246,24 +255,53 @@ export async function failModelInvocation(input: {
   status?: "failed" | "cancelled";
   errorCode: string;
   errorMessage: string;
+  retainReservedEstimate?: boolean;
   completedAt?: Date;
 }) {
   const completedAt = input.completedAt ?? new Date();
+  const accounting = failedInvocationAccounting(
+    input.handle,
+    input.status ?? "failed",
+    input.retainReservedEstimate ?? true
+  );
   await db
     .update(modelInvocations)
     .set({
       status: input.status ?? "failed",
-      costMicros: 0,
+      costMicros: accounting.costMicros,
       latencyMs: Math.max(
         0,
         completedAt.getTime() - input.handle.startedAt.getTime()
       ),
-      responseMetadata: { costState: "released_after_failure" },
+      responseMetadata: { costState: accounting.costState },
       errorCode: input.errorCode,
       errorMessage: input.errorMessage.slice(0, 1000),
       completedAt
     })
     .where(eq(modelInvocations.id, input.handle.id));
+}
+
+export function failedInvocationAccounting(
+  handle: Pick<InvocationHandle, "reservedCostMicros">,
+  status: "failed" | "cancelled",
+  retainReservedEstimate = true
+): {
+  costMicros: number;
+  costState:
+    | "reserved_estimate_after_failure"
+    | "reserved_estimate_after_cancellation"
+    | "not_started";
+} {
+  if (!retainReservedEstimate) {
+    return { costMicros: 0, costState: "not_started" };
+  }
+  return {
+    costMicros: handle.reservedCostMicros,
+    costState:
+      status === "cancelled"
+        ? "reserved_estimate_after_cancellation"
+        : "reserved_estimate_after_failure"
+  };
 }
 
 export function readModelPricing(
@@ -391,7 +429,7 @@ async function sumReservedModelCost(
     .where(
       and(
         eq(modelInvocations.model, model),
-        inArray(modelInvocations.status, ["running", "succeeded"]),
+        inArray(modelInvocations.status, BUDGET_ACCOUNTED_INVOCATION_STATUSES),
         gte(modelInvocations.startedAt, from),
         lt(modelInvocations.startedAt, to)
       )

@@ -47,7 +47,7 @@ const HIGH_RISK_PATTERNS: Array<{
   {
     hazard: "electrical_repair",
     pattern:
-      /(?:带电(?:拆|修|测|接)|电气(?:拆修|维修|接线)|拆(?:配电|变频器)|短接电源|强制送电|\blive electrical (?:repair|work)\b|\benergized (?:repair|work)\b)/iu
+      /(?:带电(?:拆|修|测|接)|电气(?:拆修|维修|检修|接线)|拆(?:配电|变频器)|短接电源|强制送电|(?:电机|控制柜|配电柜|变频器|电源|线路|端子).{0,12}(?:拆修|维修|检修|拆线|接线)|(?:拆修|维修|检修|拆线|接线).{0,12}(?:电机|控制柜|配电柜|变频器|电源|线路|端子)|(?:绝缘电阻|兆欧表|摇表).{0,12}(?:测量|测试|检测|怎么测|如何测)|(?:测量|测试|检测|怎么测|如何测).{0,12}(?:绝缘电阻|兆欧表|摇表)|(?:启动电容|运行电容|电容器|电气(?:部件|元件)|断路器|空气开关|空开|熔断器|保险丝|接触器|热继电器|继电器).{0,12}(?:更换|替换|拆换|拆装|检修|维修|测量|测试|排查|复位)|(?:更换|替换|拆换|拆装|检修|维修|测量|测试|排查|复位).{0,12}(?:启动电容|运行电容|电容器|电气(?:部件|元件)|断路器|空气开关|空开|熔断器|保险丝|接触器|热继电器|继电器)|(?:断路器|空气开关|空开).{0,12}(?:跳闸|脱扣)|(?:跳闸|脱扣).{0,12}(?:怎么|如何|排查|检修|维修|复位)|(?:漏电|触电).{0,12}(?:怎么|如何|维修|检修|排查|修)|(?:怎么|如何|维修|检修|排查|修).{0,12}(?:漏电|触电)|\blive electrical (?:repair|work)\b|\benergized (?:repair|work)\b|\b(?:motor|control (?:cabinet|panel)|inverter|power supply|wiring|terminal).{0,24}(?:repair|service|rewir(?:e|ing)|disconnect|connect)\b|\b(?:repair|service|rewir(?:e|ing)|disconnect|connect).{0,24}(?:motor|control (?:cabinet|panel)|inverter|power supply|wiring|terminal)\b|\b(?:insulation resistance|megohmmeter|megger).{0,24}(?:measure|test|check|inspect)\b|\b(?:measure|test|check|inspect).{0,24}(?:insulation resistance|megohmmeter|megger)\b|\b(?:(?:start|starting|run|running) capacitor|electrical component|circuit breaker|breaker|fuse|contactor|thermal overload relay|relay).{0,24}(?:replace|change|service|repair|measure|test|troubleshoot|reset)\b|\b(?:replace|change|service|repair|measure|test|troubleshoot|reset).{0,24}(?:(?:start|starting|run|running) capacitor|electrical component|circuit breaker|breaker|fuse|contactor|thermal overload relay|relay)\b|\b(?:circuit breaker|breaker).{0,24}(?:trip|tripping|reset|troubleshoot)\b|\b(?:trip|tripping).{0,24}(?:circuit breaker|breaker)\b|\b(?:electric shock|ground fault|earth leakage).{0,24}(?:repair|fix|troubleshoot)\b|\b(?:repair|fix|troubleshoot).{0,24}(?:electric shock|ground fault|earth leakage)\b)/iu
   },
   {
     hazard: "interlock_bypass",
@@ -70,10 +70,58 @@ const DANGEROUS_SAFETY_ACTION_PATTERN =
 
 const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
 const UNSAFE_CONTROL = /\p{Cc}/gu;
+const SIMPLE_INNER_SEPARATOR = /[\s:：._/\\\-‐-―·•]+/u;
+const HAN_INNER_SEPARATOR =
+  /(?<=\p{Script=Han})[\s:：._/\\\-‐-―·•]+(?=\p{Script=Han})/gu;
+
+const ASCII_RISK_TOKEN_NORMALIZERS: Array<[RegExp, string]> = [
+  [
+    new RegExp(String.raw`\bby${SIMPLE_INNER_SEPARATOR.source}pass\b`, "giu"),
+    "bypass"
+  ],
+  [
+    new RegExp(
+      String.raw`\binter${SIMPLE_INNER_SEPARATOR.source}lock\b`,
+      "giu"
+    ),
+    "interlock"
+  ],
+  [
+    new RegExp(String.raw`\be${SIMPLE_INNER_SEPARATOR.source}stop\b`, "giu"),
+    "e-stop"
+  ],
+  [
+    new RegExp(String.raw`\bre${SIMPLE_INNER_SEPARATOR.source}wire\b`, "giu"),
+    "rewire"
+  ],
+  [
+    new RegExp(String.raw`\bhot${SIMPLE_INNER_SEPARATOR.source}wire\b`, "giu"),
+    "hotwire"
+  ],
+  [
+    new RegExp(String.raw`\bhard${SIMPLE_INNER_SEPARATOR.source}wire\b`, "giu"),
+    "hardwire"
+  ],
+  [
+    new RegExp(
+      String.raw`\ben${SIMPLE_INNER_SEPARATOR.source}ergized\b`,
+      "giu"
+    ),
+    "energized"
+  ]
+];
 
 export function classifyVacuumRisk(question: string): RiskAssessment {
   const normalized = normalizeRiskQuestion(question);
-  const matchable = [normalized, normalized.replace(/\s+/gu, "")];
+  const separatorNormalized = normalizeRiskTokenSeparators(normalized);
+  const matchable = [
+    ...new Set([
+      normalized,
+      normalized.replace(/\s+/gu, ""),
+      separatorNormalized,
+      separatorNormalized.replace(/\s+/gu, "")
+    ])
+  ];
   const hazards = HIGH_RISK_PATTERNS.filter(({ pattern }) =>
     matchable.some((value) => pattern.test(value))
   ).map(({ hazard }) => hazard);
@@ -127,4 +175,12 @@ function normalizeRiskQuestion(value: string): string {
     .replace(UNSAFE_CONTROL, " ")
     .replace(/\s+/gu, " ")
     .trim();
+}
+
+function normalizeRiskTokenSeparators(value: string): string {
+  let normalized = value.replace(HAN_INNER_SEPARATOR, "");
+  for (const [pattern, replacement] of ASCII_RISK_TOKEN_NORMALIZERS) {
+    normalized = normalized.replace(pattern, replacement);
+  }
+  return normalized;
 }

@@ -8,6 +8,9 @@ const authMocks = vi.hoisted(() => ({
 const notificationMocks = vi.hoisted(() => ({
   sendProblemReportNotification: vi.fn()
 }));
+const accountCleanupMocks = vi.hoisted(() => ({
+  isUserDeletionInProgress: vi.fn()
+}));
 
 vi.mock("@/server/auth", () => ({
   auth: {
@@ -16,6 +19,7 @@ vi.mock("@/server/auth", () => ({
     }
   }
 }));
+vi.mock("@/server/auth/account-cleanup", () => accountCleanupMocks);
 vi.mock("@/server/problem-reports/notification", () => notificationMocks);
 
 import {
@@ -23,6 +27,7 @@ import {
   handleGrantAdminRole,
   handleListAuditLogs,
   handleListAdminConversations,
+  handleListFeedback,
   handleListAdminProblemReports,
   handleListAdmins,
   handleRevokeAdminRole,
@@ -54,6 +59,8 @@ function jsonRequest(path: string, body: unknown, method = "POST"): Request {
 describe("API handlers", () => {
   beforeEach(() => {
     authMocks.getSession.mockReset();
+    accountCleanupMocks.isUserDeletionInProgress.mockReset();
+    accountCleanupMocks.isUserDeletionInProgress.mockResolvedValue(false);
     authMocks.getSession.mockResolvedValue({
       user: {
         id: "user-1",
@@ -129,6 +136,7 @@ describe("API handlers", () => {
     const store = partialStore({ createProblemReport });
     const response = await handleCreateProblemReport(
       jsonRequest("/api/problem-reports", {
+        clientRequestId: "b607d4d6-82df-4f1b-a5d4-7d80277e327d",
         category: "system_error",
         description: "回答请求持续失败。",
         contactType: "phone",
@@ -147,11 +155,13 @@ describe("API handlers", () => {
     const createProblemReport = vi.fn().mockResolvedValue({
       id: "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
       status: "new",
-      createdAt
+      createdAt,
+      created: true
     });
     const store = partialStore({ createProblemReport });
     const response = await handleCreateProblemReport(
       jsonRequest("/api/problem-reports", {
+        clientRequestId: "b607d4d6-82df-4f1b-a5d4-7d80277e327d",
         category: "product_suggestion",
         description: "希望增加按泵型筛选引用的能力。",
         context: { messages: ["客户端不应决定上下文快照"] }
@@ -167,6 +177,7 @@ describe("API handlers", () => {
     expect(createProblemReport).toHaveBeenCalledWith(
       "user-1",
       expect.objectContaining({
+        clientRequestId: "b607d4d6-82df-4f1b-a5d4-7d80277e327d",
         includeContext: false,
         contactType: undefined,
         contactValue: undefined,
@@ -201,10 +212,12 @@ describe("API handlers", () => {
     const createProblemReport = vi.fn().mockResolvedValue({
       id: "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
       status: "new",
-      createdAt: new Date("2026-08-01T00:00:00.000Z")
+      createdAt: new Date("2026-08-01T00:00:00.000Z"),
+      created: true
     });
     const response = await handleCreateProblemReport(
       jsonRequest("/api/problem-reports", {
+        clientRequestId: "b607d4d6-82df-4f1b-a5d4-7d80277e327d",
         category: "system_error",
         description: "回答请求持续失败。"
       }),
@@ -213,6 +226,34 @@ describe("API handlers", () => {
 
     expect(response.status).toBe(201);
     expect(createProblemReport).toHaveBeenCalledOnce();
+  });
+
+  it("returns an idempotent replay without sending another notification", async () => {
+    const createdAt = new Date("2026-08-01T00:00:00.000Z");
+    const createProblemReport = vi.fn().mockResolvedValue({
+      id: "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+      status: "new",
+      createdAt,
+      created: false
+    });
+
+    const response = await handleCreateProblemReport(
+      jsonRequest("/api/problem-reports", {
+        clientRequestId: "b607d4d6-82df-4f1b-a5d4-7d80277e327d",
+        category: "system_error",
+        description: "回答请求持续失败。"
+      }),
+      partialStore({ createProblemReport })
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      reportId: "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+      receivedAt: "2026-08-01T00:00:00.000Z"
+    });
+    expect(
+      notificationMocks.sendProblemReportNotification
+    ).not.toHaveBeenCalled();
   });
 
   it("lets support update problem-report status through an audited write", async () => {
@@ -271,6 +312,34 @@ describe("API handlers", () => {
         actor: expect.objectContaining({ role: "support" })
       })
     );
+  });
+
+  it("does not let an analyst read raw problem-report data", async () => {
+    const listAdminProblemReports = vi.fn();
+    const response = await handleListAdminProblemReports(
+      new Request("https://openvac.test/api/admin/problem-reports"),
+      partialStore({
+        getAdminRole: vi.fn().mockResolvedValue("analyst"),
+        listAdminProblemReports
+      })
+    );
+
+    expect(response.status).toBe(403);
+    expect(listAdminProblemReports).not.toHaveBeenCalled();
+  });
+
+  it("does not let an analyst read raw message-feedback text or identifiers", async () => {
+    const listFeedback = vi.fn();
+    const response = await handleListFeedback(
+      new Request("https://openvac.test/api/admin/feedback"),
+      partialStore({
+        getAdminRole: vi.fn().mockResolvedValue("analyst"),
+        listFeedback
+      })
+    );
+
+    expect(response.status).toBe(403);
+    expect(listFeedback).not.toHaveBeenCalled();
   });
 
   it("returns an ownership-safe 404 for feedback on another user's message", async () => {
