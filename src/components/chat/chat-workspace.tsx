@@ -1,7 +1,6 @@
 "use client";
 
 import { CircleStop, Menu, Send } from "lucide-react";
-import Link from "next/link";
 import {
   FormEvent,
   useCallback,
@@ -567,13 +566,14 @@ export function ChatWorkspace({
             append: true
           })
         }
+        modelingEnabled={modelingEnabled}
         userName={userName}
         userEmail={userEmail}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="shrink-0 border-b border-[var(--border)]">
-          <div className="flex h-[68px] items-center justify-between px-4 sm:px-6">
+          <div className="flex h-[68px] items-center px-4 sm:px-6">
             <div className="flex min-w-0 items-center gap-3">
               <button
                 type="button"
@@ -588,16 +588,6 @@ export function ChatWorkspace({
                 className={sidebarExpanded ? "lg:hidden" : undefined}
               />
             </div>
-            <nav className="flex items-center gap-5 text-sm font-medium sm:text-[15px]">
-              {modelingEnabled ? (
-                <Link
-                  href="/modeling"
-                  className="transition-colors hover:text-[var(--muted)]"
-                >
-                  智能建模
-                </Link>
-              ) : null}
-            </nav>
           </div>
         </header>
 

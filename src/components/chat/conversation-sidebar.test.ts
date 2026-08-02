@@ -57,6 +57,7 @@ function SidebarHarness({
       loading: false,
       hasMore: false,
       onLoadMore: vi.fn(),
+      modelingEnabled: true,
       userName: "工程用户",
       userEmail: "engineer@openvac.test"
     })
@@ -68,6 +69,10 @@ describe("ConversationSidebar", () => {
     render(createElement(SidebarHarness));
 
     expect(screen.getByText("旋片泵排查")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "智能建模" })).toHaveAttribute(
+      "href",
+      "/modeling"
+    );
     fireEvent.click(screen.getByRole("button", { name: "收起边栏" }));
 
     expect(
@@ -76,6 +81,10 @@ describe("ConversationSidebar", () => {
     expect(screen.getByRole("button", { name: "新对话" })).toBeInTheDocument();
     const searchButton = screen.getByRole("button", { name: "搜索对话" });
     expect(searchButton).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "智能建模" })).toHaveAttribute(
+      "href",
+      "/modeling"
+    );
     expect(screen.queryByText("旋片泵排查")).not.toBeInTheDocument();
 
     fireEvent.click(searchButton);

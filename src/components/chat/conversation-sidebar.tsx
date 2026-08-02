@@ -3,6 +3,7 @@
 import {
   ChevronRight,
   CircleHelp,
+  Cuboid,
   LoaderCircle,
   LogOut,
   MessageSquarePlus,
@@ -43,6 +44,7 @@ export function ConversationSidebar({
   loading,
   hasMore,
   onLoadMore,
+  modelingEnabled,
   userName,
   userEmail
 }: {
@@ -61,6 +63,7 @@ export function ConversationSidebar({
   loading: boolean;
   hasMore: boolean;
   onLoadMore: () => void;
+  modelingEnabled: boolean;
   userName: string;
   userEmail: string;
 }) {
@@ -239,6 +242,18 @@ export function ConversationSidebar({
                   aria-label="搜索对话"
                 />
               </label>
+              {modelingEnabled ? (
+                <Link
+                  href="/modeling"
+                  onClick={() => {
+                    if (mobileOpen) onMobileOpenChange(false);
+                  }}
+                  className="mt-1 flex h-11 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors hover:bg-[#ececed] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)]"
+                >
+                  <Cuboid aria-hidden className="h-[18px] w-[18px]" />
+                  智能建模
+                </Link>
+              ) : null}
             </div>
 
             <div className="mt-4 flex-1 overflow-y-auto px-3">
@@ -365,6 +380,16 @@ export function ConversationSidebar({
             >
               <Search aria-hidden className="h-[18px] w-[18px]" />
             </button>
+            {modelingEnabled ? (
+              <Link
+                href="/modeling"
+                className="grid h-11 w-11 place-items-center rounded-lg transition-colors hover:bg-[#ececed] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)]"
+                aria-label="智能建模"
+                title="智能建模"
+              >
+                <Cuboid aria-hidden className="h-[19px] w-[19px]" />
+              </Link>
+            ) : null}
           </div>
         )}
 
