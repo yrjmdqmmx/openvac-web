@@ -69,11 +69,9 @@ checksum_object="$archive_object.sha256"
 # OSS_SESSION_TOKEN from the environment. Never add credential command flags.
 ossutil cp "$checksum" "$checksum_object" \
   --acl private \
-  --disable-all-symlink \
   --force
 ossutil cp "$archive" "$archive_object" \
   --acl private \
-  --disable-all-symlink \
   --force
 
 echo "$archive_object"
