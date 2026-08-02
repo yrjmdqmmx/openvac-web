@@ -34,10 +34,9 @@ describe("SiteHeader", () => {
   it("renders a server-determined continue link for signed-in users", () => {
     render(createElement(SiteHeader, { authenticated: true }));
 
-    expect(screen.getByRole("link", { name: "继续对话" })).toHaveAttribute(
-      "href",
-      "/chat"
-    );
+    const continueLink = screen.getByRole("link", { name: "继续对话" });
+    expect(continueLink).toHaveAttribute("href", "/chat");
+    expect(continueLink).toHaveClass("!text-white");
     expect(
       screen.queryByRole("link", { name: "登录" })
     ).not.toBeInTheDocument();

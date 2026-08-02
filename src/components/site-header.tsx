@@ -37,7 +37,7 @@ export function SiteHeader({ authenticated }: { authenticated: boolean }) {
           href={authenticated ? "/chat" : "/sign-in"}
           className={
             authenticated
-              ? "rounded-lg bg-[var(--ink)] px-5 py-2.5 text-white transition-colors hover:bg-[#292b2d]"
+              ? "rounded-lg bg-[var(--ink)] px-5 py-2.5 !text-white transition-colors hover:bg-[#292b2d]"
               : "rounded-full border border-[var(--border-strong)] px-4 py-2 transition-colors hover:border-[var(--ink)]"
           }
         >
