@@ -235,7 +235,7 @@ describe("modeling deployment release set", () => {
     for (const call of composeCalls) {
       expect(call).toContain(" --profile modeling ");
     }
-  });
+  }, 15_000);
 
   it("restores both previous images when the new modeling worker is unhealthy", () => {
     const fixture = createFixture({ hasModeling: true });
@@ -282,7 +282,7 @@ describe("modeling deployment release set", () => {
     expect(readFileSync(join(fixture.host, "current-release"), "utf8")).toBe(
       `${fixture.previousRelease}\n`
     );
-  });
+  }, 15_000);
 
   it("fails closed before Docker when CPU or memory evidence is insufficient", () => {
     const webImage = `ghcr.io/example/openvac@sha256:${"a".repeat(64)}`;

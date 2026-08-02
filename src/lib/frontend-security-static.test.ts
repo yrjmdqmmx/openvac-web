@@ -16,15 +16,21 @@ describe("frontend authentication boundaries", () => {
     );
   });
 
-  it("uses sessionStorage-backed drafts without an auto-send replay", () => {
+  it("uses a versioned, owner-aware sessionStorage send intent", () => {
     const homePrompt = source("src/components/home-prompt.tsx");
     const chatWorkspace = source("src/components/chat/chat-workspace.tsx");
+    const pendingQuestion = source("src/lib/pending-question-draft.ts");
 
     expect(homePrompt).not.toContain("localStorage");
     expect(chatWorkspace).not.toContain("localStorage");
-    expect(chatWorkspace).not.toMatch(/send\s*\(\s*pending/);
-    expect(chatWorkspace).toContain("系统不会自动发送");
-    expect(chatWorkspace).toContain("确认发送");
+    expect(homePrompt).toContain("savePendingQuestionIntent");
+    expect(chatWorkspace).toContain("consumePendingQuestionIntent");
+    expect(chatWorkspace).toContain("consumeLegacyPendingQuestionDraft");
+    expect(chatWorkspace).toContain("savePendingQuestionIntent");
+    expect(chatWorkspace).not.toContain("系统不会自动发送");
+    expect(chatWorkspace).not.toContain("确认发送");
+    expect(pendingQuestion).toContain("ownerUserId");
+    expect(pendingQuestion).toContain("target.removeItem");
   });
 
   it("does not retain another device token in account React state", () => {

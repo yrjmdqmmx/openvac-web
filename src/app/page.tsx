@@ -1,96 +1,42 @@
+import { headers } from "next/headers";
 import Link from "next/link";
-import {
-  ArrowRight,
-  BookOpenText,
-  Code2,
-  Cuboid,
-  ShieldCheck
-} from "lucide-react";
 import { HomePrompt } from "@/components/home-prompt";
 import { SiteHeader } from "@/components/site-header";
-import { isModelingEnabled } from "@/server/modeling/feature-flag";
+import { auth } from "@/server/auth";
 
 export const dynamic = "force-dynamic";
 
-const principles = [
-  {
-    icon: BookOpenText,
-    title: "答案有来源",
-    body: "引用可展开、可回到原文；证据不足就明确追问。"
-  },
-  {
-    icon: ShieldCheck,
-    title: "安全有边界",
-    body: "高风险工况只给停机、隔离与检查建议，并要求联系制造商或现场合格人员。"
-  },
-  {
-    icon: Code2,
-    title: "源码可审计",
-    body: "OpenVac Web 采用 AGPL-3.0 开源，模型与密钥仅在服务端。"
-  }
-];
-
-export default function HomePage() {
-  const modelingEnabled = isModelingEnabled();
+export default async function HomePage() {
+  const session = await auth.api.getSession({
+    headers: await headers()
+  });
 
   return (
-    <main className="min-h-screen bg-white">
-      <SiteHeader />
+    <main className="flex min-h-screen flex-col bg-white">
+      <div className="border-b border-[var(--border)]">
+        <SiteHeader authenticated={Boolean(session)} />
+      </div>
 
-      <section className="shell pt-[10vh] sm:pt-[12vh]">
-        <div className="mx-auto max-w-[920px]">
-          <h1 className="text-[2.65rem] leading-[1.08] font-semibold tracking-[-0.055em] text-balance sm:text-[3.5rem]">
-            真空泵问题，直接问
+      <section className="shell flex flex-1 items-center py-16 sm:py-20">
+        <div className="mx-auto w-full max-w-[884px] -translate-y-6 sm:-translate-y-7">
+          <h1 className="text-center text-[clamp(2.35rem,4.2vw,3.75rem)] leading-[1.08] font-semibold tracking-[-0.06em] text-balance">
+            今天想解决<span className="whitespace-nowrap">什么真空问题？</span>
           </h1>
-          <p className="mt-5 text-base leading-8 text-[var(--muted)] sm:text-lg">
-            选泵、查故障、理解方案、找配件，不用再翻手册。
+          <p className="mx-auto mt-5 max-w-[720px] text-center text-base leading-7 text-[var(--muted)] sm:text-[17px]">
+            描述泵型、工况或故障现象，OpenVac 会结合资料给出可核查的回答。
           </p>
-          <div className="mt-12">
-            <HomePrompt />
+          <div className="mt-10 sm:mt-11">
+            <HomePrompt currentUserId={session?.user.id} />
           </div>
-          <p className="mt-4 text-center text-xs leading-6 text-[var(--muted)]">
+          <p className="mt-8 text-center text-xs leading-6 text-[var(--muted)]">
             AI
             生成内容仅供排查参考；涉及拆机、电气或危险介质时，请由合格人员操作。
           </p>
-          {modelingEnabled ? (
-            <div className="mt-7 flex justify-center">
-              <Link
-                href="/modeling"
-                className="inline-flex min-h-11 items-center gap-2 rounded-full border border-[var(--border-strong)] px-5 py-2.5 text-sm font-medium transition-colors hover:border-[var(--ink)] hover:text-[var(--accent)] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--accent)]"
-              >
-                <Cuboid className="h-4 w-4" strokeWidth={1.7} />
-                进入智能建模工作台
-                <ArrowRight className="h-4 w-4" strokeWidth={1.7} />
-              </Link>
-            </div>
-          ) : null}
-        </div>
-      </section>
-
-      <section
-        className="shell mt-[15vh] border-t border-[var(--border)] py-14 sm:mt-[18vh]"
-        aria-label="产品原则"
-      >
-        <div className="grid gap-10 md:grid-cols-3 md:gap-14">
-          {principles.map(({ icon: Icon, title, body }) => (
-            <article key={title} className="flex items-start gap-4">
-              <Icon
-                className="mt-0.5 h-6 w-6 shrink-0 text-[var(--accent)]"
-                strokeWidth={1.6}
-              />
-              <div>
-                <h2 className="font-medium">{title}</h2>
-                <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-                  {body}
-                </p>
-              </div>
-            </article>
-          ))}
         </div>
       </section>
 
       <footer className="border-t border-[var(--border)]">
-        <div className="shell flex flex-col gap-5 py-7 text-xs text-[var(--muted)] sm:flex-row sm:items-center sm:justify-between">
+        <div className="footer-shell flex flex-col gap-5 py-8 text-xs text-[var(--muted)] sm:min-h-[135px] sm:flex-row sm:items-center sm:justify-between sm:py-0">
           <span>© 2026 OpenVac · 真空泵专家 Agent</span>
           <nav className="flex flex-wrap gap-5" aria-label="页脚导航">
             <Link href="/product">产品说明</Link>

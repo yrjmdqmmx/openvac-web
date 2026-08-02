@@ -12,9 +12,11 @@ export const metadata: Metadata = {
   description:
     "有依据的真空泵专业问答：选泵、方案、故障与配件问题，提供来源引用和问题反馈入口。",
   applicationName: "OpenVac",
+  icons: null,
   openGraph: {
     title: "OpenVac｜真空泵专家",
-    description: "选泵、查故障、理解方案、找配件，不用再翻手册。",
+    description:
+      "描述泵型、工况或故障现象，OpenVac 会结合资料给出可核查的回答。",
     type: "website",
     locale: "zh_CN"
   },
