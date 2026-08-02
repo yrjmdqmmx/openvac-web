@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vitest";
 
-import { promptAdminTableShape, sourceAdminTableShape } from "./store";
+import {
+  orderConversationMessages,
+  promptAdminTableShape,
+  sourceAdminTableShape
+} from "./store";
+
+describe("conversation message ordering", () => {
+  it("uses the per-conversation sequence instead of timestamp or id order", () => {
+    const answer = { id: "a-answer", sequence: 2, role: "assistant" };
+    const question = { id: "z-question", sequence: 1, role: "user" };
+
+    expect(orderConversationMessages([answer, question])).toEqual([
+      question,
+      answer
+    ]);
+  });
+});
 
 describe("generic administrator table shapes", () => {
   it("normalizes source publisher, domain, and license fields", () => {
