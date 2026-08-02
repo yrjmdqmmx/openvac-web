@@ -83,7 +83,8 @@ describe("ChatWorkspace pending question flow", () => {
     render(
       createElement(ChatWorkspace, {
         userId: "user-a",
-        userName: "用户 A"
+        userName: "用户 A",
+        userEmail: "user-a@openvac.test"
       })
     );
 
@@ -112,7 +113,8 @@ describe("ChatWorkspace pending question flow", () => {
         null,
         createElement(ChatWorkspace, {
           userId: "user-a",
-          userName: "用户 A"
+          userName: "用户 A",
+          userEmail: "user-a@openvac.test"
         })
       )
     );
@@ -136,7 +138,8 @@ describe("ChatWorkspace pending question flow", () => {
     render(
       createElement(ChatWorkspace, {
         userId: "user-a",
-        userName: "用户 A"
+        userName: "用户 A",
+        userEmail: "user-a@openvac.test"
       })
     );
 
@@ -158,7 +161,8 @@ describe("ChatWorkspace pending question flow", () => {
     render(
       createElement(ChatWorkspace, {
         userId: "user-b",
-        userName: "用户 B"
+        userName: "用户 B",
+        userEmail: "user-b@openvac.test"
       })
     );
 
@@ -174,7 +178,8 @@ describe("ChatWorkspace pending question flow", () => {
     render(
       createElement(ChatWorkspace, {
         userId: "user-a",
-        userName: "用户 A"
+        userName: "用户 A",
+        userEmail: "user-a@openvac.test"
       })
     );
 

@@ -19,6 +19,7 @@ export default async function ChatPage() {
     <ChatWorkspace
       userId={session.user.id}
       userName={session.user.name || "OpenVac 用户"}
+      userEmail={session.user.email}
       modelingEnabled={isModelingEnabled()}
     />
   );
