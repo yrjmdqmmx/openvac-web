@@ -10,10 +10,23 @@ import {
   waitFor
 } from "@testing-library/react";
 import { createElement, useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConversationSidebar } from "./conversation-sidebar";
 
-afterEach(cleanup);
+beforeEach(() => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [] })
+    })
+  );
+});
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 function SidebarHarness({
   initialExpanded = true,
@@ -50,6 +63,7 @@ function SidebarHarness({
       onMobileOpenChange: setMobileOpen,
       onSelect,
       onNew: vi.fn(),
+      onConversationDataCleared: vi.fn(),
       onRename: vi.fn(),
       onDelete: vi.fn(),
       searchQuery: "",
@@ -79,11 +93,23 @@ describe("ConversationSidebar", () => {
       screen.getByRole("button", { name: "展开边栏" })
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "新对话" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新对话" })).toHaveAttribute(
+      "aria-describedby",
+      "rail-tooltip-new"
+    );
+    expect(screen.getByRole("tooltip", { name: "新对话" })).toBeInTheDocument();
     const searchButton = screen.getByRole("button", { name: "搜索对话" });
     expect(searchButton).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "智能建模" })).toHaveAttribute(
       "href",
       "/modeling"
+    );
+    expect(
+      screen.getByRole("tooltip", { name: "智能建模" })
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "展开边栏" })).toHaveAttribute(
+      "aria-describedby",
+      "rail-tooltip-expand"
     );
     expect(screen.queryByText("旋片泵排查")).not.toBeInTheDocument();
 
@@ -149,14 +175,10 @@ describe("ConversationSidebar", () => {
     fireEvent.click(accountButton);
 
     expect(screen.getByRole("menu", { name: "账户菜单" })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "个人资料" })).toHaveAttribute(
-      "href",
-      "/settings#profile"
-    );
-    expect(screen.getByRole("menuitem", { name: "设置" })).toHaveAttribute(
-      "href",
-      "/settings"
-    );
+    expect(
+      screen.getByRole("menuitem", { name: "个人资料" })
+    ).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "设置" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "帮助" })).toHaveAttribute(
       "href",
       "/help"
@@ -173,5 +195,76 @@ describe("ConversationSidebar", () => {
       ).not.toBeInTheDocument()
     );
     expect(accountButton).toHaveFocus();
+  });
+
+  it("opens settings inside the chat modal and restores focus on close", async () => {
+    render(createElement(SidebarHarness));
+
+    const accountButton = screen.getByRole("button", {
+      name: "账户：工程用户"
+    });
+    fireEvent.click(accountButton);
+    fireEvent.click(screen.getByRole("menuitem", { name: "设置" }));
+
+    const dialog = screen.getByRole("dialog", { name: "设置" });
+    expect(dialog).toBeInTheDocument();
+    expect(
+      screen.queryByRole("menu", { name: "账户菜单" })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "账户" })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+    expect(screen.getByRole("button", { name: "关闭设置" })).toHaveFocus();
+    expect(screen.getByText("engineer@openvac.test")).toBeInTheDocument();
+    expect(screen.getAllByText("工程用户")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "登录与安全" }));
+    expect(
+      screen.getByRole("button", { name: "撤销其他设备" })
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "数据管理" }));
+    expect(
+      screen.getByRole("button", { name: "清空对话" })
+    ).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("当前密码")).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "设置" })
+      ).not.toBeInTheDocument()
+    );
+    await waitFor(() => expect(accountButton).toHaveFocus());
+  });
+
+  it("closes only the top settings dialog on mobile Escape", async () => {
+    render(
+      createElement(SidebarHarness, {
+        initialExpanded: false,
+        withMobileTrigger: true
+      })
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "打开对话记录" }));
+    fireEvent.click(screen.getByRole("button", { name: "账户：工程用户" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "设置" }));
+    expect(screen.getByRole("dialog", { name: "设置" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "设置" })
+      ).not.toBeInTheDocument()
+    );
+    expect(
+      screen.getByRole("dialog", { name: "对话记录" })
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "账户：工程用户" })
+      ).toHaveFocus()
+    );
   });
 });

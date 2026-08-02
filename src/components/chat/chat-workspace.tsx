@@ -28,6 +28,7 @@ import type {
 
 const CONVERSATION_PAGE_SIZE = 20;
 const CONVERSATION_SEARCH_DEBOUNCE_MS = 250;
+const CONVERSATION_DATA_CLEARED_ABORT_REASON = "conversation-data-cleared";
 
 type ConversationPage = {
   items: ConversationSummary[];
@@ -406,6 +407,12 @@ export function ChatWorkspace({
           append: false
         });
       } catch (caught) {
+        if (
+          controller.signal.aborted &&
+          controller.signal.reason === CONVERSATION_DATA_CLEARED_ABORT_REASON
+        ) {
+          return;
+        }
         if (controller.signal.aborted) {
           setError("已取消本次回答；未完成的回答不会扣除额度。");
         } else {
@@ -530,6 +537,27 @@ export function ChatWorkspace({
     }
   }
 
+  function clearConversationState() {
+    abortRef.current?.abort(CONVERSATION_DATA_CLEARED_ABORT_REASON);
+    abortRef.current = undefined;
+    conversationHistoryAbortRef.current?.abort();
+    conversationHistoryRequestRef.current += 1;
+    conversationDetailAbortRef.current?.abort();
+    conversationDetailRequestRef.current += 1;
+    setConversations([]);
+    setConversationQuery("");
+    setConversationPage(1);
+    setConversationTotal(0);
+    setConversationHistoryLoading(false);
+    setConversationId(undefined);
+    setMessages([]);
+    setStage(undefined);
+    setError(undefined);
+    setResetAt(undefined);
+    setProblemReportOpen(false);
+    setProblemReportMessageId(undefined);
+  }
+
   const problemReportDescription = useMemo(
     () => problemReportDescriptionForMessage(messages, problemReportMessageId),
     [messages, problemReportMessageId]
@@ -553,6 +581,7 @@ export function ChatWorkspace({
           setConversationQuery("");
           setMobileSidebarOpen(false);
         }}
+        onConversationDataCleared={clearConversationState}
         onRename={(id, title) => void renameConversation(id, title)}
         onDelete={(id) => void deleteConversation(id)}
         searchQuery={conversationQuery}
