@@ -15,7 +15,9 @@ import {
   UserRound
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AccountSettingsDialog } from "@/components/account/account-settings-dialog";
+import type { AccountSettingsSection } from "@/components/account/account-settings";
 import { authClient } from "@/lib/auth-client";
 import {
   clearPendingQuestionDraft,
@@ -26,6 +28,18 @@ import type { ConversationSummary } from "@/types/chat";
 
 function accountInitial(userName: string) {
   return Array.from(userName.trim())[0]?.toLocaleUpperCase("zh-CN") ?? "U";
+}
+
+function RailTooltip({ id, label }: { id: string; label: string }) {
+  return (
+    <span
+      id={id}
+      role="tooltip"
+      className="pointer-events-none absolute top-1/2 left-[calc(100%+10px)] z-[60] translate-x-1 -translate-y-1/2 rounded-lg bg-[#242424] px-3 py-2 text-sm font-medium whitespace-nowrap text-white opacity-0 shadow-lg transition-[opacity,transform] duration-150 group-focus-within:translate-x-0 group-focus-within:opacity-100 group-hover:translate-x-0 group-hover:opacity-100"
+    >
+      {label}
+    </span>
+  );
 }
 
 export function ConversationSidebar({
@@ -69,16 +83,24 @@ export function ConversationSidebar({
 }) {
   const [conversationMenuId, setConversationMenuId] = useState<string>();
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [settingsDialogSection, setSettingsDialogSection] =
+    useState<AccountSettingsSection>("account");
   const panelToggleRef = useRef<HTMLButtonElement>(null);
   const mobileReturnFocusRef = useRef<HTMLElement | null>(null);
   const accountMenuRef = useRef<HTMLDivElement>(null);
   const accountButtonRef = useRef<HTMLButtonElement>(null);
-  const firstAccountItemRef = useRef<HTMLAnchorElement>(null);
+  const firstAccountItemRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchFocusRequestedRef = useRef(false);
+  const settingsDialogOpenRef = useRef(false);
   const searching = Boolean(searchQuery.trim());
   const fullSidebar = expanded || mobileOpen;
   const initial = accountInitial(userName);
+
+  useEffect(() => {
+    settingsDialogOpenRef.current = settingsDialogOpen;
+  }, [settingsDialogOpen]);
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -92,7 +114,7 @@ export function ConversationSidebar({
     panelToggleRef.current?.focus();
 
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && !settingsDialogOpenRef.current) {
         setConversationMenuId(undefined);
         onMobileOpenChange(false);
       }
@@ -144,6 +166,17 @@ export function ConversationSidebar({
     onExpandedChange(true);
   }
 
+  function openSettings(section: AccountSettingsSection) {
+    setAccountMenuOpen(false);
+    setSettingsDialogSection(section);
+    setSettingsDialogOpen(true);
+  }
+
+  const closeSettings = useCallback(() => {
+    setSettingsDialogOpen(false);
+    window.setTimeout(() => accountButtonRef.current?.focus(), 0);
+  }, []);
+
   return (
     <>
       {mobileOpen ? (
@@ -186,29 +219,37 @@ export function ConversationSidebar({
               OpenVac
             </Link>
           ) : null}
-          <button
-            ref={panelToggleRef}
-            type="button"
-            onClick={() => {
-              if (mobileOpen) {
-                setConversationMenuId(undefined);
-                onMobileOpenChange(false);
-                return;
+          <span className="group relative flex">
+            <button
+              ref={panelToggleRef}
+              type="button"
+              onClick={() => {
+                if (mobileOpen) {
+                  setConversationMenuId(undefined);
+                  onMobileOpenChange(false);
+                  return;
+                }
+                if (expanded) setConversationMenuId(undefined);
+                onExpandedChange(!expanded);
+              }}
+              className="grid h-10 w-10 place-items-center rounded-lg transition-colors hover:bg-[#ececed] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
+              aria-label={
+                mobileOpen ? "关闭对话记录" : expanded ? "收起边栏" : "展开边栏"
               }
-              if (expanded) setConversationMenuId(undefined);
-              onExpandedChange(!expanded);
-            }}
-            className="grid h-10 w-10 place-items-center rounded-lg transition-colors hover:bg-[#ececed] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]"
-            aria-label={
-              mobileOpen ? "关闭对话记录" : expanded ? "收起边栏" : "展开边栏"
-            }
-          >
-            {mobileOpen || expanded ? (
-              <PanelLeftClose aria-hidden className="h-[19px] w-[19px]" />
-            ) : (
-              <PanelLeftOpen aria-hidden className="h-[19px] w-[19px]" />
-            )}
-          </button>
+              aria-describedby={
+                !fullSidebar ? "rail-tooltip-expand" : undefined
+              }
+            >
+              {mobileOpen || expanded ? (
+                <PanelLeftClose aria-hidden className="h-[19px] w-[19px]" />
+              ) : (
+                <PanelLeftOpen aria-hidden className="h-[19px] w-[19px]" />
+              )}
+            </button>
+            {!fullSidebar ? (
+              <RailTooltip id="rail-tooltip-expand" label="展开边栏" />
+            ) : null}
+          </span>
         </div>
 
         {fullSidebar ? (
@@ -362,33 +403,42 @@ export function ConversationSidebar({
           </>
         ) : (
           <div className="flex flex-1 flex-col items-center gap-1 px-2 pt-1">
-            <button
-              type="button"
-              onClick={onNew}
-              className="grid h-11 w-11 place-items-center rounded-lg transition-colors hover:bg-[#ececed] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)]"
-              aria-label="新对话"
-              title="新对话"
-            >
-              <MessageSquarePlus aria-hidden className="h-[19px] w-[19px]" />
-            </button>
-            <button
-              type="button"
-              onClick={openSearchFromRail}
-              className="grid h-11 w-11 place-items-center rounded-lg transition-colors hover:bg-[#ececed] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)]"
-              aria-label="搜索对话"
-              title="搜索对话"
-            >
-              <Search aria-hidden className="h-[18px] w-[18px]" />
-            </button>
-            {modelingEnabled ? (
-              <Link
-                href="/modeling"
+            <span className="group relative flex">
+              <button
+                type="button"
+                onClick={onNew}
                 className="grid h-11 w-11 place-items-center rounded-lg transition-colors hover:bg-[#ececed] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)]"
-                aria-label="智能建模"
-                title="智能建模"
+                aria-label="新对话"
+                aria-describedby="rail-tooltip-new"
               >
-                <Cuboid aria-hidden className="h-[19px] w-[19px]" />
-              </Link>
+                <MessageSquarePlus aria-hidden className="h-[19px] w-[19px]" />
+              </button>
+              <RailTooltip id="rail-tooltip-new" label="新对话" />
+            </span>
+            <span className="group relative flex">
+              <button
+                type="button"
+                onClick={openSearchFromRail}
+                className="grid h-11 w-11 place-items-center rounded-lg transition-colors hover:bg-[#ececed] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)]"
+                aria-label="搜索对话"
+                aria-describedby="rail-tooltip-search"
+              >
+                <Search aria-hidden className="h-[18px] w-[18px]" />
+              </button>
+              <RailTooltip id="rail-tooltip-search" label="搜索对话" />
+            </span>
+            {modelingEnabled ? (
+              <span className="group relative flex">
+                <Link
+                  href="/modeling"
+                  className="grid h-11 w-11 place-items-center rounded-lg transition-colors hover:bg-[#ececed] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)]"
+                  aria-label="智能建模"
+                  aria-describedby="rail-tooltip-modeling"
+                >
+                  <Cuboid aria-hidden className="h-[19px] w-[19px]" />
+                </Link>
+                <RailTooltip id="rail-tooltip-modeling" label="智能建模" />
+              </span>
             ) : null}
           </div>
         )}
@@ -426,23 +476,25 @@ export function ConversationSidebar({
                 </span>
               </div>
               <div className="my-1 border-t border-[var(--border)]" />
-              <Link
+              <button
                 ref={firstAccountItemRef}
-                href="/settings#profile"
+                type="button"
                 role="menuitem"
-                className="flex h-11 items-center gap-3 rounded-lg px-3 text-sm hover:bg-[var(--surface)]"
+                onClick={() => openSettings("account")}
+                className="flex h-11 w-full items-center gap-3 rounded-lg px-3 text-left text-sm hover:bg-[var(--surface)]"
               >
                 <UserRound aria-hidden className="h-[18px] w-[18px]" />
                 个人资料
-              </Link>
-              <Link
-                href="/settings"
+              </button>
+              <button
+                type="button"
                 role="menuitem"
-                className="flex h-11 items-center gap-3 rounded-lg px-3 text-sm hover:bg-[var(--surface)]"
+                onClick={() => openSettings("account")}
+                className="flex h-11 w-full items-center gap-3 rounded-lg px-3 text-left text-sm hover:bg-[var(--surface)]"
               >
                 <Settings aria-hidden className="h-[18px] w-[18px]" />
                 设置
-              </Link>
+              </button>
               <Link
                 href="/help"
                 role="menuitem"
@@ -469,41 +521,57 @@ export function ConversationSidebar({
             </div>
           ) : null}
 
-          <button
-            ref={accountButtonRef}
-            type="button"
-            aria-haspopup="menu"
-            aria-expanded={accountMenuOpen}
-            aria-label={`账户：${userName}`}
-            title={fullSidebar ? undefined : userName}
-            onClick={() => setAccountMenuOpen((current) => !current)}
-            className={cn(
-              "flex items-center rounded-xl transition-colors hover:bg-[#ececed] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)]",
-              fullSidebar
-                ? "h-12 w-full gap-3 px-2"
-                : "mx-auto h-11 w-11 justify-center"
-            )}
-          >
-            <span
-              className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[var(--ink)] text-xs font-medium text-white"
-              aria-hidden
+          <span className={cn("group relative flex", fullSidebar && "w-full")}>
+            <button
+              ref={accountButtonRef}
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={accountMenuOpen}
+              aria-label={`账户：${userName}`}
+              aria-describedby={
+                !fullSidebar ? "rail-tooltip-account" : undefined
+              }
+              onClick={() => setAccountMenuOpen((current) => !current)}
+              className={cn(
+                "flex items-center rounded-xl transition-colors hover:bg-[#ececed] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)]",
+                fullSidebar
+                  ? "h-12 w-full gap-3 px-2"
+                  : "mx-auto h-11 w-11 justify-center"
+              )}
             >
-              {initial}
-            </span>
-            {fullSidebar ? (
-              <>
-                <span className="min-w-0 flex-1 truncate text-left text-sm">
-                  {userName}
-                </span>
-                <ChevronRight
-                  aria-hidden
-                  className="h-4 w-4 text-[var(--muted)]"
-                />
-              </>
+              <span
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[var(--ink)] text-xs font-medium text-white"
+                aria-hidden
+              >
+                {initial}
+              </span>
+              {fullSidebar ? (
+                <>
+                  <span className="min-w-0 flex-1 truncate text-left text-sm">
+                    {userName}
+                  </span>
+                  <ChevronRight
+                    aria-hidden
+                    className="h-4 w-4 text-[var(--muted)]"
+                  />
+                </>
+              ) : null}
+            </button>
+            {!fullSidebar ? (
+              <RailTooltip id="rail-tooltip-account" label={userName} />
             ) : null}
-          </button>
+          </span>
         </div>
       </aside>
+
+      {settingsDialogOpen ? (
+        <AccountSettingsDialog
+          initialSection={settingsDialogSection}
+          userName={userName}
+          email={userEmail}
+          onClose={closeSettings}
+        />
+      ) : null}
     </>
   );
 }

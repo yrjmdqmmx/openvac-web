@@ -20,7 +20,10 @@ export default async function SettingsPage() {
           </a>
         </div>
       </header>
-      <AccountSettings email={session.user.email} />
+      <AccountSettings
+        email={session.user.email}
+        userName={session.user.name || "OpenVac 用户"}
+      />
     </div>
   );
 }
