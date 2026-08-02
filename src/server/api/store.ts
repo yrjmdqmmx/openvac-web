@@ -121,6 +121,12 @@ export function serializeProblemReportContextMessages(
     }));
 }
 
+export function orderConversationMessages<T extends { sequence: number }>(
+  messageRows: ReadonlyArray<T>
+): T[] {
+  return [...messageRows].sort((left, right) => left.sequence - right.sequence);
+}
+
 export function existingKnowledgeEmbeddingMatchesReview(input: {
   ingestionMode: unknown;
   reviewedContentHash: unknown;
@@ -1111,11 +1117,12 @@ export const apiStore: ApiStore = {
         role: messages.role,
         status: messages.status,
         content: messages.content,
-        metadata: messages.metadata
+        metadata: messages.metadata,
+        sequence: messages.sequence
       })
       .from(messages)
       .where(eq(messages.conversationId, conversationId))
-      .orderBy(asc(messages.createdAt), asc(messages.id));
+      .orderBy(asc(messages.sequence));
 
     const messageIds = messageRows.map((message) => message.id);
     const citationRows =
@@ -1150,7 +1157,7 @@ export const apiStore: ApiStore = {
     return {
       ...conversation,
       title: conversation.title ?? "新对话",
-      messages: messageRows
+      messages: orderConversationMessages(messageRows)
         .map((message) =>
           serializeStoredMessage(
             message,
