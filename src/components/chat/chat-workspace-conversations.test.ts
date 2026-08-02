@@ -100,7 +100,7 @@ describe("ChatWorkspace conversation history", () => {
     expect(
       await screen.findByRole("textbox", { name: "搜索对话" })
     ).toBeInTheDocument();
-    expect(screen.getByText("第一段对话")).toBeInTheDocument();
+    expect(await screen.findByText("第一段对话")).toBeInTheDocument();
     expect(
       screen.queryByRole("link", { name: "知识来源" })
     ).not.toBeInTheDocument();
