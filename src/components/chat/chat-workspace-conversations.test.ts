@@ -67,6 +67,10 @@ function renderWorkspace() {
   );
 }
 
+function openConversationHistory() {
+  fireEvent.click(screen.getByRole("button", { name: "对话记录" }));
+}
+
 beforeEach(() => {
   Object.defineProperty(Element.prototype, "scrollIntoView", {
     configurable: true,
@@ -126,6 +130,7 @@ describe("ChatWorkspace conversation history", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderWorkspace();
+    openConversationHistory();
     expect(await screen.findByText("第一段对话")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("搜索对话"), {
@@ -197,6 +202,7 @@ describe("ChatWorkspace conversation history", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderWorkspace();
+    openConversationHistory();
     expect(await screen.findByText("第一段对话")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "加载更多对话" }));
 
@@ -233,8 +239,10 @@ describe("ChatWorkspace conversation history", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderWorkspace();
+    openConversationHistory();
     expect(await screen.findByText("第一段对话")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "第一段对话" }));
+    openConversationHistory();
     fireEvent.click(screen.getByRole("button", { name: "第二段对话" }));
 
     await act(async () => {
@@ -312,6 +320,7 @@ describe("ChatWorkspace conversation history", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
 
     renderWorkspace();
+    openConversationHistory();
     expect(await screen.findByText("第一段对话")).toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", { name: "第一段对话 的更多操作" })

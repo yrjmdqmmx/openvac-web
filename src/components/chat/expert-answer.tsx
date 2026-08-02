@@ -10,6 +10,7 @@ import {
   Download,
   FileText,
   Flag,
+  LoaderCircle,
   MessageSquareWarning,
   ThumbsDown,
   ThumbsUp
@@ -61,7 +62,7 @@ function SourceItem({ citation }: { citation: Citation }) {
         onClick={() => setOpen((value) => !value)}
         className="flex w-full items-center gap-3 text-left"
       >
-        <FileText className="h-4 w-4 shrink-0 text-[var(--accent)]" />
+        <FileText className="h-4 w-4 shrink-0 text-[var(--muted)]" />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">
           {citation.title}
         </span>
@@ -94,7 +95,7 @@ function SourceItem({ citation }: { citation: Citation }) {
               href={link.href}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[var(--accent)] underline underline-offset-4"
+              className="text-[var(--ink)] underline underline-offset-4"
             >
               {link.authoritative ? "打开权威来源" : "打开参考来源"}
             </a>
@@ -184,11 +185,13 @@ function formatBytes(bytes: number): string {
 
 export function ExpertAnswer({
   message,
+  stage,
   onFeedback,
   onProblemReport,
   modelingEnabled = false
 }: {
   message: ChatMessage;
+  stage?: string;
   onFeedback: (
     messageId: string,
     rating: "up" | "down" | "report"
@@ -208,18 +211,26 @@ export function ExpertAnswer({
   );
 
   return (
-    <article className="mx-auto w-full max-w-[760px] pb-10">
-      <div className="mb-6 flex items-center gap-3">
-        <span className="grid h-9 w-9 place-items-center rounded-full border border-[#abd4d0] bg-[var(--accent-soft)] text-sm font-semibold text-[var(--accent)]">
-          OV
-        </span>
-        <span className="font-medium">OpenVac 真空专家</span>
-        {message.meta?.riskLevel === "high" && (
-          <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--warning)]">
-            <AlertTriangle className="h-3.5 w-3.5" />
-            安全优先
-          </span>
-        )}
+    <article className="mx-auto w-full max-w-[830px] pb-10">
+      <div className="mb-6">
+        <div className="flex items-center gap-3">
+          <span className="font-semibold tracking-[-0.02em]">OpenVac</span>
+          {message.meta?.riskLevel === "high" && (
+            <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--warning)]">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              安全优先
+            </span>
+          )}
+        </div>
+        {stage ? (
+          <p
+            role="status"
+            className="mt-2 flex items-center gap-2 text-sm text-[var(--muted)]"
+          >
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            {stage}
+          </p>
+        ) : null}
       </div>
 
       {message.content ? (
@@ -284,7 +295,7 @@ export function ExpertAnswer({
                     setFeedback(rating);
                   }}
                   className={`grid h-9 w-9 place-items-center rounded-full hover:bg-[var(--surface)] ${
-                    feedback === rating ? "text-[var(--accent)]" : ""
+                    feedback === rating ? "text-[var(--ink)]" : ""
                   }`}
                   aria-label={label}
                 >

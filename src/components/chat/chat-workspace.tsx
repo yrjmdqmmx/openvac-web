@@ -1,14 +1,6 @@
 "use client";
 
-import {
-  BookOpen,
-  CircleStop,
-  Cuboid,
-  HelpCircle,
-  LoaderCircle,
-  PanelLeftOpen,
-  Send
-} from "lucide-react";
+import { CircleStop, Send } from "lucide-react";
 import Link from "next/link";
 import {
   FormEvent,
@@ -21,13 +13,14 @@ import {
 import { ProblemReportDialog } from "@/components/chat/problem-report-dialog";
 import { ConversationSidebar } from "@/components/chat/conversation-sidebar";
 import { ExpertAnswer } from "@/components/chat/expert-answer";
+import { Brand } from "@/components/brand";
 import {
-  clearPendingQuestionDraft,
-  loadPendingQuestionDraft,
-  savePendingQuestionDraft,
-  type PendingQuestionDraft
+  consumeLegacyPendingQuestionDraft,
+  consumePendingQuestionIntent,
+  savePendingQuestionIntent
 } from "@/lib/pending-question-draft";
 import { ChatStreamProtocolError, parseChatEventStream } from "@/lib/sse";
+import { replaceWindowLocation } from "@/lib/client-navigation";
 import type {
   AnswerMeta,
   ChatMessage,
@@ -132,10 +125,6 @@ export function ChatWorkspace({
   const [conversationId, setConversationId] = useState<string>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [pendingDraft, setPendingDraft] = useState<PendingQuestionDraft | null>(
-    null
-  );
-  const [pendingDraftText, setPendingDraftText] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [stage, setStage] = useState<string>();
   const [error, setError] = useState<string>();
@@ -154,6 +143,7 @@ export function ChatWorkspace({
   );
   const conversationDetailRequestRef = useRef(0);
   const firstConversationHistoryLoadRef = useRef(true);
+  const pendingQuestionHandledRef = useRef(false);
   const conversationQueryRef = useRef("");
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -257,6 +247,7 @@ export function ChatWorkspace({
         setError("请至少输入 2 个字符，以便 OpenVac 理解你的问题。");
         return;
       }
+      pendingQuestionHandledRef.current = true;
 
       const clientRequestId = crypto.randomUUID();
       const localAssistantId = makeLocalId("assistant");
@@ -305,8 +296,14 @@ export function ChatWorkspace({
         });
 
         if (response.status === 401) {
-          savePendingQuestionDraft({ text: question, ownerUserId: userId });
-          window.location.assign("/sign-in?returnTo=%2Fchat");
+          if (
+            !savePendingQuestionIntent({ text: question, ownerUserId: userId })
+          ) {
+            throw new Error(
+              "登录状态已失效，且浏览器无法暂存问题。问题仍保留在当前对话中，请复制后重新登录。"
+            );
+          }
+          replaceWindowLocation("/sign-in?returnTo=%2Fchat");
           return;
         }
         if (!response.ok || !response.body) {
@@ -436,48 +433,22 @@ export function ChatWorkspace({
   );
 
   useEffect(() => {
-    let expiryTimer: number | undefined;
-    const loadTimer = window.setTimeout(() => {
-      const draft = loadPendingQuestionDraft({ userId });
-      if (!draft) {
-        setPendingDraft(null);
-        setPendingDraftText("");
+    const timer = window.setTimeout(() => {
+      if (pendingQuestionHandledRef.current) return;
+      pendingQuestionHandledRef.current = true;
+
+      const intent = consumePendingQuestionIntent({ userId });
+      if (intent) {
+        void send(intent.text);
         return;
       }
 
-      setPendingDraft(draft);
-      setPendingDraftText(draft.text);
-      expiryTimer = window.setTimeout(
-        () => {
-          clearPendingQuestionDraft();
-          setPendingDraft(null);
-          setPendingDraftText("");
-        },
-        Math.max(0, draft.expiresAt - Date.now())
-      );
+      const legacyDraft = consumeLegacyPendingQuestionDraft({ userId });
+      if (legacyDraft) setInput(legacyDraft.text);
     }, 0);
 
-    return () => {
-      window.clearTimeout(loadTimer);
-      if (expiryTimer !== undefined) window.clearTimeout(expiryTimer);
-    };
-  }, [userId]);
-
-  function discardPendingDraft() {
-    clearPendingQuestionDraft();
-    setPendingDraft(null);
-    setPendingDraftText("");
-  }
-
-  function confirmPendingDraft() {
-    const question = pendingDraftText.trim();
-    if (!question || busy) return;
-
-    clearPendingQuestionDraft();
-    setPendingDraft(null);
-    setPendingDraftText("");
-    void send(question);
-  }
+    return () => window.clearTimeout(timer);
+  }, [send, userId]);
 
   async function selectConversation(id: string) {
     if (busy) return;
@@ -562,7 +533,7 @@ export function ChatWorkspace({
     [messages, problemReportMessageId]
   );
   return (
-    <main className="flex h-dvh min-h-[640px] overflow-hidden bg-white">
+    <main className="flex h-dvh min-h-[640px] flex-col overflow-hidden bg-white">
       <ConversationSidebar
         conversations={conversations}
         activeId={conversationId}
@@ -594,86 +565,63 @@ export function ChatWorkspace({
         userName={userName}
       />
 
-      <section className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-20 shrink-0 items-center justify-between border-b border-[var(--border)] px-5 pl-16 lg:px-7">
-          <div className="flex items-center gap-3">
+      <header className="shrink-0 border-b border-[var(--border)]">
+        <div className="app-header-shell flex h-[84px] items-center justify-between">
+          <Brand />
+          <nav className="flex items-center gap-5 text-sm font-medium sm:gap-8 sm:text-[15px]">
             <button
               type="button"
               onClick={() => setSidebarOpen(true)}
-              className="hidden h-9 w-9 place-items-center rounded-full hover:bg-[var(--surface)] lg:grid"
-              aria-label="打开历史对话"
+              className="transition-colors hover:text-[var(--muted)]"
             >
-              <PanelLeftOpen className="h-5 w-5" />
+              对话记录
             </button>
-            <h1 className="text-sm font-medium sm:text-base">真空泵专家</h1>
-          </div>
-          <nav className="flex items-center gap-4 text-sm">
             <Link
               href="/sources"
-              className="hidden items-center gap-2 text-[var(--muted)] hover:text-[var(--ink)] sm:flex"
+              className="hidden transition-colors hover:text-[var(--muted)] sm:block"
             >
-              <BookOpen className="h-4 w-4" />
               知识来源
             </Link>
             {modelingEnabled ? (
               <Link
                 href="/modeling"
-                className="hidden items-center gap-2 text-[var(--muted)] hover:text-[var(--ink)] sm:flex"
+                className="hidden transition-colors hover:text-[var(--muted)] sm:block"
               >
-                <Cuboid className="h-4 w-4" />
                 智能建模
               </Link>
             ) : null}
             <Link
-              href="/help"
-              aria-label="帮助"
-              className="grid h-9 w-9 place-items-center rounded-full hover:bg-[var(--surface)]"
+              href="/settings"
+              className="transition-colors hover:text-[var(--muted)]"
+              title={userName}
             >
-              <HelpCircle className="h-5 w-5" />
+              账户
             </Link>
           </nav>
-        </header>
+        </div>
+      </header>
 
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="min-h-0 flex-1 overflow-y-auto">
           {messages.length === 0 ? (
-            <div className="mx-auto flex h-full max-w-[760px] flex-col justify-center px-5 pb-20">
-              <p className="text-sm font-medium text-[var(--accent)]">
-                OpenVac 真空泵专家
+            <div className="mx-auto flex h-full max-w-[920px] flex-col justify-center px-5 pb-12 text-center sm:pb-16">
+              <h1 className="text-[clamp(2rem,4vw,3.25rem)] font-semibold tracking-[-0.055em]">
+                {"今天想解决"}
+                <span className="whitespace-nowrap">什么真空问题？</span>
+              </h1>
+              <p className="mx-auto mt-4 max-w-[680px] text-sm leading-7 text-[var(--muted)] sm:text-base">
+                描述泵型、工况或故障现象，OpenVac 会结合资料给出可核查的回答。
               </p>
-              <h2 className="mt-3 text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">
-                今天要解决什么问题？
-              </h2>
-              <p className="mt-4 max-w-xl text-sm leading-7 text-[var(--muted)]">
-                请尽量提供泵型、介质、入口压力、目标压力、抽速、温度和故障现象。证据不足时，我会先追问。
-              </p>
-              {modelingEnabled ? (
-                <Link
-                  href="/modeling"
-                  className="mt-7 flex max-w-md items-center gap-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:border-[var(--border-strong)]"
-                >
-                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white text-[var(--accent)]">
-                    <Cuboid className="h-5 w-5" />
-                  </span>
-                  <span>
-                    <strong className="block text-sm font-medium">
-                      打开智能建模工作台
-                    </strong>
-                    <span className="mt-1 block text-xs leading-5 text-[var(--muted)]">
-                      手工建模与自然语言计划使用同一个确定性 CAD 内核
-                    </span>
-                  </span>
-                </Link>
-              ) : null}
             </div>
           ) : (
-            <div className="px-5 pt-8 sm:px-8">
+            <div className="px-5 pt-12 sm:px-8 sm:pt-14">
               {messages.map((message) =>
                 message.role === "user" ? (
                   <div
                     key={message.id}
-                    className="mx-auto mb-10 flex max-w-[760px] justify-end"
+                    className="mx-auto mb-8 flex max-w-[830px] justify-end"
                   >
-                    <p className="max-w-[85%] rounded-2xl bg-[var(--surface)] px-5 py-3 text-sm leading-7 sm:text-base">
+                    <p className="max-w-[88%] rounded-2xl bg-[var(--surface-strong)] px-5 py-3 text-sm leading-7 sm:max-w-[74%] sm:text-base">
                       {message.content}
                     </p>
                   </div>
@@ -681,6 +629,7 @@ export function ChatWorkspace({
                   <ExpertAnswer
                     key={message.id}
                     message={message}
+                    stage={message.status === "streaming" ? stage : undefined}
                     modelingEnabled={modelingEnabled}
                     onProblemReport={(messageId) => {
                       setProblemReportMessageId(messageId);
@@ -721,16 +670,7 @@ export function ChatWorkspace({
         </div>
 
         <div className="shrink-0 bg-white px-4 pb-4 sm:px-7 sm:pb-5">
-          <div className="mx-auto max-w-[1080px]">
-            {stage && (
-              <div
-                role="status"
-                className="mb-2 flex items-center gap-2 px-2 text-xs text-[var(--muted)]"
-              >
-                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                {stage}
-              </div>
-            )}
+          <div className="mx-auto max-w-[892px]">
             {error && (
               <div
                 role="alert"
@@ -757,63 +697,12 @@ export function ChatWorkspace({
                 </button>
               </div>
             )}
-            {pendingDraft && (
-              <section
-                aria-labelledby="pending-draft-title"
-                className="mb-3 rounded-[14px] border border-[#add5d1] bg-[var(--accent-soft)] p-4"
-              >
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h2
-                      id="pending-draft-title"
-                      className="text-sm font-semibold text-[#0b5d57]"
-                    >
-                      有一条待发送草稿
-                    </h2>
-                    <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
-                      请确认或编辑后再发送，系统不会自动发送。
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={discardPendingDraft}
-                    className="text-xs text-[var(--muted)] underline underline-offset-4"
-                  >
-                    丢弃草稿
-                  </button>
-                </div>
-                <label
-                  htmlFor="pending-question-draft"
-                  className="visually-hidden"
-                >
-                  待发送草稿
-                </label>
-                <textarea
-                  id="pending-question-draft"
-                  rows={2}
-                  maxLength={4000}
-                  value={pendingDraftText}
-                  onChange={(event) => setPendingDraftText(event.target.value)}
-                  className="mt-3 max-h-36 min-h-20 w-full resize-y rounded-lg border border-[#add5d1] bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--ink)]"
-                />
-                <div className="mt-3 flex justify-end">
-                  <button
-                    type="button"
-                    disabled={!pendingDraftText.trim() || busy}
-                    onClick={confirmPendingDraft}
-                    className="h-9 rounded-lg bg-[var(--ink)] px-4 text-sm font-medium text-white disabled:opacity-40"
-                  >
-                    确认发送
-                  </button>
-                </div>
-              </section>
-            )}
             <form
               onSubmit={(event: FormEvent) => {
                 event.preventDefault();
                 void send(input);
               }}
-              className="flex min-h-[74px] items-end gap-3 rounded-[14px] border border-[var(--border-strong)] bg-white p-3 pl-5 shadow-[0_4px_20px_rgba(17,19,21,0.04)] focus-within:border-[var(--ink)]"
+              className="flex min-h-[76px] items-end gap-3 rounded-[14px] border border-[var(--border-strong)] bg-white p-3 pl-5 shadow-[0_4px_20px_rgba(17,19,21,0.04)] transition-[border-color,box-shadow] focus-within:border-[var(--ink)] focus-within:shadow-[0_0_0_3px_rgba(17,19,21,0.08)]"
             >
               <label htmlFor="chat-input" className="visually-hidden">
                 继续提问
@@ -835,13 +724,13 @@ export function ChatWorkspace({
                 rows={2}
                 maxLength={4000}
                 placeholder="继续描述工况、型号或故障现象……"
-                className="max-h-40 min-h-11 min-w-0 flex-1 resize-none border-0 bg-transparent py-2 text-sm leading-6 outline-none sm:text-base"
+                className="composer-textarea max-h-40 min-h-11 min-w-0 flex-1 resize-none border-0 bg-transparent py-2 text-sm leading-6 outline-none sm:text-base"
               />
               {busy ? (
                 <button
                   type="button"
                   onClick={() => abortRef.current?.abort()}
-                  className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[var(--ink)] text-white"
+                  className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-[var(--ink)] text-white"
                   aria-label="取消回答"
                 >
                   <CircleStop className="h-5 w-5" />
@@ -850,7 +739,7 @@ export function ChatWorkspace({
                 <button
                   type="submit"
                   disabled={Array.from(input.trim()).length < 2}
-                  className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[var(--ink)] text-white disabled:opacity-30"
+                  className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-[var(--ink)] text-white transition-colors hover:bg-[#292b2d] disabled:opacity-30"
                   aria-label="发送"
                 >
                   <Send className="h-4 w-4" />

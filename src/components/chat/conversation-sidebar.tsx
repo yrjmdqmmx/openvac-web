@@ -1,9 +1,7 @@
 "use client";
 
 import {
-  ChevronLeft,
   LogOut,
-  Menu,
   MessageSquarePlus,
   MoreHorizontal,
   Search,
@@ -12,11 +10,13 @@ import {
   LoaderCircle
 } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
-import { Brand } from "@/components/brand";
+import { useEffect, useRef, useState } from "react";
 import type { ConversationSummary } from "@/types/chat";
 import { authClient } from "@/lib/auth-client";
-import { clearPendingQuestionDraft } from "@/lib/pending-question-draft";
+import {
+  clearPendingQuestionDraft,
+  clearPendingQuestionIntent
+} from "@/lib/pending-question-draft";
 import { cn } from "@/lib/utils";
 
 export function ConversationSidebar({
@@ -51,44 +51,63 @@ export function ConversationSidebar({
   userName: string;
 }) {
   const [menuId, setMenuId] = useState<string>();
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const searching = Boolean(searchQuery.trim());
+
+  useEffect(() => {
+    if (!open) return;
+
+    returnFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeButtonRef.current?.focus();
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onOpenChange(false);
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      returnFocusRef.current?.focus();
+    };
+  }, [open, onOpenChange]);
+
+  if (!open) return null;
 
   return (
     <>
       <button
         type="button"
-        onClick={() => onOpenChange(true)}
-        className="fixed top-4 left-4 z-30 grid h-10 w-10 place-items-center rounded-full border border-[var(--border)] bg-white lg:hidden"
-        aria-label="打开历史对话"
-      >
-        <Menu className="h-5 w-5" />
-      </button>
-
-      {open && (
-        <button
-          type="button"
-          aria-label="关闭历史对话"
-          className="fixed inset-0 z-30 bg-black/20 lg:hidden"
-          onClick={() => onOpenChange(false)}
-        />
-      )}
+        tabIndex={-1}
+        aria-label="点击遮罩关闭对话记录"
+        className="fixed inset-0 z-30 bg-black/20 backdrop-blur-[1px]"
+        onClick={() => onOpenChange(false)}
+      />
 
       <aside
-        className={cn(
-          "fixed inset-y-0 left-0 z-40 flex w-[300px] flex-col border-r border-[var(--border)] bg-[var(--surface)] transition-transform lg:static lg:translate-x-0",
-          open ? "translate-x-0" : "-translate-x-full"
-        )}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="conversation-history-title"
+        className="fixed inset-y-0 left-0 z-40 flex w-[min(360px,calc(100vw-20px))] flex-col border-r border-[var(--border)] bg-[var(--surface)] shadow-[12px_0_40px_rgba(17,19,21,0.12)]"
       >
-        <div className="flex h-20 items-center justify-between px-5">
-          <Brand compact />
+        <div className="flex h-[84px] items-center justify-between border-b border-[var(--border)] px-5">
+          <h2 id="conversation-history-title" className="text-lg font-semibold">
+            对话记录
+          </h2>
           <button
+            ref={closeButtonRef}
             type="button"
             onClick={() => onOpenChange(false)}
-            className="grid h-9 w-9 place-items-center rounded-full hover:bg-white"
-            aria-label="收起侧栏"
+            className="grid h-9 w-9 place-items-center rounded-lg hover:bg-white"
+            aria-label="关闭对话记录"
           >
-            <ChevronLeft className="hidden h-5 w-5 lg:block" />
-            <X className="h-5 w-5 lg:hidden" />
+            <X className="h-5 w-5" />
           </button>
         </div>
 
@@ -135,7 +154,7 @@ export function ConversationSidebar({
                   className={cn(
                     "flex min-h-11 w-full items-center rounded-lg border-l-2 px-3 pr-10 text-left text-sm",
                     activeId === conversation.id
-                      ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+                      ? "border-[#6e7376] bg-[#e8eaea]"
                       : "border-transparent hover:bg-white"
                   )}
                 >
@@ -209,9 +228,6 @@ export function ConversationSidebar({
 
         <div className="border-t border-[var(--border)] p-4">
           <div className="flex items-center gap-3 px-2 py-2">
-            <span className="grid h-9 w-9 place-items-center rounded-full bg-[var(--accent)] text-sm text-white">
-              {userName.slice(0, 1)}
-            </span>
             <span className="min-w-0 flex-1 truncate text-sm">{userName}</span>
             <Link href="/settings" aria-label="账户设置">
               <Settings className="h-4 w-4 text-[var(--muted)]" />
@@ -221,6 +237,7 @@ export function ConversationSidebar({
               aria-label="退出登录"
               onClick={async () => {
                 clearPendingQuestionDraft();
+                clearPendingQuestionIntent();
                 await authClient.signOut();
                 window.location.assign("/");
               }}

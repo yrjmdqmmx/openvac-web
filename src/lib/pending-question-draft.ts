@@ -1,10 +1,21 @@
 export const PENDING_QUESTION_DRAFT_KEY = "openvac:pending-question-draft:v1";
 export const PENDING_QUESTION_DRAFT_TTL_MS = 15 * 60 * 1000;
+export const PENDING_QUESTION_INTENT_KEY = "openvac:pending-question-intent:v2";
+export const PENDING_QUESTION_INTENT_TTL_MS = 15 * 60 * 1000;
 
 const MAX_QUESTION_LENGTH = 4000;
 
 export type PendingQuestionDraft = {
   version: 1;
+  text: string;
+  createdAt: number;
+  expiresAt: number;
+  ownerUserId?: string;
+};
+
+export type PendingQuestionIntentV2 = {
+  version: 2;
+  intent: "send";
   text: string;
   createdAt: number;
   expiresAt: number;
@@ -32,11 +43,30 @@ function removeDraft(storage?: DraftStorage) {
   }
 }
 
+function removeIntent(storage?: DraftStorage) {
+  try {
+    getSessionStorage(storage)?.removeItem(PENDING_QUESTION_INTENT_KEY);
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+}
+
 function writeDraft(draft: PendingQuestionDraft, storage?: DraftStorage) {
   try {
     const target = getSessionStorage(storage);
     if (!target) return false;
     target.setItem(PENDING_QUESTION_DRAFT_KEY, JSON.stringify(draft));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeIntent(intent: PendingQuestionIntentV2, storage?: DraftStorage) {
+  try {
+    const target = getSessionStorage(storage);
+    if (!target) return false;
+    target.setItem(PENDING_QUESTION_INTENT_KEY, JSON.stringify(intent));
     return true;
   } catch {
     return false;
@@ -71,6 +101,109 @@ function isValidDraft(
     draft.expiresAt - draft.createdAt <= PENDING_QUESTION_DRAFT_TTL_MS &&
     ownerIsValid
   );
+}
+
+function isValidIntent(
+  value: unknown,
+  now: number
+): value is PendingQuestionIntentV2 {
+  if (!value || typeof value !== "object") return false;
+
+  const intent = value as Partial<PendingQuestionIntentV2>;
+  const ownerIsValid =
+    intent.ownerUserId === undefined ||
+    (typeof intent.ownerUserId === "string" &&
+      intent.ownerUserId.length > 0 &&
+      intent.ownerUserId.length <= 256);
+
+  return (
+    intent.version === 2 &&
+    intent.intent === "send" &&
+    typeof intent.text === "string" &&
+    Array.from(intent.text.trim()).length >= 2 &&
+    intent.text.length <= MAX_QUESTION_LENGTH &&
+    typeof intent.createdAt === "number" &&
+    Number.isFinite(intent.createdAt) &&
+    typeof intent.expiresAt === "number" &&
+    Number.isFinite(intent.expiresAt) &&
+    intent.createdAt <= now + 60_000 &&
+    intent.expiresAt > now &&
+    intent.expiresAt > intent.createdAt &&
+    intent.expiresAt - intent.createdAt <= PENDING_QUESTION_INTENT_TTL_MS &&
+    ownerIsValid
+  );
+}
+
+export function savePendingQuestionIntent({
+  text,
+  ownerUserId,
+  now = Date.now(),
+  storage
+}: {
+  text: string;
+  ownerUserId?: string;
+  now?: number;
+  storage?: DraftStorage;
+}) {
+  const normalizedText = text.trim();
+  const normalizedOwner = ownerUserId?.trim();
+  if (
+    Array.from(normalizedText).length < 2 ||
+    normalizedText.length > MAX_QUESTION_LENGTH ||
+    (normalizedOwner && normalizedOwner.length > 256)
+  ) {
+    removeIntent(storage);
+    return false;
+  }
+
+  const intent: PendingQuestionIntentV2 = {
+    version: 2,
+    intent: "send",
+    text: normalizedText,
+    createdAt: now,
+    expiresAt: now + PENDING_QUESTION_INTENT_TTL_MS,
+    ...(normalizedOwner ? { ownerUserId: normalizedOwner } : {})
+  };
+
+  return writeIntent(intent, storage);
+}
+
+export function consumePendingQuestionIntent({
+  userId,
+  now = Date.now(),
+  storage
+}: {
+  userId: string;
+  now?: number;
+  storage?: DraftStorage;
+}) {
+  const target = getSessionStorage(storage);
+  if (!target) return null;
+
+  let serialized: string | null = null;
+  try {
+    serialized = target.getItem(PENDING_QUESTION_INTENT_KEY);
+    if (!serialized) return null;
+    target.removeItem(PENDING_QUESTION_INTENT_KEY);
+  } catch {
+    removeIntent(target);
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized);
+  } catch {
+    return null;
+  }
+
+  if (!isValidIntent(parsed, now)) return null;
+  if (parsed.ownerUserId && parsed.ownerUserId !== userId) return null;
+  return parsed;
+}
+
+export function clearPendingQuestionIntent(storage?: DraftStorage) {
+  removeIntent(storage);
 }
 
 export function savePendingQuestionDraft({
@@ -148,4 +281,18 @@ export function loadPendingQuestionDraft({
 
 export function clearPendingQuestionDraft(storage?: DraftStorage) {
   removeDraft(storage);
+}
+
+export function consumeLegacyPendingQuestionDraft({
+  userId,
+  now = Date.now(),
+  storage
+}: {
+  userId: string;
+  now?: number;
+  storage?: DraftStorage;
+}) {
+  const draft = loadPendingQuestionDraft({ userId, now, storage });
+  clearPendingQuestionDraft(storage);
+  return draft;
 }
