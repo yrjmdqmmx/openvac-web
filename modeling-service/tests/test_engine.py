@@ -2,6 +2,7 @@ from copy import deepcopy
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +11,7 @@ from app.engine import (
     _protocol_parameter_values,
     _validate_document_assembly_constraints,
     build_to_artifacts,
+    build_model,
     canonical_json,
     import_step_to_artifacts,
     model_hash,
@@ -22,6 +24,67 @@ def test_canonical_hash_is_key_order_independent() -> None:
 
     assert canonical_json(left) == canonical_json(right)
     assert model_hash(left) == model_hash(right)
+
+
+def test_rotary_vane_interactive_rebuild_skips_full_pump_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "rotary_vane_pump_v1.json"
+    document = json.loads(fixture.read_text(encoding="utf-8"))
+
+    def unexpected_full_validation(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("interactive B-Rep rebuild invoked full pump validation")
+
+    monkeypatch.setattr("app.engine.validate_rotary_vane_pump", unexpected_full_validation)
+    monkeypatch.setattr(
+        "app.engine._authoritative_protocol_sketch_diagnostics",
+        lambda *_args, **_kwargs: [],
+    )
+
+    class FakeShape:
+        def val(self) -> "FakeShape":
+            return self
+
+    class FakeAssembly:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def add(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    class FakeCompound:
+        @staticmethod
+        def makeCompound(_shapes: list[FakeShape]) -> FakeShape:
+            return FakeShape()
+
+    fake_cq = SimpleNamespace(
+        Assembly=FakeAssembly,
+        Color=lambda *_args: object(),
+        Compound=FakeCompound,
+    )
+    fake_geometry = SimpleNamespace(
+        housing=FakeShape(),
+        rotor=FakeShape(),
+        shaft=FakeShape(),
+        front_cover=FakeShape(),
+        rear_cover=FakeShape(),
+        vanes=(FakeShape(), FakeShape()),
+    )
+    monkeypatch.setattr("app.engine._cadquery", lambda: fake_cq)
+    monkeypatch.setattr("app.engine.build_pump_brep_geometry", lambda _params: fake_geometry)
+    monkeypatch.setattr(
+        "app.engine._solve_document_assembly_constraints",
+        lambda *_args, **_kwargs: ({}, []),
+    )
+    monkeypatch.setattr(
+        "app.engine._validate_document_assembly_constraints",
+        lambda *_args, **_kwargs: [],
+    )
+
+    built = build_model(document, validate_pump=False)
+
+    assert built.shape is not None
+    assert built.assembly is not None
 
 
 def _assembly_document() -> dict:

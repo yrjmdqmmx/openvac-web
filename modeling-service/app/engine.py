@@ -85,7 +85,7 @@ def build_model(
         "template.rotary-vane-pump.single-stage-double-vane",
     }
     if is_rotary_vane_template:
-        return build_rotary_vane_pump(document, validate_pump=True)
+        return build_rotary_vane_pump(document, validate_pump=validate_pump)
     return build_feature_document(document, imported_sources=imported_sources)
 
 
@@ -96,12 +96,12 @@ def build_rotary_vane_pump(document: dict[str, Any], validate_pump: bool = True)
     )
     _fail_on_sketch_errors(authoritative_sketch_diagnostics)
     params = parameters_from_document(document)
-    validation = validate_rotary_vane_pump(params)
+    validation = validate_rotary_vane_pump(params) if validate_pump else None
     diagnostics = [
         *authoritative_sketch_diagnostics,
-        *(list(validation.diagnostics) if validate_pump else []),
+        *(list(validation.diagnostics) if validation is not None else []),
     ]
-    if not validation.valid:
+    if validation is not None and not validation.valid:
         raise ValueError(
             "; ".join(item.message for item in diagnostics if item.severity == "error")
         )

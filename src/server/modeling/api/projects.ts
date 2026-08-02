@@ -413,7 +413,11 @@ async function requestDocumentValidation(
     return await cadClient.validate({
       jobId,
       document,
-      validatePump: Boolean(document.metadata?.template?.templateId),
+      // Keep synchronous project creation and manual commits inside the
+      // interactive rebuild budget. The workspace queues previews/exports
+      // with validatePump=true, where the worker can run the full 360-degree
+      // rotary-vane checks under the longer build timeout.
+      validatePump: false,
       importedStep,
       signal
     });
