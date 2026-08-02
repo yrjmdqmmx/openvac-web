@@ -435,12 +435,16 @@ describe("deployment Compose project isolation", () => {
 
   it("rotates local backups only after a private OSS upload succeeds", () => {
     const orchestrator = source("deploy/backup-to-oss.sh");
+    const uploader = source("deploy/upload-backup-oss.sh");
     const upload = orchestrator.indexOf("upload-backup-oss.sh");
     const rotation = orchestrator.lastIndexOf("rotate-backups.sh");
 
     expect(orchestrator).toContain("set -Eeuo pipefail");
     expect(upload).toBeGreaterThan(0);
     expect(rotation).toBeGreaterThan(upload);
-    expect(source("deploy/upload-backup-oss.sh")).toContain("--acl private");
+    expect(uploader).toContain("--acl private");
+    expect(uploader).toContain('[[ -f "$archive" && ! -L "$archive" ]]');
+    expect(uploader).toContain('[[ -f "$checksum" && ! -L "$checksum" ]]');
+    expect(uploader).not.toContain("--disable-all-symlink");
   });
 });
