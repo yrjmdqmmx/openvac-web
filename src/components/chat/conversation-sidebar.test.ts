@@ -63,6 +63,7 @@ function SidebarHarness({
       onMobileOpenChange: setMobileOpen,
       onSelect,
       onNew: vi.fn(),
+      onConversationDataCleared: vi.fn(),
       onRename: vi.fn(),
       onDelete: vi.fn(),
       searchQuery: "",

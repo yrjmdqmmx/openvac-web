@@ -22,11 +22,13 @@ export type AccountSettingsSection = "account" | "sessions" | "data";
 export function AccountSettingsContent({
   email,
   userName = "OpenVac 用户",
-  section = "all"
+  section = "all",
+  onConversationDataCleared
 }: {
   email: string;
   userName?: string;
   section?: AccountSettingsSection | "all";
+  onConversationDataCleared?: () => void;
 }) {
   const [sessions, setSessions] = useState<AccountSessionSummary[]>([]);
   const [password, setPassword] = useState("");
@@ -216,6 +218,7 @@ export function AccountSettingsContent({
                   method: "DELETE"
                 });
                 if (!response.ok) throw new Error("clear failed");
+                onConversationDataCleared?.();
               });
             }}
             className="mt-5 inline-flex h-10 items-center gap-2 rounded-lg border border-[#d9aaa5] px-4 text-sm text-[var(--danger)]"

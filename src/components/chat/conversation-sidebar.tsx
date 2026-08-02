@@ -51,6 +51,7 @@ export function ConversationSidebar({
   onMobileOpenChange,
   onSelect,
   onNew,
+  onConversationDataCleared,
   onRename,
   onDelete,
   searchQuery,
@@ -70,6 +71,7 @@ export function ConversationSidebar({
   onMobileOpenChange: (open: boolean) => void;
   onSelect: (id: string) => void;
   onNew: () => void;
+  onConversationDataCleared: () => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
   searchQuery: string;
@@ -569,6 +571,7 @@ export function ConversationSidebar({
           initialSection={settingsDialogSection}
           userName={userName}
           email={userEmail}
+          onConversationDataCleared={onConversationDataCleared}
           onClose={closeSettings}
         />
       ) : null}

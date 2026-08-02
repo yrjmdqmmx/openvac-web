@@ -367,4 +367,62 @@ describe("ChatWorkspace conversation history", () => {
     );
     expect(screen.getByText("重命名后的对话")).toBeInTheDocument();
   });
+
+  it("clears the active chat state after account conversation data is deleted", async () => {
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = requestUrl(input);
+        if (url.pathname === "/api/conversations" && !init?.method) {
+          return conversationPage([firstConversation]);
+        }
+        if (url.pathname === `/api/conversations/${firstConversation.id}`) {
+          return jsonResponse({
+            data: {
+              messages: [
+                {
+                  id: "assistant-1",
+                  role: "assistant",
+                  content: "清空前仍在页面里的回答"
+                }
+              ]
+            }
+          });
+        }
+        if (url.pathname === "/api/account/data" && init?.method === "DELETE") {
+          return new Response(null, { status: 204 });
+        }
+        return jsonResponse({}, 404);
+      }
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderWorkspace();
+    expect(await screen.findByText("第一段对话")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "第一段对话" }));
+    expect(
+      await screen.findByText("清空前仍在页面里的回答")
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "账户：用户 A" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "数据管理" }));
+    fireEvent.click(screen.getByRole("button", { name: "清空对话" }));
+
+    await waitFor(() =>
+      expect(screen.queryByText("第一段对话")).not.toBeInTheDocument()
+    );
+    expect(
+      screen.queryByText("清空前仍在页面里的回答")
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("还没有历史对话。")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([input, init]) => {
+        const url = requestUrl(input);
+        return (
+          url.pathname === "/api/account/data" && init?.method === "DELETE"
+        );
+      })
+    ).toBe(true);
+  });
 });

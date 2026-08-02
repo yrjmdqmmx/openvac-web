@@ -22,11 +22,13 @@ export function AccountSettingsDialog({
   initialSection,
   userName,
   email,
+  onConversationDataCleared,
   onClose
 }: {
   initialSection: AccountSettingsSection;
   userName: string;
   email: string;
+  onConversationDataCleared: () => void;
   onClose: () => void;
 }) {
   const [section, setSection] =
@@ -136,6 +138,7 @@ export function AccountSettingsDialog({
               email={email}
               userName={userName}
               section={section}
+              onConversationDataCleared={onConversationDataCleared}
             />
           </div>
         </div>
