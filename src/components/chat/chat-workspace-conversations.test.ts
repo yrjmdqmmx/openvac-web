@@ -62,13 +62,15 @@ function renderWorkspace() {
   return render(
     createElement(ChatWorkspace, {
       userId: "user-a",
-      userName: "用户 A"
+      userName: "用户 A",
+      userEmail: "user-a@openvac.test"
     })
   );
 }
 
 function openConversationHistory() {
-  fireEvent.click(screen.getByRole("button", { name: "对话记录" }));
+  if (screen.queryByRole("textbox", { name: "搜索对话" })) return;
+  fireEvent.click(screen.getByRole("button", { name: "展开边栏" }));
 }
 
 beforeEach(() => {
@@ -86,6 +88,29 @@ afterEach(() => {
 });
 
 describe("ChatWorkspace conversation history", () => {
+  it("shows the desktop history by default and removes knowledge/account header links", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => conversationPage([firstConversation]))
+    );
+
+    renderWorkspace();
+
+    expect(
+      await screen.findByRole("textbox", { name: "搜索对话" })
+    ).toBeInTheDocument();
+    expect(screen.getByText("第一段对话")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "知识来源" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "账户" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "账户：用户 A" })
+    ).toBeInTheDocument();
+  });
+
   it("prefills a report with the user question preceding the selected answer", () => {
     const messages: ChatMessage[] = [
       { id: "question-1", role: "user", content: "第一轮问题" },

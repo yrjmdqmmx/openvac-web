@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleStop, Send } from "lucide-react";
+import { CircleStop, Menu, Send } from "lucide-react";
 import Link from "next/link";
 import {
   FormEvent,
@@ -110,10 +110,12 @@ export function problemReportDescriptionForMessage(
 export function ChatWorkspace({
   userId,
   userName,
+  userEmail,
   modelingEnabled = false
 }: {
   userId: string;
   userName: string;
+  userEmail: string;
   modelingEnabled?: boolean;
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -125,7 +127,8 @@ export function ChatWorkspace({
   const [conversationId, setConversationId] = useState<string>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarExpanded, setSidebarExpanded] = useState(true);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [stage, setStage] = useState<string>();
   const [error, setError] = useState<string>();
   const [resetAt, setResetAt] = useState<string>();
@@ -533,12 +536,14 @@ export function ChatWorkspace({
     [messages, problemReportMessageId]
   );
   return (
-    <main className="flex h-dvh min-h-[640px] flex-col overflow-hidden bg-white">
+    <main className="flex h-dvh min-h-[640px] overflow-hidden bg-white">
       <ConversationSidebar
         conversations={conversations}
         activeId={conversationId}
-        open={sidebarOpen}
-        onOpenChange={setSidebarOpen}
+        expanded={sidebarExpanded}
+        onExpandedChange={setSidebarExpanded}
+        mobileOpen={mobileSidebarOpen}
+        onMobileOpenChange={setMobileSidebarOpen}
         onSelect={(id) => void selectConversation(id)}
         onNew={() => {
           conversationDetailAbortRef.current?.abort();
@@ -547,7 +552,7 @@ export function ChatWorkspace({
           setMessages([]);
           setError(undefined);
           setConversationQuery("");
-          setSidebarOpen(false);
+          setMobileSidebarOpen(false);
         }}
         onRename={(id, title) => void renameConversation(id, title)}
         onDelete={(id) => void deleteConversation(id)}
@@ -563,195 +568,195 @@ export function ChatWorkspace({
           })
         }
         userName={userName}
+        userEmail={userEmail}
       />
 
-      <header className="shrink-0 border-b border-[var(--border)]">
-        <div className="app-header-shell flex h-[84px] items-center justify-between">
-          <Brand />
-          <nav className="flex items-center gap-5 text-sm font-medium sm:gap-8 sm:text-[15px]">
-            <button
-              type="button"
-              onClick={() => setSidebarOpen(true)}
-              className="transition-colors hover:text-[var(--muted)]"
-            >
-              对话记录
-            </button>
-            <Link
-              href="/sources"
-              className="hidden transition-colors hover:text-[var(--muted)] sm:block"
-            >
-              知识来源
-            </Link>
-            {modelingEnabled ? (
-              <Link
-                href="/modeling"
-                className="hidden transition-colors hover:text-[var(--muted)] sm:block"
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="shrink-0 border-b border-[var(--border)]">
+          <div className="flex h-[68px] items-center justify-between px-4 sm:px-6">
+            <div className="flex min-w-0 items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setMobileSidebarOpen(true)}
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-lg transition-colors hover:bg-[var(--surface)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)] lg:hidden"
+                aria-label="打开对话记录"
               >
-                智能建模
-              </Link>
-            ) : null}
-            <Link
-              href="/settings"
-              className="transition-colors hover:text-[var(--muted)]"
-              title={userName}
-            >
-              账户
-            </Link>
-          </nav>
-        </div>
-      </header>
-
-      <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          {messages.length === 0 ? (
-            <div className="mx-auto flex h-full max-w-[920px] flex-col justify-center px-5 pb-12 text-center sm:pb-16">
-              <h1 className="text-[clamp(2rem,4vw,3.25rem)] font-semibold tracking-[-0.055em]">
-                {"今天想解决"}
-                <span className="whitespace-nowrap">什么真空问题？</span>
-              </h1>
-              <p className="mx-auto mt-4 max-w-[680px] text-sm leading-7 text-[var(--muted)] sm:text-base">
-                描述泵型、工况或故障现象，OpenVac 会结合资料给出可核查的回答。
-              </p>
+                <Menu aria-hidden className="h-5 w-5" />
+              </button>
+              <Brand
+                compact
+                className={sidebarExpanded ? "lg:hidden" : undefined}
+              />
             </div>
-          ) : (
-            <div className="px-5 pt-12 sm:px-8 sm:pt-14">
-              {messages.map((message) =>
-                message.role === "user" ? (
-                  <div
-                    key={message.id}
-                    className="mx-auto mb-8 flex max-w-[830px] justify-end"
-                  >
-                    <p className="max-w-[88%] rounded-2xl bg-[var(--surface-strong)] px-5 py-3 text-sm leading-7 sm:max-w-[74%] sm:text-base">
-                      {message.content}
-                    </p>
-                  </div>
-                ) : (
-                  <ExpertAnswer
-                    key={message.id}
-                    message={message}
-                    stage={message.status === "streaming" ? stage : undefined}
-                    modelingEnabled={modelingEnabled}
-                    onProblemReport={(messageId) => {
-                      setProblemReportMessageId(messageId);
-                      setProblemReportOpen(true);
-                    }}
-                    onFeedback={async (messageId, rating) => {
-                      const reporting = rating === "report";
-                      const response = await fetch(
-                        `/api/messages/${messageId}/${reporting ? "report" : "feedback"}`,
-                        {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify(
-                            reporting
-                              ? {
-                                  category: "other",
-                                  details: "用户在对话界面主动举报该回答。"
-                                }
-                              : {
-                                  rating:
-                                    rating === "up" ? "helpful" : "not_helpful",
-                                  reason:
-                                    rating === "up" ? "helpful" : "not_helpful"
-                                }
-                          )
-                        }
-                      );
-                      if (!response.ok) {
-                        throw new Error("feedback failed");
-                      }
-                    }}
-                  />
-                )
-              )}
-              <div ref={endRef} />
-            </div>
-          )}
-        </div>
-
-        <div className="shrink-0 bg-white px-4 pb-4 sm:px-7 sm:pb-5">
-          <div className="mx-auto max-w-[892px]">
-            {error && (
-              <div
-                role="alert"
-                className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#e2b8b3] bg-[#fff7f6] px-4 py-2.5 text-xs text-[var(--danger)]"
-              >
-                <span>
-                  {error}
-                  {resetAt
-                    ? ` 可在 ${new Date(resetAt).toLocaleString("zh-CN", {
-                        timeZone: "Asia/Shanghai",
-                        hour12: false
-                      })} 后恢复。`
-                    : ""}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProblemReportMessageId(undefined);
-                    setProblemReportOpen(true);
-                  }}
-                  className="font-medium underline underline-offset-4"
+            <nav className="flex items-center gap-5 text-sm font-medium sm:text-[15px]">
+              {modelingEnabled ? (
+                <Link
+                  href="/modeling"
+                  className="transition-colors hover:text-[var(--muted)]"
                 >
-                  提交问题反馈
-                </button>
+                  智能建模
+                </Link>
+              ) : null}
+            </nav>
+          </div>
+        </header>
+
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {messages.length === 0 ? (
+              <div className="mx-auto flex h-full max-w-[920px] flex-col justify-center px-5 pb-12 text-center sm:pb-16">
+                <h1 className="text-[clamp(2rem,4vw,3.25rem)] font-semibold tracking-[-0.055em]">
+                  {"今天想解决"}
+                  <span className="whitespace-nowrap">什么真空问题？</span>
+                </h1>
+                <p className="mx-auto mt-4 max-w-[680px] text-sm leading-7 text-[var(--muted)] sm:text-base">
+                  描述泵型、工况或故障现象，OpenVac 会结合资料给出可核查的回答。
+                </p>
+              </div>
+            ) : (
+              <div className="px-5 pt-12 sm:px-8 sm:pt-14">
+                {messages.map((message) =>
+                  message.role === "user" ? (
+                    <div
+                      key={message.id}
+                      className="mx-auto mb-8 flex max-w-[830px] justify-end"
+                    >
+                      <p className="max-w-[88%] rounded-2xl bg-[var(--surface-strong)] px-5 py-3 text-sm leading-7 sm:max-w-[74%] sm:text-base">
+                        {message.content}
+                      </p>
+                    </div>
+                  ) : (
+                    <ExpertAnswer
+                      key={message.id}
+                      message={message}
+                      stage={message.status === "streaming" ? stage : undefined}
+                      modelingEnabled={modelingEnabled}
+                      onProblemReport={(messageId) => {
+                        setProblemReportMessageId(messageId);
+                        setProblemReportOpen(true);
+                      }}
+                      onFeedback={async (messageId, rating) => {
+                        const reporting = rating === "report";
+                        const response = await fetch(
+                          `/api/messages/${messageId}/${reporting ? "report" : "feedback"}`,
+                          {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(
+                              reporting
+                                ? {
+                                    category: "other",
+                                    details: "用户在对话界面主动举报该回答。"
+                                  }
+                                : {
+                                    rating:
+                                      rating === "up"
+                                        ? "helpful"
+                                        : "not_helpful",
+                                    reason:
+                                      rating === "up"
+                                        ? "helpful"
+                                        : "not_helpful"
+                                  }
+                            )
+                          }
+                        );
+                        if (!response.ok) {
+                          throw new Error("feedback failed");
+                        }
+                      }}
+                    />
+                  )
+                )}
+                <div ref={endRef} />
               </div>
             )}
-            <form
-              onSubmit={(event: FormEvent) => {
-                event.preventDefault();
-                void send(input);
-              }}
-              className="flex min-h-[76px] items-end gap-3 rounded-[14px] border border-[var(--border-strong)] bg-white p-3 pl-5 shadow-[0_4px_20px_rgba(17,19,21,0.04)] transition-[border-color,box-shadow] focus-within:border-[var(--ink)] focus-within:shadow-[0_0_0_3px_rgba(17,19,21,0.08)]"
-            >
-              <label htmlFor="chat-input" className="visually-hidden">
-                继续提问
-              </label>
-              <textarea
-                id="chat-input"
-                value={input}
-                onChange={(event) => setInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (
-                    event.key === "Enter" &&
-                    !event.shiftKey &&
-                    !event.nativeEvent.isComposing
-                  ) {
-                    event.preventDefault();
-                    void send(input);
-                  }
-                }}
-                rows={2}
-                maxLength={4000}
-                placeholder="继续描述工况、型号或故障现象……"
-                className="composer-textarea max-h-40 min-h-11 min-w-0 flex-1 resize-none border-0 bg-transparent py-2 text-sm leading-6 outline-none sm:text-base"
-              />
-              {busy ? (
-                <button
-                  type="button"
-                  onClick={() => abortRef.current?.abort()}
-                  className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-[var(--ink)] text-white"
-                  aria-label="取消回答"
-                >
-                  <CircleStop className="h-5 w-5" />
-                </button>
-              ) : (
-                <button
-                  type="submit"
-                  disabled={Array.from(input.trim()).length < 2}
-                  className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-[var(--ink)] text-white transition-colors hover:bg-[#292b2d] disabled:opacity-30"
-                  aria-label="发送"
-                >
-                  <Send className="h-4 w-4" />
-                </button>
-              )}
-            </form>
-            <p className="mt-2 text-center text-[11px] leading-5 text-[var(--muted)]">
-              AI 生成 · 专业建议仅供排查参考，涉及拆机请由合格人员操作。
-            </p>
           </div>
-        </div>
-      </section>
+
+          <div className="shrink-0 bg-white px-4 pb-4 sm:px-7 sm:pb-5">
+            <div className="mx-auto max-w-[892px]">
+              {error && (
+                <div
+                  role="alert"
+                  className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#e2b8b3] bg-[#fff7f6] px-4 py-2.5 text-xs text-[var(--danger)]"
+                >
+                  <span>
+                    {error}
+                    {resetAt
+                      ? ` 可在 ${new Date(resetAt).toLocaleString("zh-CN", {
+                          timeZone: "Asia/Shanghai",
+                          hour12: false
+                        })} 后恢复。`
+                      : ""}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProblemReportMessageId(undefined);
+                      setProblemReportOpen(true);
+                    }}
+                    className="font-medium underline underline-offset-4"
+                  >
+                    提交问题反馈
+                  </button>
+                </div>
+              )}
+              <form
+                onSubmit={(event: FormEvent) => {
+                  event.preventDefault();
+                  void send(input);
+                }}
+                className="flex min-h-[76px] items-end gap-3 rounded-[14px] border border-[var(--border-strong)] bg-white p-3 pl-5 shadow-[0_4px_20px_rgba(17,19,21,0.04)] transition-[border-color,box-shadow] focus-within:border-[var(--ink)] focus-within:shadow-[0_0_0_3px_rgba(17,19,21,0.08)]"
+              >
+                <label htmlFor="chat-input" className="visually-hidden">
+                  继续提问
+                </label>
+                <textarea
+                  id="chat-input"
+                  value={input}
+                  onChange={(event) => setInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (
+                      event.key === "Enter" &&
+                      !event.shiftKey &&
+                      !event.nativeEvent.isComposing
+                    ) {
+                      event.preventDefault();
+                      void send(input);
+                    }
+                  }}
+                  rows={2}
+                  maxLength={4000}
+                  placeholder="继续描述工况、型号或故障现象……"
+                  className="composer-textarea max-h-40 min-h-11 min-w-0 flex-1 resize-none border-0 bg-transparent py-2 text-sm leading-6 outline-none sm:text-base"
+                />
+                {busy ? (
+                  <button
+                    type="button"
+                    onClick={() => abortRef.current?.abort()}
+                    className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-[var(--ink)] text-white"
+                    aria-label="取消回答"
+                  >
+                    <CircleStop className="h-5 w-5" />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={Array.from(input.trim()).length < 2}
+                    className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-[var(--ink)] text-white transition-colors hover:bg-[#292b2d] disabled:opacity-30"
+                    aria-label="发送"
+                  >
+                    <Send className="h-4 w-4" />
+                  </button>
+                )}
+              </form>
+              <p className="mt-2 text-center text-[11px] leading-5 text-[var(--muted)]">
+                AI 生成 · 专业建议仅供排查参考，涉及拆机请由合格人员操作。
+              </p>
+            </div>
+          </div>
+        </section>
+      </div>
 
       <ProblemReportDialog
         open={problemReportOpen}

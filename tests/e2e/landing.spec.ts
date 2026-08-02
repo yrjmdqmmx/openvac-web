@@ -50,10 +50,11 @@ test("uses a neutral focus treatment and no custom favicon", async ({
   await input.focus();
 
   const form = input.locator("xpath=ancestor::form");
-  const shadow = await form.evaluate(
-    (element) => window.getComputedStyle(element).boxShadow
-  );
-  expect(shadow).toContain("17, 19, 21");
+  await expect
+    .poll(() =>
+      form.evaluate((element) => window.getComputedStyle(element).boxShadow)
+    )
+    .toContain("17, 19, 21");
   await expect(page.locator('link[rel~="icon"]')).toHaveCount(0);
 });
 

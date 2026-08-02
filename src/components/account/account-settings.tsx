@@ -61,7 +61,9 @@ export function AccountSettings({ email }: { email: string }) {
 
   return (
     <main className="shell max-w-[840px] py-14 sm:py-20">
-      <h1 className="text-3xl font-semibold tracking-[-0.04em]">账户设置</h1>
+      <h1 id="profile" className="text-3xl font-semibold tracking-[-0.04em]">
+        账户设置
+      </h1>
       <p className="mt-3 text-sm text-[var(--muted)]">{email}</p>
 
       {(notice || error) && (
