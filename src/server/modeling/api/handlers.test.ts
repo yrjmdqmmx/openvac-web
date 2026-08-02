@@ -345,7 +345,19 @@ describe("modeling API handlers", () => {
 
   it.each([
     ["空白", baseDocument()],
-    ["纯草图", sketchOnlyDocument()]
+    ["纯草图", sketchOnlyDocument()],
+    [
+      "旋片泵模板快速重建",
+      {
+        ...baseDocument(),
+        metadata: {
+          template: {
+            templateId: "template.rotary-vane-pump.single-stage-double-vane",
+            templateVersion: "1.0.0"
+          }
+        }
+      }
+    ]
   ])(
     "validates a %s initial document before creating the project",
     async (_, document) => {
