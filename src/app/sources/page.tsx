@@ -39,10 +39,13 @@ export default function SourcesPage() {
         </p>
       </section>
       <section>
-        <h2 className="text-2xl font-semibold tracking-[-0.03em]">发布门禁</h2>
+        <h2 className="text-2xl font-semibold tracking-[-0.03em]">
+          当前复核状态
+        </h2>
         <p className="mt-4 leading-8 text-[var(--muted)]">
-          OCR
-          资料必须人工复核型号、数字、小数点、单位和曲线。新修订先进入草稿，完成检索评测和引用回溯后才能发布；任何版本都可回滚。
+          首期 CERN 与 HSE
+          文字知识在来源授权和内容哈希固定后先接入检索，目前仍安排逐条人工复核；被驳回的内容会立即退出检索。OCR
+          型号、数字、小数点、单位和曲线仍必须先人工复核，不能自动发布。
         </p>
       </section>
     </ContentPage>

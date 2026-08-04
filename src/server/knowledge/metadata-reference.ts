@@ -1,5 +1,7 @@
 import type { GroundingEvidence } from "@/server/agent";
 
+import { RETRIEVAL_REVIEW_POLICY_SQL } from "./review-policy";
+
 const MAX_PUBLICATION_NUMBERS = 4;
 const EXPLICIT_PATENT_PUBLICATION_NUMBER =
   /(?<![A-Z0-9])(?:US[\s-]*\d{7,8}[\s-]*[A-Z]\d|CN[\s-]*\d{9}[\s-]*[A-Z])(?![A-Z0-9])/gu;
@@ -53,8 +55,7 @@ WHERE upper(kv.citation_metadata ->> 'publicationNumber') = ANY($1::text[])
       THEN jsonb_array_length(kv.citation_metadata -> 'technicalUseWarnings') >= 2
     ELSE FALSE
   END
-  AND kv.metadata ->> 'reviewStatus' = 'approved'
-  AND kv.metadata #>> '{review,status}' = 'approved'
+  AND ${RETRIEVAL_REVIEW_POLICY_SQL}
   AND ks.kind = 'patent'
   AND ks.source_tier = 'metadata_only'
   AND kd.mime_type LIKE '%patent-metadata%'

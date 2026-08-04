@@ -108,6 +108,12 @@ function embeddingState(status?: string): DisplayState {
 
 function publishState(document: KnowledgeDocumentView): DisplayState {
   if (document.status === "published") {
+    if (
+      document.reviewStatus === "required" ||
+      document.reviewStatus === "pending_review"
+    ) {
+      return { label: "已接入检索 · 待人工复核", tone: "warning" };
+    }
     return { label: "当前修订已发布", tone: "positive" };
   }
   if (document.publishReady === true) {
@@ -350,7 +356,10 @@ export function KnowledgeManager() {
     : undefined;
   const reviewable = Boolean(
     selected &&
-    (selected.status === "draft" || selected.status === "review") &&
+    (selected.status === "draft" ||
+      selected.status === "review" ||
+      (selected.status === "published" &&
+        selected.reviewStatus === "required")) &&
     selected.currentVersionId &&
     selected.contentHash
   );
@@ -731,7 +740,7 @@ export function KnowledgeManager() {
             ) : null}
 
             <p className="mt-5 text-xs leading-6 text-[var(--muted)]">
-              发布前必须通过来源授权、内容哈希人工复核和 Embedding 完整性门禁。
+              首期来源可在授权与内容哈希固定后先接入检索，并保持“待人工复核”标记；批准会转为正式复核状态，驳回会立即归档并退出检索。
             </p>
           </>
         ) : (

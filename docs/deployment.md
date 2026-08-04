@@ -187,12 +187,17 @@ sh deploy/configure-staging-secrets.sh user@ecs-host
    authenticated CAD service, and verifies a private-OSS put/get/signed-HTTPS-
    download/delete round trip. Benchmark JSON is retained as a 30-day workflow
    artifact. Missing OSS credentials or any failed round trip stops the release.
-6. Exercise registration, verification, reset, 20-way quota concurrency,
-   citation links, message feedback, problem reports, admin roles,
+6. Seed and activate the governed Phase 1 knowledge inside the deployed web
+   container with `pnpm knowledge:seed` followed by
+   `pnpm knowledge:activate-phase-one`. Verify the reported document and chunk
+   counts, then exercise registration, verification, reset, 20-way quota
+   concurrency, citation links, message feedback, problem reports, admin roles,
    publishing/rollback, and budget circuit breaking.
-7. Run the 150-case launch evaluation: 102 full-text Top-5 retrieval cases, 18
-   exact patent-metadata cases, and 30 safety-boundary cases. Complete the
-   separate independent expert review of 30 high-risk cases.
+7. Run the 150-case evaluation: 102 full-text Top-5 retrieval cases, 18
+   exact patent-metadata cases, and 30 safety-boundary cases. Human technical
+   review remains visible and can be
+   completed after initial activation; a rejected record must disappear from
+   retrieval immediately.
 8. Perform a new-host deployment, a forced migration failure, a forced health
    failure, and `restore-drill.sh`. Confirm both failures restart and health
    check the previous application image while `current-release` remains
