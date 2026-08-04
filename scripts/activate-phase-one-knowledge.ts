@@ -29,6 +29,7 @@ type ExistingDocument = {
 };
 
 const activatedAt = new Date();
+const activatedAtSql = activatedAt.toISOString();
 
 try {
   const results = [];
@@ -110,7 +111,7 @@ try {
             candidate.document.mimeType,
             candidate.document.tags,
             JSON.stringify(documentMetadata(entry.path, contentHash)),
-            activatedAt
+            activatedAtSql
           ]
         );
       }
@@ -135,7 +136,7 @@ try {
             content,
             JSON.stringify(candidate.citation),
             JSON.stringify(versionMetadata),
-            activatedAt
+            activatedAtSql
           ]
         );
       } else {
@@ -159,7 +160,7 @@ try {
             content,
             JSON.stringify(candidate.citation),
             JSON.stringify(versionMetadata),
-            activatedAt
+            activatedAtSql
           ]
         );
       }
@@ -199,7 +200,7 @@ try {
               JSON.stringify(chunk.metadata),
               `[${vector.join(",")}]`,
               embeddingResult.model,
-              activatedAt
+              activatedAtSql
             ]
           );
         }
@@ -231,7 +232,7 @@ try {
           versionId,
           candidate.document.tags,
           JSON.stringify(documentMetadata(entry.path, contentHash)),
-          activatedAt
+          activatedAtSql
         ]
       );
     });
