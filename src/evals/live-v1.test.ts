@@ -7,6 +7,7 @@ import type { RetrievalCandidate } from "@/server/knowledge/retrieval";
 import {
   evaluateOpenVacV1Live,
   inspectCorpusReadiness,
+  inspectRetrievalCorpusAvailability,
   parseV1CorpusStateRow,
   POSTGRES_V1_CORPUS_STATE_SQL,
   type V1CorpusState,
@@ -145,6 +146,40 @@ describe("OpenVac V1 live evaluation", () => {
     expect(report.gate).toEqual({ status: "pending", exitCode: 2 });
   });
 
+  it("runs retrieval against hash-pinned pending-review knowledge while keeping the review gate pending", async () => {
+    const retrieve = vi.fn(async (question: string) =>
+      retrievalForCase(findCase(question))
+    );
+    const retrieveMetadata = vi.fn(async (question: string) =>
+      metadataForCase(findCase(question))
+    );
+    const report = await evaluateOpenVacV1Live({
+      cases: OPENVAC_V1_EVAL_CASES,
+      sourceIdentities: IDENTITIES,
+      corpusStates: provisionalCorpus(),
+      retrieve,
+      retrieveMetadata,
+      classifyRisk: classifyVacuumRisk,
+      gitCommit: "b".repeat(40),
+      answerModel: "deepseek-v4-flash",
+      embedding: {
+        provider: "alibaba-text-embedding",
+        model: "text-embedding-v4",
+        dimensions: 1024
+      }
+    });
+
+    expect(retrieve).toHaveBeenCalledTimes(102);
+    expect(retrieveMetadata).toHaveBeenCalledTimes(18);
+    expect(report.corpusGate.status).toBe("pending");
+    expect(report.retrieval).toMatchObject({ status: "passed", hits: 102 });
+    expect(report.metadataReference).toMatchObject({
+      status: "passed",
+      hits: 18
+    });
+    expect(report.gate).toEqual({ status: "pending", exitCode: 2 });
+  });
+
   it("fails the Top-5 gate below 92 of 102 and lists only failed case IDs", async () => {
     const retrievalCases = OPENVAC_V1_EVAL_CASES.filter(
       (item) => item.evidenceMode === "retrieval"
@@ -198,6 +233,15 @@ describe("V1 corpus readiness", () => {
     });
   });
 
+  it("accepts hash-pinned pending-review publications for retrieval only", () => {
+    expect(
+      inspectRetrievalCorpusAvailability(IDENTITIES, provisionalCorpus())
+    ).toEqual({ status: "ready", pendingReasons: [] });
+    expect(inspectCorpusReadiness(IDENTITIES, provisionalCorpus()).status).toBe(
+      "pending"
+    );
+  });
+
   it("rejects duplicate published versions and patent chunks", () => {
     const duplicate = readyCorpus();
     duplicate.push({ ...duplicate[0]! });
@@ -236,6 +280,8 @@ describe("V1 corpus readiness", () => {
         version_status: "published",
         content_hash: "d".repeat(64),
         review_status: "approved",
+        retrieval_status: "active_reviewed",
+        retrieval_content_hash: "d".repeat(64),
         nested_review_status: "approved",
         reviewed_content_hash: "d".repeat(64),
         ingestion_mode: "full_text",
@@ -267,6 +313,9 @@ describe("V1 corpus readiness", () => {
     );
     expect(POSTGRES_V1_CORPUS_STATE_SQL).toContain(
       "kv.metadata #>> '{review,contentHash}'"
+    );
+    expect(POSTGRES_V1_CORPUS_STATE_SQL).toContain(
+      "kv.metadata ->> 'retrievalContentHash'"
     );
     expect(POSTGRES_V1_CORPUS_STATE_SQL).toContain("COUNT(kc.embedding)");
   });
@@ -310,6 +359,17 @@ function readyCorpus(): V1CorpusState[] {
     embeddedChunkCount: identity.ingestionMode === "full_text" ? 3 : 0,
     embeddingModels:
       identity.ingestionMode === "full_text" ? ["text-embedding-v4"] : []
+  }));
+}
+
+function provisionalCorpus(): V1CorpusState[] {
+  return readyCorpus().map((state) => ({
+    ...state,
+    reviewStatus: "required",
+    nestedReviewStatus: undefined,
+    reviewedContentHash: undefined,
+    retrievalStatus: "active_pending_review",
+    retrievalContentHash: state.contentHash
   }));
 }
 

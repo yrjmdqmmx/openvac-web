@@ -30,6 +30,12 @@ type ExistingDocument = {
 
 const activatedAt = new Date();
 const activatedAtSql = activatedAt.toISOString();
+const legacyKnowledgeReplacements = [
+  {
+    legacyExternalKey: "cern-2024-003-vacuum-systems",
+    replacementExternalKey: "cern-2024-003-vacuum-systems-governed-v2"
+  }
+] as const;
 
 try {
   const results = [];
@@ -252,12 +258,15 @@ try {
     });
   }
 
+  const archivedLegacyDocuments = await archiveLegacyKnowledgeDocuments();
+
   console.log(
     JSON.stringify(
       {
         activatedAt: activatedAt.toISOString(),
         documents: results.length,
         chunks: results.reduce((sum, result) => sum + result.chunks, 0),
+        archivedLegacyDocuments,
         results
       },
       null,
@@ -266,6 +275,62 @@ try {
   );
 } finally {
   await sqlClient.end({ timeout: 5 });
+}
+
+async function archiveLegacyKnowledgeDocuments(): Promise<string[]> {
+  const archived: string[] = [];
+  for (const replacement of legacyKnowledgeReplacements) {
+    const didArchive = await sqlClient.begin(async (transaction) => {
+      const activeReplacement = await transaction.unsafe(
+        `
+          SELECT 1
+          FROM knowledge_document kd
+          JOIN knowledge_version kv ON kv.id = kd.current_version_id
+          WHERE kd.external_key = $1
+            AND kd.status = 'published'
+            AND kv.status = 'published'
+            AND kv.metadata->>'retrievalStatus' IN (
+              'active_pending_review',
+              'active_reviewed'
+            )
+            AND kv.metadata->>'retrievalContentHash' = kv.content_hash
+          LIMIT 1
+        `,
+        [replacement.replacementExternalKey]
+      );
+      if (activeReplacement.length === 0) {
+        throw new Error(
+          `Refusing to archive ${replacement.legacyExternalKey} before ${replacement.replacementExternalKey} is active.`
+        );
+      }
+
+      await transaction.unsafe(
+        `
+          UPDATE knowledge_version kv
+          SET status = 'archived', updated_at = $2
+          FROM knowledge_document kd
+          WHERE kd.current_version_id = kv.id
+            AND kd.external_key = $1
+            AND kd.status = 'published'
+            AND kv.status = 'published'
+        `,
+        [replacement.legacyExternalKey, activatedAtSql]
+      );
+      const archivedDocuments = await transaction.unsafe(
+        `
+          UPDATE knowledge_document
+          SET status = 'archived', updated_at = $2
+          WHERE external_key = $1
+            AND status = 'published'
+          RETURNING id
+        `,
+        [replacement.legacyExternalKey, activatedAtSql]
+      );
+      return archivedDocuments.length > 0;
+    });
+    if (didArchive) archived.push(replacement.legacyExternalKey);
+  }
+  return archived;
 }
 
 async function loadAuthorizedSource(

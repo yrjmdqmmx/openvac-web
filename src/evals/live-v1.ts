@@ -23,6 +23,8 @@ SELECT
   kv.status AS version_status,
   kv.content_hash,
   kv.metadata ->> 'reviewStatus' AS review_status,
+  kv.metadata ->> 'retrievalStatus' AS retrieval_status,
+  kv.metadata ->> 'retrievalContentHash' AS retrieval_content_hash,
   kv.metadata #>> '{review,status}' AS nested_review_status,
   kv.metadata #>> '{review,contentHash}' AS reviewed_content_hash,
   kv.citation_metadata ->> 'ingestionMode' AS ingestion_mode,
@@ -51,6 +53,8 @@ GROUP BY
   kv.status,
   kv.content_hash,
   kv.metadata ->> 'reviewStatus',
+  kv.metadata ->> 'retrievalStatus',
+  kv.metadata ->> 'retrievalContentHash',
   kv.metadata #>> '{review,status}',
   kv.metadata #>> '{review,contentHash}',
   kv.citation_metadata ->> 'ingestionMode'
@@ -74,6 +78,8 @@ export type V1CorpusState = V1SourceIdentity & {
   versionStatus?: string;
   contentHash?: string;
   reviewStatus?: string;
+  retrievalStatus?: string;
+  retrievalContentHash?: string;
   nestedReviewStatus?: string;
   reviewedContentHash?: string;
   chunkCount: number;
@@ -181,6 +187,11 @@ export async function evaluateOpenVacV1Live(
     input.sourceIdentities,
     input.corpusStates
   );
+  const retrievalCorpusReady =
+    inspectRetrievalCorpusAvailability(
+      input.sourceIdentities,
+      input.corpusStates
+    ).status === "ready";
   const sourceKeyByUrl = new Map(
     input.sourceIdentities.map((source) => [
       normalizeHttpsUrl(source.canonicalUrl),
@@ -191,7 +202,7 @@ export async function evaluateOpenVacV1Live(
 
   let retrievalResults: V1EvaluationCaseResult[] = [];
   let metadataResults: V1EvaluationCaseResult[] = [];
-  if (corpusGate.status === "ready") {
+  if (retrievalCorpusReady) {
     retrievalResults = await mapWithConcurrency(
       retrievalCases,
       concurrency,
@@ -247,13 +258,13 @@ export async function evaluateOpenVacV1Live(
     retrievalResults,
     V1_RETRIEVAL_CASES,
     V1_RETRIEVAL_MINIMUM_HITS,
-    corpusGate.status === "ready"
+    retrievalCorpusReady
   );
   const metadataReference = summarizeResults(
     metadataResults,
     V1_METADATA_CASES,
     V1_METADATA_CASES,
-    corpusGate.status === "ready"
+    retrievalCorpusReady
   );
   const safetyPolicy = summarizeResults(
     safetyResults,
@@ -287,7 +298,10 @@ export async function evaluateOpenVacV1Live(
     },
     sourceIdentities: input.sourceIdentities.map((source) => {
       const states = input.corpusStates.filter(
-        (state) => state.sourceKey === source.sourceKey
+        (state) =>
+          state.sourceKey === source.sourceKey &&
+          state.documentStatus === "published" &&
+          state.versionStatus === "published"
       );
       return {
         ...source,
@@ -362,6 +376,52 @@ export function inspectCorpusReadiness(
   };
 }
 
+export function inspectRetrievalCorpusAvailability(
+  identities: readonly V1SourceIdentity[],
+  states: readonly V1CorpusState[]
+): V1LiveEvaluationReport["corpusGate"] {
+  const pendingReasons: string[] = [];
+  for (const identity of identities) {
+    const eligible = states.filter(
+      (state) =>
+        state.sourceKey === identity.sourceKey &&
+        state.canonicalUrl === identity.canonicalUrl &&
+        state.ingestionMode === identity.ingestionMode &&
+        state.sourceEnabled &&
+        !state.sourceDeleted &&
+        sourceTierMatches(identity.ingestionMode, state.sourceTier) &&
+        state.rightsStatus === "approved" &&
+        state.rightsScope === identity.ingestionMode &&
+        state.rightsRecordUrl === identity.canonicalUrl &&
+        state.documentStatus === "published" &&
+        state.versionStatus === "published" &&
+        (isReviewedActiveContent(state) || isPendingReviewActiveContent(state))
+    );
+    if (eligible.length !== 1) {
+      pendingReasons.push(
+        `${identity.sourceKey}:${eligible.length > 1 ? "multiple_active_versions" : "not_active"}`
+      );
+      continue;
+    }
+    const state = eligible[0]!;
+    if (identity.ingestionMode === "full_text") {
+      if (
+        state.chunkCount < 1 ||
+        state.embeddedChunkCount !== state.chunkCount ||
+        state.embeddingModels.length < 1
+      ) {
+        pendingReasons.push(`${identity.sourceKey}:embedding_incomplete`);
+      }
+    } else if (state.chunkCount !== 0 || state.embeddedChunkCount !== 0) {
+      pendingReasons.push(`${identity.sourceKey}:metadata_entered_chunks`);
+    }
+  }
+  return {
+    status: pendingReasons.length === 0 ? "ready" : "pending",
+    pendingReasons
+  };
+}
+
 export function parseV1CorpusStateRow(
   row: Record<string, unknown>
 ): V1CorpusState | undefined {
@@ -390,12 +450,31 @@ export function parseV1CorpusStateRow(
     versionStatus: optionalString(row.version_status),
     contentHash: optionalString(row.content_hash),
     reviewStatus: optionalString(row.review_status),
+    retrievalStatus: optionalString(row.retrieval_status),
+    retrievalContentHash: optionalString(row.retrieval_content_hash),
     nestedReviewStatus: optionalString(row.nested_review_status),
     reviewedContentHash: optionalString(row.reviewed_content_hash),
     chunkCount: nonNegativeInteger(row.chunk_count),
     embeddedChunkCount: nonNegativeInteger(row.embedded_chunk_count),
     embeddingModels: stringArray(row.embedding_models)
   };
+}
+
+function isReviewedActiveContent(state: V1CorpusState): boolean {
+  return (
+    state.reviewStatus === "approved" &&
+    state.nestedReviewStatus === "approved" &&
+    isApprovedContentHash(state)
+  );
+}
+
+function isPendingReviewActiveContent(state: V1CorpusState): boolean {
+  return (
+    state.reviewStatus === "required" &&
+    state.retrievalStatus === "active_pending_review" &&
+    Boolean(state.contentHash) &&
+    state.retrievalContentHash === state.contentHash
+  );
 }
 
 function assertDatasetShape(
