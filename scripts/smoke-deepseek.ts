@@ -30,7 +30,6 @@ async function main() {
       schema: ANSWER_V2_JSON_SCHEMA as unknown as Record<string, unknown>,
       strict: true
     },
-    maxOutputTokens: 1_200,
     user: createDeepSeekUserPartition(
       "openvac-responses-smoke",
       partitionSecret
