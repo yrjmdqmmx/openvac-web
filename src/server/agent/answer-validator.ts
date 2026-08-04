@@ -1,4 +1,4 @@
-import type { AnswerV2, RiskLevel } from "@/types/chat";
+import type { AnswerV2, CalculationResult, RiskLevel } from "@/types/chat";
 
 import { answerV2Schema, renderAnswerV2, validateAnswerV2 } from "./answer-v2";
 import { EvidenceRegistry } from "./evidence-registry";
@@ -167,4 +167,46 @@ export function buildDeterministicSafeAnswer(
     nextSteps: ["补充设备型号、工况、单位和希望确认的具体问题后重试。"],
     calculationRefs: []
   };
+}
+
+export function buildDeterministicCalculationAnswer(
+  calculations: CalculationResult[]
+): AnswerV2 {
+  if (calculations.length === 0) {
+    throw new TypeError("At least one validated calculation is required.");
+  }
+  const assumptions = unique(
+    calculations.flatMap((calculation) => calculation.assumptions)
+  );
+  const warnings = unique(
+    calculations.flatMap((calculation) => calculation.warnings)
+  );
+  return {
+    schemaVersion: "openvac.answer.v2",
+    answerKind: "grounded",
+    conclusion: calculations.map((calculation) => ({
+      text: `${calculation.tool} 计算结果：${renderCalculationValues(calculation.result)}。`,
+      evidenceIds: []
+    })),
+    assumptions,
+    evidence: [],
+    missingInputs: [],
+    nextSteps: [
+      ...warnings,
+      "请结合制造商曲线、管路导流和实测工况复核结果；该计算不能自动完成型号选型、故障定论或最终工程批准。"
+    ],
+    calculationRefs: calculations.map((calculation) => calculation.id)
+  };
+}
+
+function renderCalculationValues(
+  values: Record<string, number | string | boolean | null>
+): string {
+  return Object.entries(values)
+    .map(([key, value]) => `${key}=${value === null ? "null" : String(value)}`)
+    .join("，");
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
 }

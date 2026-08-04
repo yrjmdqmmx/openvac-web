@@ -35,6 +35,7 @@ import {
 } from "./answer-v2";
 import {
   AnswerValidator,
+  buildDeterministicCalculationAnswer,
   buildDeterministicSafeAnswer,
   requiresGroundedEvidence
 } from "./answer-validator";
@@ -76,6 +77,14 @@ export type OrchestratorResult = {
   meta: Awaited<ReturnType<RunStore["complete"]>>["meta"];
 };
 
+export type AgentRunCounters = {
+  toolRounds: number;
+  toolCalls: number;
+  modelRequests: number;
+  retries: number;
+  repairs: number;
+};
+
 export class AgentRunOrchestrator {
   private readonly validator = new AnswerValidator();
   private readonly contextBuilder = new ContextBuilder();
@@ -100,6 +109,16 @@ export class AgentRunOrchestrator {
     private readonly store: RunStore,
     private readonly emit: (event: OrchestratorEvent) => void
   ) {}
+
+  get counters(): AgentRunCounters {
+    return {
+      toolRounds: this.toolRounds,
+      toolCalls: this.toolCalls,
+      modelRequests: this.modelRequests,
+      retries: this.retries,
+      repairs: this.repairs
+    };
+  }
 
   async run(input: {
     userId: string;
@@ -251,13 +270,7 @@ export class AgentRunOrchestrator {
       usage: finalUsage,
       latencyMs: Date.now() - startedAt,
       status: incomplete ? "incomplete" : "completed",
-      counters: {
-        toolRounds: this.toolRounds,
-        toolCalls: this.toolCalls,
-        modelRequests: this.modelRequests,
-        retries: this.retries,
-        repairs: this.repairs
-      }
+      counters: this.counters
     });
     return {
       status: incomplete ? "incomplete" : "completed",
@@ -500,7 +513,13 @@ export class AgentRunOrchestrator {
       calculationIds: new Set(this.calculations.keys()),
       requiresEvidence: requiresGroundedEvidence(input.run.question)
     });
-    return second.valid ? second.answer : undefined;
+    if (second.valid) return second.answer;
+    if (this.calculations.size > 0) {
+      return buildDeterministicCalculationAnswer([
+        ...this.calculations.values()
+      ]);
+    }
+    return undefined;
   }
 
   private async repair(
