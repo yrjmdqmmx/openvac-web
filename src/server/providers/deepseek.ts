@@ -1,8 +1,9 @@
 import {
   asRecord,
   createProviderDeadline,
-  normalizeBaseUrl,
+  normalizeTrustedHttpsBaseUrl,
   optionalString,
+  parseCommaSeparated,
   pickNumber,
   pickString,
   readJsonResponse,
@@ -29,6 +30,7 @@ export interface DeepSeekProviderOptions {
   defaultMaxOutputTokens?: number;
   requestTimeoutMs?: number;
   fetch?: typeof fetch;
+  allowedHosts?: string[];
 }
 
 export class DeepSeekModelProvider implements ModelProvider {
@@ -44,10 +46,15 @@ export class DeepSeekModelProvider implements ModelProvider {
 
   constructor(options: DeepSeekProviderOptions = {}) {
     this.apiKey = options.apiKey ?? process.env.DEEPSEEK_API_KEY;
-    this.baseUrl = normalizeBaseUrl(
+    this.baseUrl = normalizeTrustedHttpsBaseUrl(
+      PROVIDER_ID,
       options.baseUrl ??
         process.env.DEEPSEEK_BASE_URL ??
-        "https://api.deepseek.com"
+        "https://api.deepseek.com",
+      options.allowedHosts ??
+        parseCommaSeparated(
+          process.env.DEEPSEEK_ALLOWED_HOSTS ?? "api.deepseek.com"
+        )
     );
     this.model =
       optionalString(options.model ?? process.env.DEEPSEEK_MODEL) ??

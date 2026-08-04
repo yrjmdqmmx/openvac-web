@@ -228,6 +228,13 @@ split-role integration test. Rows whose historical `resolved`/`closed`
 distinction was already collapsed by `0002` fall back to `closed`; that lost
 historical distinction cannot be reconstructed from the current database.
 
+Migration `0008_agent_v2_responses.sql` adds only Agent V2 tables, enums,
+indexes, foreign keys, and nullable compatibility columns. Keep this migration
+in place when the Agent V2 database switch is disabled; the previous Chat route
+ignores the new schema while Answer V2 history remains readable. Follow the
+same-SHA staging acceptance and atomic cutover procedure in
+[`agent-v2-release.md`](agent-v2-release.md).
+
 ### Offline staging bootstrap
 
 If the ECS host cannot reach Docker Hub, manually dispatch

@@ -20,6 +20,8 @@ export async function* parseChatEventStream(
   const decoder = new TextDecoder();
   let buffer = "";
   let completeSeen = false;
+  let protocol: 1 | 2 | undefined;
+  let lastSequence = 0;
   let reachedEof = false;
 
   try {
@@ -40,7 +42,29 @@ export async function* parseChatEventStream(
 
         if (data && data !== "[DONE]") {
           const event = JSON.parse(data) as ChatStreamEvent;
-          if (event.type === "complete") {
+          const isV2 = "runId" in event && "sequence" in event;
+          if (protocol === undefined) protocol = isV2 ? 2 : 1;
+          if ((protocol === 2) !== isV2) {
+            throw new ChatStreamProtocolError(
+              "服务器在同一回答中混用了协议版本，请刷新对话历史。"
+            );
+          }
+          if (isV2) {
+            if (
+              !Number.isSafeInteger(event.sequence) ||
+              event.sequence <= lastSequence
+            ) {
+              boundary = buffer.indexOf("\n\n");
+              continue;
+            }
+            lastSequence = event.sequence;
+          }
+          const terminal =
+            event.type === "complete" ||
+            event.type === "run.completed" ||
+            event.type === "run.cancelled" ||
+            event.type === "run.failed";
+          if (terminal) {
             if (completeSeen) {
               throw new ChatStreamProtocolError(
                 "服务器重复发送了回答完成标记，请刷新对话历史。"

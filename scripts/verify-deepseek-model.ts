@@ -3,14 +3,14 @@ const baseUrl = (process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com")
   .trim()
   .replace(/\/+$/, "");
 const expectedModel = (
-  process.env.DEEPSEEK_MODEL ?? "deepseek-v4-flash"
+  process.env.DEEPSEEK_RESPONSES_MODEL ?? "deepseek-v4-flash"
 ).trim();
 
 if (!apiKey) {
   throw new Error("DEEPSEEK_API_KEY is required.");
 }
 if (!expectedModel) {
-  throw new Error("DEEPSEEK_MODEL is required.");
+  throw new Error("DEEPSEEK_RESPONSES_MODEL is required.");
 }
 
 const timeout = AbortSignal.timeout(30_000);

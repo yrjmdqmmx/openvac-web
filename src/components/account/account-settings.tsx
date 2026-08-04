@@ -3,6 +3,7 @@
 import {
   Database,
   LoaderCircle,
+  BrainCircuit,
   MonitorSmartphone,
   ShieldAlert,
   Trash2,
@@ -17,7 +18,15 @@ import {
   type AccountSessionSummary
 } from "@/lib/account-session-client";
 
-export type AccountSettingsSection = "account" | "sessions" | "data";
+export type AccountSettingsSection = "account" | "sessions" | "memory" | "data";
+
+type SavedMemory = {
+  id: string;
+  kind: "equipment" | "operating_context" | "unit_preference";
+  label: string;
+  facts: Record<string, unknown>;
+  status: "active" | "disabled";
+};
 
 export function AccountSettingsContent({
   email,
@@ -35,6 +44,7 @@ export function AccountSettingsContent({
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [memories, setMemories] = useState<SavedMemory[]>([]);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -49,11 +59,33 @@ export function AccountSettingsContent({
     }
   }, []);
 
+  const loadMemories = useCallback(async () => {
+    try {
+      const response = await fetch("/api/account/memories", {
+        headers: { Accept: "application/json" },
+        cache: "no-store"
+      });
+      if (!response.ok) throw new Error("memories unavailable");
+      const payload = (await response.json()) as {
+        data?: { memories?: SavedMemory[] };
+      };
+      setMemories(payload.data?.memories ?? []);
+    } catch {
+      setMemories([]);
+    }
+  }, []);
+
   useEffect(() => {
     if (section !== "all" && section !== "sessions") return;
     const timer = window.setTimeout(() => void loadSessions(), 0);
     return () => window.clearTimeout(timer);
   }, [loadSessions, section]);
+
+  useEffect(() => {
+    if (section !== "all" && section !== "memory") return;
+    const timer = window.setTimeout(() => void loadMemories(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadMemories, section]);
 
   async function run(name: string, action: () => Promise<void>) {
     setBusy(name);
@@ -188,6 +220,161 @@ export function AccountSettingsContent({
               撤销全部会话
             </button>
           </div>
+        </section>
+      ) : null}
+
+      {section === "all" || section === "memory" ? (
+        <section
+          className={
+            section === "all"
+              ? "mt-12 border-t border-[var(--border)] pt-8"
+              : undefined
+          }
+        >
+          <div className="flex items-center gap-3">
+            <BrainCircuit className="h-5 w-5 text-[var(--muted)]" />
+            <h2 className="text-xl font-semibold">主动记忆</h2>
+          </div>
+          <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+            这里只保存你在对话中明确确认的设备资料、常用工况和单位偏好。停用后不会进入新回答；删除会立即退出后续上下文。
+          </p>
+          <ul className="mt-5 divide-y divide-[var(--border)] border-y border-[var(--border)]">
+            {memories.length === 0 ? (
+              <li className="py-5 text-sm text-[var(--muted)]">
+                尚未保存主动记忆。
+              </li>
+            ) : null}
+            {memories.map((memory) => (
+              <li key={memory.id} className="py-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{memory.label}</p>
+                    <p className="mt-1 text-xs leading-6 break-words text-[var(--muted)]">
+                      {JSON.stringify(memory.facts)}
+                    </p>
+                    <p className="mt-1 text-xs text-[var(--muted)]">
+                      {memory.status === "active" ? "已启用" : "已停用"}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const label = window
+                          .prompt("修改记忆名称", memory.label)
+                          ?.trim();
+                        if (!label || label === memory.label) return;
+                        void run(`memory-edit-${memory.id}`, async () => {
+                          const response = await fetch(
+                            `/api/account/memories/${memory.id}`,
+                            {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ label })
+                            }
+                          );
+                          if (!response.ok)
+                            throw new Error("memory edit failed");
+                          await loadMemories();
+                        });
+                      }}
+                      className="h-8 rounded-md border border-[var(--border)] px-2.5 text-xs"
+                    >
+                      编辑名称
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const raw = window.prompt(
+                          "编辑记忆内容（JSON 对象）",
+                          JSON.stringify(memory.facts, null, 2)
+                        );
+                        if (!raw) return;
+                        let facts: Record<string, unknown>;
+                        try {
+                          const parsed = JSON.parse(raw) as unknown;
+                          if (
+                            !parsed ||
+                            typeof parsed !== "object" ||
+                            Array.isArray(parsed)
+                          ) {
+                            throw new Error("memory facts must be an object");
+                          }
+                          facts = parsed as Record<string, unknown>;
+                        } catch {
+                          setError("记忆内容必须是有效的 JSON 对象。");
+                          return;
+                        }
+                        void run(`memory-facts-${memory.id}`, async () => {
+                          const response = await fetch(
+                            `/api/account/memories/${memory.id}`,
+                            {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ facts })
+                            }
+                          );
+                          if (!response.ok)
+                            throw new Error("memory facts edit failed");
+                          await loadMemories();
+                        });
+                      }}
+                      className="h-8 rounded-md border border-[var(--border)] px-2.5 text-xs"
+                    >
+                      编辑内容
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void run(`memory-toggle-${memory.id}`, async () => {
+                          const response = await fetch(
+                            `/api/account/memories/${memory.id}`,
+                            {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                status:
+                                  memory.status === "active"
+                                    ? "disabled"
+                                    : "active"
+                              })
+                            }
+                          );
+                          if (!response.ok)
+                            throw new Error("memory toggle failed");
+                          await loadMemories();
+                        })
+                      }
+                      className="h-8 rounded-md border border-[var(--border)] px-2.5 text-xs"
+                    >
+                      {memory.status === "active" ? "停用" : "启用"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!window.confirm(`确认删除“${memory.label}”？`))
+                          return;
+                        void run(`memory-delete-${memory.id}`, async () => {
+                          const response = await fetch(
+                            `/api/account/memories/${memory.id}`,
+                            {
+                              method: "DELETE"
+                            }
+                          );
+                          if (!response.ok)
+                            throw new Error("memory delete failed");
+                          await loadMemories();
+                        });
+                      }}
+                      className="h-8 rounded-md border border-[#d9aaa5] px-2.5 text-xs text-[var(--danger)]"
+                    >
+                      删除
+                    </button>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
         </section>
       ) : null}
 

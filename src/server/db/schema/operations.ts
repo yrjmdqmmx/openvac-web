@@ -56,17 +56,29 @@ export const modelInvocation = pgTable(
     messageId: uuid("message_id").references(() => message.id, {
       onDelete: "set null"
     }),
+    agentRunId: uuid("agent_run_id"),
     clientRequestId: text("client_request_id"),
     purpose: invocationPurpose("purpose").notNull(),
     provider: text("provider").notNull(),
     model: text("model").notNull(),
     providerRequestId: text("provider_request_id"),
+    protocol: text("protocol").default("chat").notNull(),
+    phase: text("phase").default("answer").notNull(),
+    attempt: integer("attempt").default(1).notNull(),
+    retryOfId: uuid("retry_of_id"),
     status: operationStatus("status").default("running").notNull(),
     inputTokens: integer("input_tokens"),
+    cacheHitInputTokens: integer("cache_hit_input_tokens"),
+    cacheMissInputTokens: integer("cache_miss_input_tokens"),
     outputTokens: integer("output_tokens"),
+    reasoningTokens: integer("reasoning_tokens"),
     totalTokens: integer("total_tokens"),
     costMicros: bigint("cost_micros", { mode: "number" }),
     latencyMs: integer("latency_ms"),
+    firstEventLatencyMs: integer("first_event_latency_ms"),
+    providerHttpStatus: integer("provider_http_status"),
+    providerErrorCode: text("provider_error_code"),
+    priceVersion: text("price_version"),
     requestMetadata: jsonb("request_metadata")
       .$type<Record<string, unknown>>()
       .default({})
@@ -101,7 +113,8 @@ export const modelInvocation = pgTable(
       table.status,
       table.startedAt
     ),
-    index("model_invocation_client_request_idx").on(table.clientRequestId)
+    index("model_invocation_client_request_idx").on(table.clientRequestId),
+    index("model_invocation_agent_run_idx").on(table.agentRunId)
   ]
 );
 

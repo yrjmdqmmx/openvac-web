@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleStop, Menu, Send } from "lucide-react";
+import { BrainCircuit, CircleStop, Globe2, Menu, Send } from "lucide-react";
 import {
   FormEvent,
   useCallback,
@@ -22,6 +22,9 @@ import { ChatStreamProtocolError, parseChatEventStream } from "@/lib/sse";
 import { replaceWindowLocation } from "@/lib/client-navigation";
 import type {
   AnswerMeta,
+  AnswerSectionName,
+  AnswerSectionValue,
+  AnswerV2,
   ChatMessage,
   ConversationSummary
 } from "@/types/chat";
@@ -29,6 +32,25 @@ import type {
 const CONVERSATION_PAGE_SIZE = 20;
 const CONVERSATION_SEARCH_DEBOUNCE_MS = 250;
 const CONVERSATION_DATA_CLEARED_ABORT_REASON = "conversation-data-cleared";
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+export type AgentTimelineEntry = {
+  id: string;
+  label: string;
+  status: "running" | "completed" | "failed";
+};
+
+const EMPTY_ANSWER_V2: AnswerV2 = {
+  schemaVersion: "openvac.answer.v2",
+  answerKind: "general_guidance",
+  conclusion: [],
+  assumptions: [],
+  evidence: [],
+  missingInputs: [],
+  nextSteps: [],
+  calculationRefs: []
+};
 
 type ConversationPage = {
   items: ConversationSummary[];
@@ -89,6 +111,42 @@ function makeLocalId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
 }
 
+function withAnswerSection(
+  answer: AnswerV2 | undefined,
+  section: AnswerSectionName,
+  value: AnswerSectionValue
+): AnswerV2 {
+  const current = answer ?? EMPTY_ANSWER_V2;
+  switch (section) {
+    case "conclusion":
+      return { ...current, conclusion: value as AnswerV2["conclusion"] };
+    case "assumptions":
+      return { ...current, assumptions: value as string[] };
+    case "evidence":
+      return { ...current, evidence: value as AnswerV2["evidence"] };
+    case "missingInputs":
+      return { ...current, missingInputs: value as string[] };
+    case "nextSteps":
+      return { ...current, nextSteps: value as string[] };
+  }
+}
+
+function renderAnswerForClipboard(answer: AnswerV2): string {
+  const list = (items: string[]) => items.map((item) => `- ${item}`).join("\n");
+  return [
+    "## 结论",
+    answer.conclusion.map((item) => item.text).join("\n\n"),
+    "## 采用的条件/假设",
+    list(answer.assumptions),
+    "## 依据与来源",
+    list(answer.evidence.map((item) => item.claim)),
+    "## 仍缺少的信息",
+    list(answer.missingInputs),
+    "## 建议下一步",
+    list(answer.nextSteps)
+  ].join("\n\n");
+}
+
 export function problemReportDescriptionForMessage(
   messages: ChatMessage[],
   messageId?: string
@@ -130,6 +188,19 @@ export function ChatWorkspace({
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [stage, setStage] = useState<string>();
+  const [timeline, setTimeline] = useState<AgentTimelineEntry[]>([]);
+  const [mode, setMode] = useState<"auto" | "deep">("auto");
+  const [webMode, setWebMode] = useState<"auto" | "always">("auto");
+  const [activeRunId, setActiveRunId] = useState<string>();
+  const [selectedVersionByTurn, setSelectedVersionByTurn] = useState<
+    Record<string, number>
+  >({});
+  const [memoryDraft, setMemoryDraft] = useState<{
+    messageId: string;
+    text: string;
+    label: string;
+    kind: "equipment" | "operating_context" | "unit_preference";
+  }>();
   const [error, setError] = useState<string>();
   const [resetAt, setResetAt] = useState<string>();
   const [problemReportOpen, setProblemReportOpen] = useState(false);
@@ -151,6 +222,31 @@ export function ChatWorkspace({
   const endRef = useRef<HTMLDivElement>(null);
 
   const busy = Boolean(stage);
+  const assistantVersionsByTurn = useMemo(() => {
+    const groups = new Map<string, ChatMessage[]>();
+    for (const message of messages) {
+      const turnId =
+        message.role === "assistant" ? message.meta?.turnId : undefined;
+      if (!turnId || message.meta?.answerVersion === undefined) continue;
+      groups.set(turnId, [...(groups.get(turnId) ?? []), message]);
+    }
+    return groups;
+  }, [messages]);
+  const visibleMessages = useMemo(
+    () =>
+      messages.filter((message) => {
+        const turnId =
+          message.role === "assistant" ? message.meta?.turnId : undefined;
+        if (!turnId || message.meta?.answerVersion === undefined) return true;
+        const versions = assistantVersionsByTurn.get(turnId) ?? [];
+        if (versions.length < 2) return true;
+        const selected =
+          selectedVersionByTurn[turnId] ??
+          Math.max(...versions.map((item) => item.meta?.answerVersion ?? 0));
+        return message.meta.answerVersion === selected;
+      }),
+    [assistantVersionsByTurn, messages, selectedVersionByTurn]
+  );
 
   const loadConversationPage = useCallback(
     async ({
@@ -253,15 +349,18 @@ export function ChatWorkspace({
       pendingQuestionHandledRef.current = true;
 
       const clientRequestId = crypto.randomUUID();
+      const localUserId = makeLocalId("user");
       const localAssistantId = makeLocalId("assistant");
       setInput("");
       setError(undefined);
       setResetAt(undefined);
       setStage("正在准备证据检索…");
+      setTimeline([{ id: "accepted", label: "准备运行", status: "running" }]);
+      setActiveRunId(undefined);
       setMessages((current) => [
         ...current,
         {
-          id: makeLocalId("user"),
+          id: localUserId,
           role: "user",
           content: question,
           status: "completed"
@@ -291,9 +390,12 @@ export function ChatWorkspace({
             Accept: "text/event-stream"
           },
           body: JSON.stringify({
+            protocolVersion: 2,
             conversationId,
             message: question,
-            clientRequestId
+            clientRequestId,
+            mode,
+            webMode
           }),
           signal: controller.signal
         });
@@ -323,8 +425,159 @@ export function ChatWorkspace({
         let finalMeta: AnswerMeta | undefined;
         let completedConversationId = conversationId;
         let completionSeen = false;
+        let finalStatus: ChatMessage["status"] = "completed";
 
         for await (const event of parseChatEventStream(response)) {
+          if (event.type === "run.accepted") {
+            setActiveRunId(event.runId);
+            finalMessageId = event.messageId;
+            completedConversationId = event.conversationId;
+            setTimeline((current) => [
+              ...current.map((item) =>
+                item.status === "running"
+                  ? { ...item, status: "completed" as const }
+                  : item
+              ),
+              {
+                id: `run-${event.sequence}`,
+                label: "运行已接受",
+                status: "completed"
+              }
+            ]);
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === localUserId
+                  ? { ...message, id: event.userMessageId }
+                  : message.id === localAssistantId
+                    ? {
+                        ...message,
+                        meta: {
+                          ...(message.meta ?? {
+                            riskLevel: "low" as const,
+                            missingInputs: [],
+                            webSearched: false,
+                            citations: []
+                          }),
+                          runId: event.runId,
+                          turnId: event.turnId,
+                          answerVersion: event.answerVersion
+                        }
+                      }
+                    : message
+              )
+            );
+          }
+          if (event.type === "stage.changed") {
+            setStage(event.label);
+            setTimeline((current) =>
+              [
+                ...current.map((item) =>
+                  item.status === "running"
+                    ? { ...item, status: "completed" as const }
+                    : item
+                ),
+                {
+                  id: `stage-${event.sequence}`,
+                  label: event.label,
+                  status: "running" as const
+                }
+              ].slice(-20)
+            );
+          }
+          if (
+            event.type === "tool.started" ||
+            event.type === "tool.completed" ||
+            event.type === "tool.failed"
+          ) {
+            setTimeline((current) =>
+              [
+                ...current,
+                {
+                  id: `tool-${event.sequence}`,
+                  label: event.label,
+                  status: (event.type === "tool.started"
+                    ? "running"
+                    : event.type === "tool.completed"
+                      ? "completed"
+                      : "failed") as AgentTimelineEntry["status"]
+                }
+              ].slice(-20)
+            );
+          }
+          if (event.type === "answer.section.committed") {
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === localAssistantId
+                  ? {
+                      ...message,
+                      meta: {
+                        ...(message.meta ?? {
+                          riskLevel: "low" as const,
+                          missingInputs: [],
+                          webSearched: false,
+                          citations: []
+                        }),
+                        answer: withAnswerSection(
+                          message.meta?.answer,
+                          event.section,
+                          event.value
+                        )
+                      }
+                    }
+                  : message
+              )
+            );
+          }
+          if (event.type === "citation.committed") {
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === localAssistantId
+                  ? {
+                      ...message,
+                      meta: {
+                        ...(message.meta ?? {
+                          riskLevel: "low" as const,
+                          missingInputs: [],
+                          webSearched: false,
+                          citations: []
+                        }),
+                        citations: [
+                          ...(message.meta?.citations ?? []).filter(
+                            (citation) =>
+                              citation.sourceId !== event.citation.sourceId
+                          ),
+                          event.citation
+                        ]
+                      }
+                    }
+                  : message
+              )
+            );
+          }
+          if (event.type === "run.completed") {
+            completionSeen = true;
+            finalMessageId = event.messageId;
+            finalMeta = event.meta;
+            completedConversationId = event.conversationId;
+            finalStatus = event.meta.incomplete ? "incomplete" : "completed";
+            setTimeline((current) =>
+              current.map((item) =>
+                item.status === "running"
+                  ? { ...item, status: "completed" as const }
+                  : item
+              )
+            );
+          }
+          if (event.type === "run.cancelled") {
+            completionSeen = true;
+            throw new Error(event.message);
+          }
+          if (event.type === "run.failed") {
+            completionSeen = true;
+            throw Object.assign(new Error(event.message), {
+              resetAt: event.resetAt
+            });
+          }
           if (event.type === "status") {
             setStage(event.label);
           }
@@ -395,7 +648,11 @@ export function ChatWorkspace({
               ? {
                   ...message,
                   id: finalMessageId,
-                  status: "completed",
+                  status: finalStatus,
+                  content:
+                    finalMeta?.answer && !message.content
+                      ? renderAnswerForClipboard(finalMeta.answer)
+                      : message.content,
                   meta: finalMeta ?? message.meta
                 }
               : message
@@ -435,10 +692,11 @@ export function ChatWorkspace({
         );
       } finally {
         abortRef.current = undefined;
+        setActiveRunId(undefined);
         setStage(undefined);
       }
     },
-    [busy, conversationId, loadConversationPage, userId]
+    [busy, conversationId, loadConversationPage, mode, userId, webMode]
   );
 
   useEffect(() => {
@@ -467,6 +725,9 @@ export function ChatWorkspace({
     conversationDetailAbortRef.current = controller;
     setConversationId(id);
     setMessages([]);
+    setTimeline([]);
+    setActiveRunId(undefined);
+    setSelectedVersionByTurn({});
     setError(undefined);
     try {
       const response = await fetch(`/api/conversations/${id}`, {
@@ -495,6 +756,17 @@ export function ChatWorkspace({
           payload.data?.messages ??
           []
       );
+      const restored =
+        payload.messages ??
+        payload.conversation?.messages ??
+        payload.data?.messages ??
+        [];
+      const latestAgentMeta = restored
+        .toReversed()
+        .find((message) => message.role === "assistant")?.meta;
+      if (latestAgentMeta?.requestedMode)
+        setMode(latestAgentMeta.requestedMode);
+      if (latestAgentMeta?.webMode) setWebMode(latestAgentMeta.webMode);
     } catch (caught) {
       if (!controller.signal.aborted) {
         setError("无法恢复这段对话。");
@@ -551,17 +823,253 @@ export function ChatWorkspace({
     setConversationHistoryLoading(false);
     setConversationId(undefined);
     setMessages([]);
+    setTimeline([]);
+    setActiveRunId(undefined);
+    setSelectedVersionByTurn({});
     setStage(undefined);
     setError(undefined);
     setResetAt(undefined);
     setProblemReportOpen(false);
     setProblemReportMessageId(undefined);
+    setMemoryDraft(undefined);
   }
 
   const problemReportDescription = useMemo(
     () => problemReportDescriptionForMessage(messages, problemReportMessageId),
     [messages, problemReportMessageId]
   );
+
+  async function cancelActiveRun() {
+    if (!activeRunId) {
+      abortRef.current?.abort();
+      return;
+    }
+    setStage("正在停止回答…");
+    try {
+      const response = await fetch(`/api/chat/runs/${activeRunId}/cancel`, {
+        method: "POST",
+        signal: AbortSignal.timeout(2_000)
+      });
+      if (!response.ok && response.status !== 409)
+        throw new Error("cancel failed");
+    } catch {
+      abortRef.current?.abort();
+    }
+  }
+
+  async function runAnswerAction(
+    source: ChatMessage,
+    action: "retry" | "regenerate" | "continue"
+  ) {
+    const turnId = source.meta?.turnId;
+    if (!turnId || busy) return;
+    const localAssistantId = makeLocalId("assistant-version");
+    const clientRequestId = crypto.randomUUID();
+    let actionRunId: string | undefined;
+    const provisionalVersion = (source.meta?.answerVersion ?? 1) + 1;
+    setSelectedVersionByTurn((current) => ({
+      ...current,
+      [turnId]: provisionalVersion
+    }));
+    setError(undefined);
+    setResetAt(undefined);
+    setStage("正在创建回答版本…");
+    setTimeline([{ id: "action", label: "创建回答版本", status: "running" }]);
+    setMessages((current) => [
+      ...current,
+      {
+        id: localAssistantId,
+        role: "assistant",
+        content: "",
+        status: "streaming",
+        meta: {
+          riskLevel: source.meta?.riskLevel ?? "low",
+          missingInputs: [],
+          webSearched: false,
+          citations: [],
+          turnId,
+          answerVersion: provisionalVersion
+        }
+      }
+    ]);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const response = await fetch(`/api/chat/turns/${turnId}/runs`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream"
+        },
+        body: JSON.stringify({ action, clientRequestId, mode, webMode }),
+        signal: controller.signal
+      });
+      if (!response.ok || !response.body) {
+        const payload = (await response.json().catch(() => null)) as {
+          error?: { message?: string; resetAt?: string };
+        } | null;
+        throw Object.assign(
+          new Error(payload?.error?.message ?? "暂时无法创建回答版本。"),
+          { resetAt: payload?.error?.resetAt }
+        );
+      }
+      let completed = false;
+      for await (const event of parseChatEventStream(response)) {
+        if (event.type === "run.accepted") {
+          actionRunId = event.runId;
+          setSelectedVersionByTurn((current) => ({
+            ...current,
+            [event.turnId]: event.answerVersion
+          }));
+          setActiveRunId(event.runId);
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === localAssistantId
+                ? {
+                    ...message,
+                    id: event.messageId,
+                    meta: {
+                      ...message.meta!,
+                      runId: event.runId,
+                      turnId: event.turnId,
+                      answerVersion: event.answerVersion
+                    }
+                  }
+                : message
+            )
+          );
+        }
+        if (event.type === "stage.changed") {
+          setStage(event.label);
+          setTimeline((current) =>
+            [
+              ...current.map((item) =>
+                item.status === "running"
+                  ? { ...item, status: "completed" as const }
+                  : item
+              ),
+              {
+                id: `stage-${event.sequence}`,
+                label: event.label,
+                status: "running" as const
+              }
+            ].slice(-20)
+          );
+        }
+        if (
+          event.type === "tool.started" ||
+          event.type === "tool.completed" ||
+          event.type === "tool.failed"
+        ) {
+          setTimeline((current) =>
+            [
+              ...current,
+              {
+                id: `tool-${event.sequence}`,
+                label: event.label,
+                status: (event.type === "tool.started"
+                  ? "running"
+                  : event.type === "tool.completed"
+                    ? "completed"
+                    : "failed") as AgentTimelineEntry["status"]
+              }
+            ].slice(-20)
+          );
+        }
+        if (event.type === "answer.section.committed") {
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === localAssistantId ||
+              message.meta?.runId === event.runId
+                ? {
+                    ...message,
+                    meta: {
+                      ...message.meta!,
+                      answer: withAnswerSection(
+                        message.meta?.answer,
+                        event.section,
+                        event.value
+                      )
+                    }
+                  }
+                : message
+            )
+          );
+        }
+        if (event.type === "citation.committed") {
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === localAssistantId ||
+              message.meta?.runId === event.runId
+                ? {
+                    ...message,
+                    meta: {
+                      ...message.meta!,
+                      citations: [
+                        ...(message.meta?.citations ?? []).filter(
+                          (citation) =>
+                            citation.sourceId !== event.citation.sourceId
+                        ),
+                        event.citation
+                      ]
+                    }
+                  }
+                : message
+            )
+          );
+        }
+        if (event.type === "run.completed") {
+          completed = true;
+          setMessages((current) =>
+            current.map((message) =>
+              message.meta?.runId === event.runId ||
+              message.id === localAssistantId
+                ? {
+                    ...message,
+                    id: event.messageId,
+                    status: event.meta.incomplete ? "incomplete" : "completed",
+                    content: renderAnswerForClipboard(event.answer),
+                    meta: event.meta
+                  }
+                : message
+            )
+          );
+        }
+        if (event.type === "run.failed" || event.type === "run.cancelled") {
+          completed = true;
+          throw new Error(event.message);
+        }
+      }
+      if (!completed)
+        throw new ChatStreamProtocolError("回答版本连接提前中断。");
+      await loadConversationPage({
+        query: conversationQueryRef.current,
+        page: 1,
+        append: false
+      });
+    } catch (caught) {
+      const typed = caught as Error & { resetAt?: string };
+      setError(typed.message || "回答版本未完成。");
+      setResetAt(typed.resetAt);
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === localAssistantId ||
+          (actionRunId && message.meta?.runId === actionRunId)
+            ? {
+                ...message,
+                status: "error",
+                content: message.content || "本次回答版本未完成，可重新重试。"
+              }
+            : message
+        )
+      );
+    } finally {
+      abortRef.current = undefined;
+      setActiveRunId(undefined);
+      setStage(undefined);
+    }
+  }
+
   return (
     <main className="flex h-dvh min-h-[640px] overflow-hidden bg-white">
       <ConversationSidebar
@@ -577,6 +1085,7 @@ export function ChatWorkspace({
           conversationDetailRequestRef.current += 1;
           setConversationId(undefined);
           setMessages([]);
+          setSelectedVersionByTurn({});
           setError(undefined);
           setConversationQuery("");
           setMobileSidebarOpen(false);
@@ -634,22 +1143,155 @@ export function ChatWorkspace({
               </div>
             ) : (
               <div className="px-5 pt-12 sm:px-8 sm:pt-14">
-                {messages.map((message) =>
+                {visibleMessages.map((message) =>
                   message.role === "user" ? (
                     <div
                       key={message.id}
-                      className="mx-auto mb-8 flex max-w-[830px] justify-end"
+                      className="mx-auto mb-8 flex max-w-[830px] flex-col items-end"
                     >
                       <p className="max-w-[88%] rounded-2xl bg-[var(--surface-strong)] px-5 py-3 text-sm leading-7 sm:max-w-[74%] sm:text-base">
                         {message.content}
                       </p>
+                      <button
+                        type="button"
+                        disabled={!UUID_PATTERN.test(message.id)}
+                        title={
+                          UUID_PATTERN.test(message.id)
+                            ? "确认后保存为跨对话记忆"
+                            : "等待本轮消息保存后即可记忆"
+                        }
+                        onClick={() =>
+                          setMemoryDraft({
+                            messageId: message.id,
+                            text: message.content,
+                            label: message.content.slice(0, 40),
+                            kind: "operating_context"
+                          })
+                        }
+                        className="mt-1.5 rounded px-1.5 py-1 text-[11px] text-[var(--muted)] hover:bg-[var(--surface)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)] disabled:cursor-wait disabled:opacity-40"
+                      >
+                        记住此信息
+                      </button>
+                      {memoryDraft?.messageId === message.id ? (
+                        <div className="mt-2 w-full max-w-md rounded-xl border border-[var(--border)] bg-white p-4 text-left shadow-sm">
+                          <p className="text-sm font-medium">
+                            确认保存为跨对话记忆
+                          </p>
+                          <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
+                            只有确认后才会保存；之后可在设置中编辑、停用或删除。
+                          </p>
+                          <div className="mt-3 grid gap-2 sm:grid-cols-[140px_1fr]">
+                            <select
+                              aria-label="记忆类型"
+                              value={memoryDraft.kind}
+                              onChange={(event) =>
+                                setMemoryDraft((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        kind: event.target
+                                          .value as typeof current.kind
+                                      }
+                                    : current
+                                )
+                              }
+                              className="h-9 rounded-md border border-[var(--border)] px-2 text-sm"
+                            >
+                              <option value="equipment">设备资料</option>
+                              <option value="operating_context">
+                                常用工况
+                              </option>
+                              <option value="unit_preference">单位偏好</option>
+                            </select>
+                            <input
+                              aria-label="记忆名称"
+                              value={memoryDraft.label}
+                              maxLength={120}
+                              onChange={(event) =>
+                                setMemoryDraft((current) =>
+                                  current
+                                    ? { ...current, label: event.target.value }
+                                    : current
+                                )
+                              }
+                              className="h-9 rounded-md border border-[var(--border)] px-3 text-sm"
+                            />
+                          </div>
+                          <div className="mt-3 flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setMemoryDraft(undefined)}
+                              className="h-8 rounded-md px-3 text-xs text-[var(--muted)]"
+                            >
+                              取消
+                            </button>
+                            <button
+                              type="button"
+                              disabled={!memoryDraft.label.trim()}
+                              onClick={async () => {
+                                const response = await fetch(
+                                  "/api/account/memories",
+                                  {
+                                    method: "POST",
+                                    headers: {
+                                      "Content-Type": "application/json"
+                                    },
+                                    body: JSON.stringify({
+                                      kind: memoryDraft.kind,
+                                      label: memoryDraft.label.trim(),
+                                      facts: { note: memoryDraft.text },
+                                      sourceMessageIds: [memoryDraft.messageId]
+                                    })
+                                  }
+                                );
+                                if (!response.ok) {
+                                  setError("记忆保存失败，请稍后重试。");
+                                  return;
+                                }
+                                setMemoryDraft(undefined);
+                              }}
+                              className="h-8 rounded-md bg-[var(--ink)] px-3 text-xs text-white disabled:opacity-40"
+                            >
+                              确认保存
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   ) : (
                     <ExpertAnswer
                       key={message.id}
                       message={message}
                       stage={message.status === "streaming" ? stage : undefined}
+                      timeline={
+                        message.status === "streaming" ? timeline : undefined
+                      }
                       modelingEnabled={modelingEnabled}
+                      onRunAction={(action) =>
+                        void runAnswerAction(message, action)
+                      }
+                      versionOptions={
+                        message.meta?.turnId
+                          ? (
+                              assistantVersionsByTurn.get(
+                                message.meta.turnId
+                              ) ?? []
+                            )
+                              .map((item) => item.meta?.answerVersion)
+                              .filter(
+                                (value): value is number => value !== undefined
+                              )
+                              .sort((left, right) => left - right)
+                          : []
+                      }
+                      onVersionChange={(version) => {
+                        const turnId = message.meta?.turnId;
+                        if (!turnId) return;
+                        setSelectedVersionByTurn((current) => ({
+                          ...current,
+                          [turnId]: version
+                        }));
+                      }}
                       onProblemReport={(messageId) => {
                         setProblemReportMessageId(messageId);
                         setProblemReportOpen(true);
@@ -721,6 +1363,7 @@ export function ChatWorkspace({
                 </div>
               )}
               <form
+                aria-busy={busy}
                 onSubmit={(event: FormEvent) => {
                   event.preventDefault();
                   void send(input);
@@ -730,29 +1373,71 @@ export function ChatWorkspace({
                 <label htmlFor="chat-input" className="visually-hidden">
                   继续提问
                 </label>
-                <textarea
-                  id="chat-input"
-                  value={input}
-                  onChange={(event) => setInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (
-                      event.key === "Enter" &&
-                      !event.shiftKey &&
-                      !event.nativeEvent.isComposing
-                    ) {
-                      event.preventDefault();
-                      void send(input);
-                    }
-                  }}
-                  rows={2}
-                  maxLength={4000}
-                  placeholder="继续描述工况、型号或故障现象……"
-                  className="composer-textarea max-h-40 min-h-11 min-w-0 flex-1 resize-none border-0 bg-transparent py-2 text-sm leading-6 outline-none sm:text-base"
-                />
+                <div className="min-w-0 flex-1">
+                  <textarea
+                    id="chat-input"
+                    value={input}
+                    onChange={(event) => setInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === "Enter" &&
+                        !event.shiftKey &&
+                        !event.nativeEvent.isComposing
+                      ) {
+                        event.preventDefault();
+                        void send(input);
+                      }
+                    }}
+                    rows={2}
+                    maxLength={4000}
+                    placeholder="继续描述工况、型号或故障现象……"
+                    className="composer-textarea max-h-40 min-h-11 w-full resize-none border-0 bg-transparent py-2 text-sm leading-6 outline-none sm:text-base"
+                  />
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      aria-pressed={mode === "deep"}
+                      title="关闭时自动选择思考强度；开启后下一轮强制深度思考"
+                      onClick={() =>
+                        setMode((value) => (value === "deep" ? "auto" : "deep"))
+                      }
+                      className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)] ${
+                        mode === "deep"
+                          ? "bg-[var(--ink)] text-white"
+                          : "bg-[var(--surface)] text-[var(--muted)] hover:text-[var(--ink)]"
+                      }`}
+                    >
+                      <BrainCircuit aria-hidden className="h-3.5 w-3.5" />
+                      深度思考
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={webMode === "always"}
+                      title="关闭时按问题自动联网；开启后下一轮强制联网"
+                      onClick={() =>
+                        setWebMode((value) =>
+                          value === "always" ? "auto" : "always"
+                        )
+                      }
+                      className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)] ${
+                        webMode === "always"
+                          ? "bg-[var(--ink)] text-white"
+                          : "bg-[var(--surface)] text-[var(--muted)] hover:text-[var(--ink)]"
+                      }`}
+                    >
+                      <Globe2 aria-hidden className="h-3.5 w-3.5" />
+                      联网
+                    </button>
+                    <span className="text-[10px] text-[var(--muted)]">
+                      {mode === "deep" ? "深度" : "自动思考"} ·{" "}
+                      {webMode === "always" ? "强制联网" : "自动联网"}
+                    </span>
+                  </div>
+                </div>
                 {busy ? (
                   <button
                     type="button"
-                    onClick={() => abortRef.current?.abort()}
+                    onClick={() => void cancelActiveRun()}
                     className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-[var(--ink)] text-white"
                     aria-label="取消回答"
                   >

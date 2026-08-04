@@ -5,6 +5,7 @@ import type {
   ModelingCard,
   RiskLevel
 } from "@/types/chat";
+import { safeParseAnswerV2 } from "@/server/agent/answer-v2";
 import { citationSourcePolicy } from "./citation-policy";
 
 const MODELING_UUID_PATTERN =
@@ -23,6 +24,8 @@ export type StoredCitationRecord = {
   title: string;
   url: string | null;
   license: string | null;
+  trustTier?: string | null;
+  reviewStatus?: string | null;
   locator: Record<string, unknown>;
   metadata: Record<string, unknown>;
 };
@@ -33,6 +36,8 @@ export type StoredMessageRecord = {
   status: string;
   content: string;
   metadata: Record<string, unknown>;
+  answerSchemaVersion?: string | null;
+  answerPayload?: Record<string, unknown> | null;
 };
 
 export function serializeStoredCitation(
@@ -54,6 +59,8 @@ export function serializeStoredCitation(
     ),
     pageOrSection: stringValue(citation.locator.pageOrSection),
     fetchedAt: isoDateValue(citation.metadata.fetchedAt),
+    trustTier: trustTierValue(citation.trustTier),
+    reviewStatus: reviewStatusValue(citation.reviewStatus),
     licenseClass
   };
 }
@@ -69,12 +76,23 @@ export function serializeStoredMessage(
   const result: ChatMessage = {
     id: message.id,
     role: message.role,
-    content: message.content,
+    content:
+      message.content ||
+      (message.status === "failed" || message.status === "cancelled"
+        ? "本次回答未完成。你可以重试；失败或取消的回答不会扣除成功回答额度。"
+        : ""),
     status: messageStatusValue(message.status)
   };
 
-  if (message.role === "assistant" && message.status === "completed") {
-    result.meta = answerMetaValue(message.metadata, citations);
+  if (
+    message.role === "assistant" &&
+    (message.status === "completed" || message.status === "incomplete")
+  ) {
+    result.meta = answerMetaValue(
+      message.metadata,
+      citations,
+      message.answerPayload
+    );
   }
 
   return result;
@@ -82,14 +100,27 @@ export function serializeStoredMessage(
 
 function answerMetaValue(
   metadata: Record<string, unknown>,
-  citations: Citation[]
+  citations: Citation[],
+  answerPayload?: Record<string, unknown> | null
 ): AnswerMeta {
   const modelingCards = serializeStoredModelingCards(metadata.modelingCards);
+  const answer = safeParseAnswerV2(answerPayload);
   return {
     riskLevel: riskLevelValue(metadata.riskLevel),
     missingInputs: stringArrayValue(metadata.missingInputs),
     webSearched: metadata.webSearched === true,
     citations,
+    ...(answer ? { answer } : {}),
+    ...(stringValue(metadata.turnId)
+      ? { turnId: stringValue(metadata.turnId) }
+      : {}),
+    ...(stringValue(metadata.runId)
+      ? { runId: stringValue(metadata.runId) }
+      : {}),
+    ...(positiveIntegerValue(metadata.answerVersion)
+      ? { answerVersion: positiveIntegerValue(metadata.answerVersion) }
+      : {}),
+    ...(metadata.incomplete === true ? { incomplete: true } : {}),
     ...(modelingCards.length ? { modelingCards } : {})
   };
 }
@@ -156,8 +187,37 @@ function riskLevelValue(value: unknown): RiskLevel {
 
 function messageStatusValue(value: string): NonNullable<ChatMessage["status"]> {
   if (value === "completed") return "completed";
+  if (value === "incomplete") return "incomplete";
   if (value === "failed" || value === "cancelled") return "error";
   return "streaming";
+}
+
+function trustTierValue(
+  value: string | null | undefined
+): Citation["trustTier"] {
+  return value === "tier_a" ||
+    value === "tier_b" ||
+    value === "tier_c" ||
+    value === "blocked"
+    ? value
+    : undefined;
+}
+
+function reviewStatusValue(
+  value: string | null | undefined
+): Citation["reviewStatus"] {
+  return value === "reviewed" ||
+    value === "pending_review" ||
+    value === "rejected" ||
+    value === "runtime_verified"
+    ? value
+    : undefined;
+}
+
+function positiveIntegerValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
 }
 
 function licenseClassValue(value: string | null): Citation["licenseClass"] {

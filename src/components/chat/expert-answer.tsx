@@ -18,7 +18,14 @@ import {
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { evaluateCitationLink } from "@/lib/citation-link-policy";
-import type { ChatMessage, Citation, ModelingCard } from "@/types/chat";
+import type { AgentTimelineEntry } from "@/components/chat/chat-workspace";
+import type {
+  AnswerV2,
+  CalculationResult,
+  ChatMessage,
+  Citation,
+  ModelingCard
+} from "@/types/chat";
 
 function AnswerText({ content }: { content: string }) {
   const lines = content.split("\n");
@@ -51,33 +58,284 @@ function AnswerText({ content }: { content: string }) {
   );
 }
 
-function SourceItem({ citation }: { citation: Citation }) {
-  const [open, setOpen] = useState(false);
-  const link = evaluateCitationLink(citation);
-
+function EvidenceMarkers({
+  ids,
+  citations,
+  onActivate
+}: {
+  ids: string[];
+  citations: Citation[];
+  onActivate: (id: string) => void;
+}) {
+  const numbers = new Map(
+    citations.map((citation, index) => [citation.sourceId, index + 1])
+  );
   return (
-    <li className="border-t border-[var(--border)] py-3 first:border-0">
+    <span className="ml-1 inline-flex gap-0.5 align-baseline">
+      {[...new Set(ids)].map((id) => {
+        const number = numbers.get(id);
+        if (!number) return null;
+        return (
+          <button
+            key={id}
+            type="button"
+            onClick={() => onActivate(id)}
+            className="rounded px-0.5 text-xs font-medium text-[var(--accent)] underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)]"
+            aria-label={`查看来源 ${number}`}
+          >
+            [{number}]
+          </button>
+        );
+      })}
+    </span>
+  );
+}
+
+function StructuredAnswer({
+  answer,
+  citations,
+  onCitationActivate
+}: {
+  answer: AnswerV2;
+  citations: Citation[];
+  onCitationActivate: (id: string) => void;
+}) {
+  const section = (title: string, items: string[], empty?: string) => {
+    if (items.length === 0 && !empty) return null;
+    return (
+      <section className="mt-6 first:mt-0">
+        <h2>{title}</h2>
+        {items.length ? (
+          <ul className="mt-2 space-y-2">
+            {items.map((item, index) => (
+              <li key={`${title}-${index}`} className="leading-7">
+                {item}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>{empty}</p>
+        )}
+      </section>
+    );
+  };
+  return (
+    <div className="answer-content">
+      <section>
+        <h2>结论</h2>
+        <div className="mt-2 space-y-3">
+          {answer.conclusion.map((claim, index) => (
+            <p
+              key={`conclusion-${index}`}
+              data-evidence={claim.evidenceIds.join(" ")}
+            >
+              {claim.text}
+              <EvidenceMarkers
+                ids={claim.evidenceIds}
+                citations={citations}
+                onActivate={onCitationActivate}
+              />
+            </p>
+          ))}
+        </div>
+      </section>
+      {section("采用的条件/假设", answer.assumptions)}
+      {answer.evidence.length > 0 ? (
+        <section className="mt-6">
+          <h2>依据与来源</h2>
+          <ul className="mt-2 space-y-2">
+            {answer.evidence.map((claim, index) => (
+              <li
+                key={`evidence-${index}`}
+                data-evidence={claim.evidenceIds.join(" ")}
+                className="leading-7"
+              >
+                {claim.claim}
+                <EvidenceMarkers
+                  ids={claim.evidenceIds}
+                  citations={citations}
+                  onActivate={onCitationActivate}
+                />
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {section("仍缺少的信息", answer.missingInputs)}
+      {section("建议下一步", answer.nextSteps)}
+    </div>
+  );
+}
+
+function CalculationCards({
+  calculations
+}: {
+  calculations: CalculationResult[];
+}) {
+  if (calculations.length === 0) return null;
+  return (
+    <section className="mt-7" aria-label="工程计算">
+      <h2 className="text-sm font-medium">工程计算</h2>
+      <div className="mt-3 space-y-2">
+        {calculations.map((calculation) => (
+          <details
+            key={calculation.id}
+            className="rounded-xl border border-[var(--border)] px-4 py-3"
+          >
+            <summary className="cursor-pointer text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]">
+              {calculation.tool} ·{" "}
+              {Object.entries(calculation.result)
+                .map(([key, value]) => `${key}: ${String(value)}`)
+                .join(" · ")}
+            </summary>
+            <dl className="mt-3 grid gap-2 text-xs leading-6 text-[var(--muted)]">
+              <div>
+                <dt className="font-medium text-[var(--ink)]">公式</dt>
+                <dd>
+                  {calculation.formulaId} · v{calculation.formulaVersion}
+                </dd>
+              </div>
+              <div>
+                <dt className="font-medium text-[var(--ink)]">标准化输入</dt>
+                <dd className="break-words">
+                  {JSON.stringify(calculation.normalizedInputs)}
+                </dd>
+              </div>
+              {calculation.assumptions.length > 0 ? (
+                <div>
+                  <dt className="font-medium text-[var(--ink)]">假设</dt>
+                  <dd>{calculation.assumptions.join("；")}</dd>
+                </div>
+              ) : null}
+              {calculation.warnings.length > 0 ? (
+                <div>
+                  <dt className="font-medium text-[var(--warning)]">警告</dt>
+                  <dd>{calculation.warnings.join("；")}</dd>
+                </div>
+              ) : null}
+            </dl>
+          </details>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function AgentTimeline({ entries }: { entries: AgentTimelineEntry[] }) {
+  const [open, setOpen] = useState(true);
+  if (entries.length === 0) return null;
+  const active = entries.findLast((entry) => entry.status === "running");
+  return (
+    <div className="mt-3 max-w-xl rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-3 text-left font-medium"
+      >
+        <span>{active?.label ?? "Agent 时间线"}</span>
+        {open ? (
+          <ChevronUp className="h-3.5 w-3.5" />
+        ) : (
+          <ChevronDown className="h-3.5 w-3.5" />
+        )}
+      </button>
+      {open ? (
+        <ol className="mt-2 space-y-1.5 text-[var(--muted)]">
+          {entries.map((entry) => (
+            <li key={entry.id} className="flex items-center gap-2">
+              <span aria-hidden>
+                {entry.status === "running"
+                  ? "◌"
+                  : entry.status === "completed"
+                    ? "✓"
+                    : "!"}
+              </span>
+              <span>{entry.label}</span>
+              <span className="visually-hidden">
+                {entry.status === "running"
+                  ? "进行中"
+                  : entry.status === "completed"
+                    ? "已完成"
+                    : "失败"}
+              </span>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </div>
+  );
+}
+
+function SourceItem({
+  citation,
+  active,
+  onActiveChange,
+  onLocateClaim
+}: {
+  citation: Citation;
+  active: boolean;
+  onActiveChange: () => void;
+  onLocateClaim: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const link = evaluateCitationLink(citation);
+  const expanded = active || open;
+
+  return (
+    <li
+      id={`source-${citation.sourceId}`}
+      className="scroll-mt-24 border-t border-[var(--border)] py-3 first:border-0"
+    >
+      <button
+        type="button"
+        onClick={() => {
+          setOpen((value) => !value);
+          onActiveChange();
+        }}
+        aria-expanded={expanded}
         className="flex w-full items-center gap-3 text-left"
       >
         <FileText className="h-4 w-4 shrink-0 text-[var(--muted)]" />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">
           {citation.title}
         </span>
-        {open ? (
+        {expanded ? (
           <ChevronUp className="h-4 w-4" />
         ) : (
           <ChevronDown className="h-4 w-4" />
         )}
       </button>
-      {open && (
+      {expanded && (
         <div className="mt-3 pl-7 text-xs leading-6 text-[var(--muted)]">
           <p>
             {citation.publisher}
             {citation.pageOrSection ? ` · ${citation.pageOrSection}` : ""}
           </p>
+          <p>
+            来源等级：
+            {citation.trustTier === "tier_a"
+              ? "Tier A"
+              : citation.trustTier === "tier_b"
+                ? "Tier B"
+                : "未进入最终引用等级"}
+            {citation.reviewStatus === "pending_review"
+              ? " · 待人工审核"
+              : citation.reviewStatus === "runtime_verified"
+                ? " · 本轮已核验"
+                : citation.reviewStatus === "reviewed"
+                  ? " · 已人工审核"
+                  : citation.reviewStatus === "rejected"
+                    ? " · 来源已撤回"
+                    : ""}
+          </p>
+          <button
+            type="button"
+            onClick={onLocateClaim}
+            className="mr-3 text-[var(--ink)] underline underline-offset-4"
+          >
+            定位正文
+          </button>
           <p>
             授权类别：
             {
@@ -186,21 +444,30 @@ function formatBytes(bytes: number): string {
 export function ExpertAnswer({
   message,
   stage,
+  timeline = [],
   onFeedback,
   onProblemReport,
+  onRunAction,
+  versionOptions = [],
+  onVersionChange,
   modelingEnabled = false
 }: {
   message: ChatMessage;
   stage?: string;
+  timeline?: AgentTimelineEntry[];
   onFeedback: (
     messageId: string,
     rating: "up" | "down" | "report"
   ) => Promise<void>;
   onProblemReport: (messageId: string) => void;
+  onRunAction?: (action: "retry" | "regenerate" | "continue") => void;
+  versionOptions?: number[];
+  onVersionChange?: (version: number) => void;
   modelingEnabled?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<string>();
+  const [activeCitation, setActiveCitation] = useState<string>();
   const citations = useMemo(
     () => message.meta?.citations ?? [],
     [message.meta]
@@ -221,27 +488,82 @@ export function ExpertAnswer({
               安全优先
             </span>
           )}
+          {versionOptions.length > 1 ? (
+            <label className="ml-auto inline-flex items-center gap-2 text-xs text-[var(--muted)]">
+              <span>回答版本</span>
+              <select
+                value={message.meta?.answerVersion ?? versionOptions.at(-1)}
+                onChange={(event) =>
+                  onVersionChange?.(Number(event.target.value))
+                }
+                className="h-8 rounded-md border border-[var(--border)] bg-white px-2 text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)]"
+                aria-label="切换回答版本"
+              >
+                {versionOptions.map((version) => (
+                  <option key={version} value={version}>
+                    版本 {version}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
         </div>
+        {message.meta?.resolvedMode ? (
+          <p className="mt-1 text-xs text-[var(--muted)]">
+            {message.meta.resolvedMode === "deep" ? "深度回答" : "快速回答"}
+            {message.meta.webSearched ? " · 已联网" : " · 未使用联网来源"}
+            {` · ${citations.length} 个来源`}
+            {message.meta.latencyMs !== undefined
+              ? ` · ${(message.meta.latencyMs / 1_000).toFixed(1)} 秒`
+              : ""}
+            {message.meta.context?.strategy === "summarized"
+              ? " · 已使用对话摘要"
+              : ""}
+          </p>
+        ) : null}
         {stage ? (
           <p
             role="status"
+            aria-live="polite"
             className="mt-2 flex items-center gap-2 text-sm text-[var(--muted)]"
           >
             <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
             {stage}
           </p>
         ) : null}
+        <AgentTimeline entries={timeline} />
       </div>
 
-      {message.content ? (
+      {message.meta?.answer && message.meta.answer.conclusion.length > 0 ? (
+        <StructuredAnswer
+          answer={message.meta.answer}
+          citations={citations}
+          onCitationActivate={(id) => {
+            setActiveCitation(id);
+            window.setTimeout(
+              () =>
+                document
+                  .getElementById(`source-${id}`)
+                  ?.scrollIntoView({ behavior: "smooth", block: "center" }),
+              0
+            );
+          }}
+        />
+      ) : message.content ? (
         <AnswerText content={message.content} />
-      ) : (
+      ) : message.status === "streaming" ? (
         <div className="space-y-3" aria-label="正在生成回答">
           <div className="h-4 w-3/5 animate-pulse rounded bg-[var(--surface-strong)]" />
           <div className="h-4 w-full animate-pulse rounded bg-[var(--surface-strong)]" />
           <div className="h-4 w-4/5 animate-pulse rounded bg-[var(--surface-strong)]" />
         </div>
+      ) : (
+        <p className="text-sm text-[var(--muted)]">
+          本次回答没有可显示的完整内容。
+        </p>
       )}
+
+      <CalculationCards calculations={message.meta?.calculations ?? []} />
 
       {citations.length > 0 && (
         <div className="mt-7 rounded-xl border border-[var(--border)] px-4">
@@ -250,7 +572,19 @@ export function ExpertAnswer({
           </p>
           <ul>
             {citations.map((citation) => (
-              <SourceItem key={citation.sourceId} citation={citation} />
+              <SourceItem
+                key={citation.sourceId}
+                citation={citation}
+                active={activeCitation === citation.sourceId}
+                onActiveChange={() => setActiveCitation(citation.sourceId)}
+                onLocateClaim={() => {
+                  document
+                    .querySelector<HTMLElement>(
+                      `[data-evidence~="${citation.sourceId}"]`
+                    )
+                    ?.scrollIntoView({ behavior: "smooth", block: "center" });
+                }}
+              />
             ))}
           </ul>
         </div>
@@ -260,7 +594,7 @@ export function ExpertAnswer({
         <ModelingCards cards={modelingCards} />
       ) : null}
 
-      {message.status !== "streaming" && (
+      {message.status === "completed" && (
         <div className="mt-6 flex flex-wrap items-center gap-1">
           <button
             type="button"
@@ -314,6 +648,37 @@ export function ExpertAnswer({
           ) : null}
         </div>
       )}
+      {onRunAction && message.meta?.turnId ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {message.status === "completed" ? (
+            <button
+              type="button"
+              onClick={() => onRunAction("regenerate")}
+              className="h-9 rounded-lg border border-[var(--border)] px-3 text-sm hover:bg-[var(--surface)]"
+            >
+              重新生成
+            </button>
+          ) : null}
+          {message.status === "incomplete" ? (
+            <button
+              type="button"
+              onClick={() => onRunAction("continue")}
+              className="h-9 rounded-lg border border-[var(--border)] px-3 text-sm hover:bg-[var(--surface)]"
+            >
+              继续
+            </button>
+          ) : null}
+          {message.status === "error" ? (
+            <button
+              type="button"
+              onClick={() => onRunAction("retry")}
+              className="h-9 rounded-lg border border-[var(--border)] px-3 text-sm hover:bg-[var(--surface)]"
+            >
+              重试
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </article>
   );
 }

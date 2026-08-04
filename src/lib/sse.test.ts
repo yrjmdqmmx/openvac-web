@@ -63,6 +63,32 @@ describe("parseChatEventStream", () => {
       )
     ).rejects.toThrow("完成后继续发送");
   });
+
+  it("accepts V2 terminal events and drops duplicate or backwards sequences", async () => {
+    const events = await collectEvents(
+      streamResponse([
+        'data: {"type":"run.accepted","runId":"r1","sequence":1,"turnId":"t1","conversationId":"c1","messageId":"m1","answerVersion":1}\n\n',
+        'data: {"type":"stage.changed","runId":"r1","sequence":2,"stage":"analyzing","label":"分析"}\n\n',
+        'data: {"type":"stage.changed","runId":"r1","sequence":2,"stage":"searching","label":"重复"}\n\n',
+        'data: {"type":"stage.changed","runId":"r1","sequence":1,"stage":"searching","label":"乱序"}\n\n',
+        'data: {"type":"run.failed","runId":"r1","sequence":3,"code":"FAILED","message":"失败","retryable":true,"suggestedAction":"retry","charged":false}\n\n'
+      ])
+    );
+
+    expect(events).toHaveLength(3);
+    expect(events[1]).toMatchObject({ sequence: 2, label: "分析" });
+    expect(events[2]).toMatchObject({ type: "run.failed", sequence: 3 });
+  });
+
+  it("rejects a truncated V2 stream without a semantic terminal event", async () => {
+    await expect(
+      collectEvents(
+        streamResponse([
+          'data: {"type":"run.accepted","runId":"r1","sequence":1,"turnId":"t1","conversationId":"c1","messageId":"m1","answerVersion":1}\n\n'
+        ])
+      )
+    ).rejects.toThrow("未收到完整的回答");
+  });
 });
 
 function streamResponse(chunks: string[]) {

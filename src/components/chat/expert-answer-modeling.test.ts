@@ -100,7 +100,7 @@ describe("ExpertAnswer modeling cards", () => {
       screen.queryByRole("button", { name: "回答有帮助" })
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "复制回答" })
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: "复制回答" })
+    ).not.toBeInTheDocument();
   });
 });

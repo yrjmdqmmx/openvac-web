@@ -88,7 +88,9 @@ eligible AS (
     ks.publisher,
     ks.canonical_url,
     ks.source_tier,
-    kv.citation_metadata
+    kv.citation_metadata,
+    kv.metadata ->> 'reviewStatus' AS review_status,
+    kv.metadata ->> 'retrievalStatus' AS retrieval_status
   FROM knowledge_chunk kc
   JOIN knowledge_version kv ON kv.id = kc.version_id
   JOIN knowledge_document kd ON kd.id = kv.document_id
@@ -151,6 +153,8 @@ SELECT
   e.canonical_url,
   e.source_tier,
   e.citation_metadata,
+  e.review_status,
+  e.retrieval_status,
   ranked.score
 FROM ranked
 JOIN eligible e ON e.id = ranked.id

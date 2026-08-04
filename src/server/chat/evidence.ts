@@ -36,36 +36,12 @@ export async function collectEvidence(input: {
   onStage?: (label: string) => void;
 }): Promise<EvidenceResult> {
   input.onStage?.("正在检索 OpenVac 知识库…");
-  const patentReferences = await retrievePatentMetadataReferences(
-    input.question,
-    async (query, parameters) => {
-      const rows = await sqlClient.unsafe(query, parameters as never[]);
-      return [...rows] as Array<Record<string, unknown>>;
-    }
-  ).catch(() => []);
-  const local = await retrieveLocal(input.question);
-  const localEvidence = deduplicateEvidence([
-    ...patentReferences.map((evidence) =>
-      sanitizeGroundingEvidence(evidence, 2_200)
-    ),
-    ...local.candidates
-      .filter((candidate) => candidate.citation)
-      .slice(0, 6)
-      .map((candidate) =>
-        sanitizeGroundingEvidence(
-          {
-            citation: candidate.citation!,
-            excerpt: candidate.content
-          },
-          2_200
-        )
-      )
-  ]).slice(0, 6);
+  const localResult = await collectLocalEvidence(input.question);
+  const { patentReferences, local, evidence: localEvidence } = localResult;
 
   const insufficient =
-    (patentReferences.length === 0 &&
-      (localEvidence.length < 2 ||
-        (local.candidates[0]?.score ?? 0) < 0.016)) ||
+    (patentReferences === 0 &&
+      (localEvidence.length < 2 || local.bestScore < 0.016)) ||
     TIME_SENSITIVE.test(input.question);
 
   if (!insufficient || process.env.ALIBABA_WEB_SEARCH_ENABLED !== "true") {
@@ -182,6 +158,50 @@ export async function collectEvidence(input: {
       retrievalMode: local.mode
     };
   }
+}
+
+export async function collectLocalEvidence(question: string): Promise<{
+  evidence: GroundingEvidence[];
+  patentReferences: number;
+  local: {
+    mode: "hybrid" | "lexical" | "none";
+    bestScore: number;
+  };
+}> {
+  const patentReferences = await retrievePatentMetadataReferences(
+    question,
+    async (query, parameters) => {
+      const rows = await sqlClient.unsafe(query, parameters as never[]);
+      return [...rows] as Array<Record<string, unknown>>;
+    }
+  ).catch(() => []);
+  const local = await retrieveLocal(question);
+  const localEvidence = deduplicateEvidence([
+    ...patentReferences.map((evidence) =>
+      sanitizeGroundingEvidence(evidence, 2_200)
+    ),
+    ...local.candidates
+      .filter((candidate) => candidate.citation)
+      .slice(0, 6)
+      .map((candidate) =>
+        sanitizeGroundingEvidence(
+          {
+            citation: candidate.citation!,
+            excerpt: candidate.content
+          },
+          2_200
+        )
+      )
+  ]).slice(0, 6);
+
+  return {
+    evidence: localEvidence,
+    patentReferences: patentReferences.length,
+    local: {
+      mode: local.mode,
+      bestScore: local.candidates[0]?.score ?? 0
+    }
+  };
 }
 
 const INSTRUCTION_LIKE_EVIDENCE =

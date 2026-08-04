@@ -1,6 +1,12 @@
 "use client";
 
-import { Database, MonitorSmartphone, UserRound, X } from "lucide-react";
+import {
+  BrainCircuit,
+  Database,
+  MonitorSmartphone,
+  UserRound,
+  X
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   AccountSettingsContent,
@@ -15,6 +21,7 @@ const sections: {
 }[] = [
   { id: "account", label: "账户", icon: UserRound },
   { id: "sessions", label: "登录与安全", icon: MonitorSmartphone },
+  { id: "memory", label: "主动记忆", icon: BrainCircuit },
   { id: "data", label: "数据管理", icon: Database }
 ];
 

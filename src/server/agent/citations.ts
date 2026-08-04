@@ -12,6 +12,7 @@ export interface Citation {
   pageOrSection?: string;
   fetchedAt: string | Date;
   licenseClass: LicenseClass;
+  reviewStatus?: "reviewed" | "pending_review";
 }
 
 export interface AnswerMeta {

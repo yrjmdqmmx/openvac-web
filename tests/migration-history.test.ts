@@ -140,7 +140,7 @@ describe("append-only migration history", () => {
     expect(compatibility.tables).toEqual(modeling.tables);
     expect(compatibility.enums).toEqual(modeling.enums);
     expect(compatibility.views).toEqual({});
-    expect(journal.entries.at(-1)).toMatchObject({
+    expect(journal.entries.find((entry) => entry.idx === 7)).toMatchObject({
       idx: 7,
       tag: "0007_consultation_rollback_compat"
     });
@@ -163,5 +163,32 @@ describe("append-only migration history", () => {
       /DROP\s+(?:TABLE|VIEW)\s+(?:IF\s+EXISTS\s+)?(?:"public"\.)?"consultation"/iu
     );
     expect(migration).not.toContain("CREATE OR REPLACE VIEW");
+  });
+
+  it("appends the expand-only Agent V2 schema after consultation compatibility", () => {
+    const compatibility = snapshot(7);
+    const agentV2 = snapshot(8);
+    const migration = source("drizzle/0008_agent_v2_responses.sql");
+    const journal = JSON.parse(source("drizzle/meta/_journal.json")) as Journal;
+
+    expect(agentV2.prevId).toBe(compatibility.id);
+    expect(journal.entries.at(-1)).toMatchObject({
+      idx: 8,
+      tag: "0008_agent_v2_responses"
+    });
+    for (const table of [
+      "public.conversation_turn",
+      "public.agent_run",
+      "public.agent_tool_call",
+      "public.conversation_memory",
+      "public.user_memory",
+      "public.web_domain_policy"
+    ]) {
+      expect(agentV2.tables).toHaveProperty(table);
+      expect(migration).toContain(
+        `CREATE TABLE "${table.replace("public.", "")}"`
+      );
+    }
+    expect(migration).not.toMatch(/\bDROP\s+(?:TABLE|COLUMN|TYPE)\b/iu);
   });
 });

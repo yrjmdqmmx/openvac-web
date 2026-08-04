@@ -19,6 +19,7 @@ import {
 } from "drizzle-orm";
 
 import { db } from "@/server/db";
+import { recoverStaleAgentRuns } from "@/server/agent/retention";
 import {
   serializeStoredCitation,
   serializeStoredMessage
@@ -1092,6 +1093,7 @@ export const apiStore: ApiStore = {
   },
 
   async getConversation(userId, conversationId) {
+    await recoverStaleAgentRuns({ userId, conversationId });
     const [conversation] = await db
       .select({
         id: conversations.id,
@@ -1122,6 +1124,8 @@ export const apiStore: ApiStore = {
         status: messages.status,
         content: messages.content,
         metadata: messages.metadata,
+        answerSchemaVersion: messages.answerSchemaVersion,
+        answerPayload: messages.answerPayload,
         sequence: messages.sequence
       })
       .from(messages)
@@ -1139,6 +1143,8 @@ export const apiStore: ApiStore = {
               title: citations.title,
               url: citations.url,
               license: citations.license,
+              trustTier: citations.trustTier,
+              reviewStatus: citations.reviewStatus,
               locator: citations.locator,
               metadata: citations.metadata
             })
@@ -2378,6 +2384,30 @@ export const apiStore: ApiStore = {
         .update(knowledgeDocuments)
         .set({ status: nextDocumentStatus, updatedAt: now })
         .where(eq(knowledgeDocuments.id, documentId));
+
+      if (document.sourceId) {
+        const chunkRows = await tx
+          .select({ id: knowledgeChunks.id })
+          .from(knowledgeChunks)
+          .where(eq(knowledgeChunks.versionId, document.currentVersionId));
+        const withdrawnSourceIds = chunkRows.map(
+          (chunk) => `${document.sourceId}:chunk:${chunk.id}`
+        );
+        if (withdrawnSourceIds.length > 0) {
+          await tx
+            .update(citations)
+            .set({
+              reviewStatus:
+                input.decision === "approved" ? "reviewed" : "rejected"
+            })
+            .where(
+              inArray(
+                sql<string>`${citations.metadata} ->> 'originalSourceId'`,
+                withdrawnSourceIds
+              )
+            );
+        }
+      }
 
       if (transition.task && !preserveCompletedEmbedding) {
         await tx

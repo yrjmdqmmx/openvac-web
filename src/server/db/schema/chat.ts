@@ -33,6 +33,7 @@ export const messageStatus = pgEnum("message_status", [
   "pending",
   "streaming",
   "completed",
+  "incomplete",
   "failed",
   "cancelled"
 ]);
@@ -108,7 +109,10 @@ export const message = pgTable(
     status: messageStatus("status").default("pending").notNull(),
     content: text("content").default("").notNull(),
     clientRequestId: text("client_request_id"),
+    turnId: uuid("turn_id"),
     model: text("model"),
+    answerSchemaVersion: text("answer_schema_version"),
+    answerPayload: jsonb("answer_payload").$type<Record<string, unknown>>(),
     inputTokens: integer("input_tokens"),
     outputTokens: integer("output_tokens"),
     latencyMs: integer("latency_ms"),
@@ -160,6 +164,8 @@ export const citation = pgTable(
     url: text("url"),
     quote: text("quote"),
     sourceTier: text("source_tier"),
+    trustTier: text("trust_tier"),
+    reviewStatus: text("review_status"),
     license: text("license"),
     locator: jsonb("locator")
       .$type<Record<string, unknown>>()
