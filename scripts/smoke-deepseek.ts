@@ -8,6 +8,12 @@ import {
   DeepSeekResponsesProvider
 } from "../src/server/providers";
 
+// Responses counts reasoning and the structured answer against the same output
+// budget. Keep the release smoke aligned with the automatic runtime budget so a
+// valid response is not reported as incomplete merely because reasoning used
+// part of an artificially smaller smoke-only allowance.
+const SMOKE_MAX_OUTPUT_TOKENS = 4_096;
+
 async function main() {
   const provider = new DeepSeekResponsesProvider();
   const partitionSecret = process.env.DEEPSEEK_USER_PARTITION_SECRET?.trim();
@@ -30,7 +36,7 @@ async function main() {
       schema: ANSWER_V2_JSON_SCHEMA as unknown as Record<string, unknown>,
       strict: true
     },
-    maxOutputTokens: 1_200,
+    maxOutputTokens: SMOKE_MAX_OUTPUT_TOKENS,
     user: createDeepSeekUserPartition(
       "openvac-responses-smoke",
       partitionSecret
