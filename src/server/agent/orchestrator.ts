@@ -44,6 +44,7 @@ import {
   estimateTokens
 } from "./context-builder";
 import { EvidenceRegistry } from "./evidence-registry";
+import { agentRunBudgetProfile, shouldUseWeb } from "./mode-policy";
 import { RunStore, type CreatedRun } from "./run-store";
 import { ToolRegistry, type ToolExecutionResult } from "./tool-registry";
 import { WebEvidenceService } from "./web-evidence";
@@ -112,10 +113,11 @@ export class AgentRunOrchestrator {
     signal: AbortSignal;
   }): Promise<OrchestratorResult> {
     const startedAt = Date.now();
-    const modeTimeoutMs =
-      input.resolvedMode === "deep"
-        ? readPositiveInteger("AGENT_DEEP_TIMEOUT_MS", 180_000)
-        : readPositiveInteger("AGENT_AUTO_TIMEOUT_MS", 60_000);
+    const budgetProfile = agentRunBudgetProfile(input.requestedMode);
+    const modeTimeoutMs = readPositiveInteger(
+      budgetProfile.timeoutEnvironmentName,
+      budgetProfile.timeoutFallbackMs
+    );
     const timeoutSignal = AbortSignal.timeout(modeTimeoutMs);
     const signal = AbortSignal.any([input.signal, timeoutSignal]);
 
@@ -123,15 +125,13 @@ export class AgentRunOrchestrator {
     signal.throwIfAborted();
     await this.proactiveKnowledgeSearch(input.run, signal);
 
-    const shouldSearchWeb =
-      input.webMode === "always" ||
-      needsCurrentWeb(input.run.question) ||
-      this.evidence.list().length === 0 ||
-      (requiresGroundedEvidence(input.run.question) &&
-        !this.evidence.hasVerifiedTierA(
-          this.evidence.list().map((entry) => entry.id)
-        )) ||
-      (input.riskLevel === "high" && input.resolvedMode === "deep");
+    const shouldSearchWeb = shouldUseWeb({
+      webMode: input.webMode,
+      question: input.run.question,
+      riskLevel: input.riskLevel,
+      localEvidenceCount: this.evidence.list().length,
+      resolvedMode: input.resolvedMode
+    });
     if (shouldSearchWeb && this.toolCalls < MAX_TOOL_CALLS) {
       await this.proactiveWebSearch(input, signal);
     }
@@ -549,6 +549,7 @@ export class AgentRunOrchestrator {
       userPartition: string;
       clientRequestId: string;
       run: CreatedRun;
+      requestedMode: RequestedAgentMode;
       resolvedMode: ResolvedAgentMode;
       riskLevel: RiskLevel;
     },
@@ -584,6 +585,7 @@ export class AgentRunOrchestrator {
       userPartition: string;
       clientRequestId: string;
       run: CreatedRun;
+      requestedMode: RequestedAgentMode;
       resolvedMode: ResolvedAgentMode;
       riskLevel: RiskLevel;
     },
@@ -595,6 +597,7 @@ export class AgentRunOrchestrator {
     let outputText = "";
     const calls: CollectedModelResponse["calls"] = [];
     let finish: Extract<ResponsesStreamEvent, { type: "finish" }> | undefined;
+    const budgetProfile = agentRunBudgetProfile(input.requestedMode);
     const request: ResponsesStreamRequest = {
       instructions: undefined,
       input: modelInput,
@@ -612,16 +615,16 @@ export class AgentRunOrchestrator {
         schema: ANSWER_V2_JSON_SCHEMA as unknown as Record<string, unknown>,
         strict: true
       },
-      maxOutputTokens:
-        input.resolvedMode === "deep"
-          ? readPositiveInteger("AGENT_DEEP_MAX_OUTPUT_TOKENS", 8_192)
-          : readPositiveInteger("AGENT_AUTO_MAX_OUTPUT_TOKENS", 4_096),
+      maxOutputTokens: readPositiveInteger(
+        budgetProfile.outputTokenEnvironmentName,
+        budgetProfile.outputTokenFallback
+      ),
       user: input.userPartition,
       signal
     };
     // Instructions are kept out of untrusted input and applied on every call.
     request.instructions = AGENT_V2_INSTRUCTIONS;
-    const inputBudget = input.resolvedMode === "deep" ? 128 * 1024 : 64 * 1024;
+    const inputBudget = budgetProfile.inputTokenBudget;
     const estimatedInputTokens = estimateTokens(
       `${request.instructions}\n${JSON.stringify(request.input)}`
     );
@@ -820,12 +823,6 @@ function toolLabel(
     return status === "started" ? "正在核对证据摘录" : "证据摘录已核对";
   }
   return status === "started" ? "正在执行确定性工程计算" : "工程计算完成";
-}
-
-function needsCurrentWeb(question: string): boolean {
-  return /(?:最新|目前|现在|当前|今天|近期|价格|库存|停产|在售|新型号|新版|公告|法规更新)/u.test(
-    question
-  );
 }
 
 function readPositiveInteger(name: string, fallback: number): number {
