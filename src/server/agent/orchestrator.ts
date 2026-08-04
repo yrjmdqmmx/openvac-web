@@ -37,7 +37,8 @@ import {
   AnswerValidator,
   buildDeterministicCalculationAnswer,
   buildDeterministicSafeAnswer,
-  requiresGroundedEvidence
+  requiresGroundedEvidence,
+  shouldPreferDeterministicCalculationAnswer
 } from "./answer-validator";
 import {
   AGENT_V2_INSTRUCTIONS,
@@ -479,9 +480,19 @@ export class AgentRunOrchestrator {
     outputText: string;
     signal: AbortSignal;
   }): Promise<AnswerV2 | undefined> {
+    const preferCalculationAnswer = shouldPreferDeterministicCalculationAnswer(
+      input.riskLevel,
+      this.calculations.size
+    );
+    const calculationAnswer = () =>
+      buildDeterministicCalculationAnswer([...this.calculations.values()]);
     const parsedJson = safeJson(input.outputText);
     let parsed = answerV2Schema.safeParse(parsedJson);
     if (!parsed.success) {
+      // Local calculation results have already passed strict schema and
+      // applicability validation. Prefer the server-owned representation over
+      // spending the remaining automatic-run budget on repairing model JSON.
+      if (preferCalculationAnswer) return calculationAnswer();
       const repaired = await this.repair(
         input,
         parsed.error.issues.map((issue) => issue.message)
@@ -503,6 +514,7 @@ export class AgentRunOrchestrator {
         "生成内容未通过高风险语义安全边界。"
       );
     }
+    if (preferCalculationAnswer) return calculationAnswer();
     if (this.repairs > 0) return undefined;
     const repaired = await this.repair(input, validated.errors);
     const repairedJson = safeJson(repaired);
@@ -514,11 +526,6 @@ export class AgentRunOrchestrator {
       requiresEvidence: requiresGroundedEvidence(input.run.question)
     });
     if (second.valid) return second.answer;
-    if (this.calculations.size > 0) {
-      return buildDeterministicCalculationAnswer([
-        ...this.calculations.values()
-      ]);
-    }
     return undefined;
   }
 

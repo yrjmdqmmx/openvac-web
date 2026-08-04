@@ -199,6 +199,13 @@ export function buildDeterministicCalculationAnswer(
   };
 }
 
+export function shouldPreferDeterministicCalculationAnswer(
+  riskLevel: RiskLevel,
+  calculationCount: number
+): boolean {
+  return riskLevel !== "high" && calculationCount > 0;
+}
+
 function renderCalculationValues(
   values: Record<string, number | string | boolean | null>
 ): string {
