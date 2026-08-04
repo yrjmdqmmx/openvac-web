@@ -54,8 +54,8 @@ export interface InvocationHandle {
 
 export interface StartInvocationInput {
   userId: string;
-  conversationId: string;
-  messageId: string;
+  conversationId?: string;
+  messageId?: string;
   clientRequestId: string;
   provider: string;
   model: string;
@@ -64,6 +64,13 @@ export interface StartInvocationInput {
   promptVersionId?: string;
   evidenceSourceIds: string[];
   webSearched: boolean;
+  agentRunId?: string;
+  protocol?: "chat" | "responses";
+  phase?: string;
+  attempt?: number;
+  retryOfId?: string;
+  purpose?: "answer" | "web_search" | "evaluation";
+  priceVersion?: string;
   now?: Date;
 }
 
@@ -142,9 +149,15 @@ export async function startModelInvocation(
         conversationId: input.conversationId,
         messageId: input.messageId,
         clientRequestId: input.clientRequestId,
-        purpose: "answer",
+        purpose: input.purpose ?? "answer",
         provider: input.provider,
         model: input.model,
+        agentRunId: input.agentRunId,
+        protocol: input.protocol ?? "chat",
+        phase: input.phase ?? "answer",
+        attempt: input.attempt ?? 1,
+        retryOfId: input.retryOfId,
+        priceVersion: input.priceVersion ?? process.env.MODEL_PRICE_VERSION,
         status: "running",
         costMicros: reservedCostMicros,
         requestMetadata: {
@@ -187,6 +200,8 @@ export async function completeModelInvocation(input: {
   usage?: ModelUsage;
   providerRequestId?: string;
   finishReason?: string;
+  firstEventLatencyMs?: number;
+  providerHttpStatus?: number;
   completedAt?: Date;
 }) {
   const completedAt = input.completedAt ?? new Date();
@@ -209,13 +224,21 @@ export async function completeModelInvocation(input: {
         providerRequestId: input.providerRequestId,
         status: "succeeded",
         inputTokens,
+        cacheHitInputTokens: input.usage?.cachedInputTokens,
+        cacheMissInputTokens:
+          inputTokens === undefined
+            ? undefined
+            : Math.max(0, inputTokens - (input.usage?.cachedInputTokens ?? 0)),
         outputTokens,
+        reasoningTokens: input.usage?.reasoningTokens,
         totalTokens: input.usage?.totalTokens,
         costMicros,
         latencyMs: Math.max(
           0,
           completedAt.getTime() - input.handle.startedAt.getTime()
         ),
+        firstEventLatencyMs: input.firstEventLatencyMs,
+        providerHttpStatus: input.providerHttpStatus,
         responseMetadata: {
           costState: usageComplete ? "actual" : "reserved_estimate",
           finishReason: input.finishReason ?? null,
@@ -255,6 +278,8 @@ export async function failModelInvocation(input: {
   status?: "failed" | "cancelled";
   errorCode: string;
   errorMessage: string;
+  providerHttpStatus?: number;
+  providerErrorCode?: string;
   retainReservedEstimate?: boolean;
   completedAt?: Date;
 }) {
@@ -275,10 +300,93 @@ export async function failModelInvocation(input: {
       ),
       responseMetadata: { costState: accounting.costState },
       errorCode: input.errorCode,
+      providerHttpStatus: input.providerHttpStatus,
+      providerErrorCode: input.providerErrorCode,
       errorMessage: input.errorMessage.slice(0, 1000),
       completedAt
     })
     .where(eq(modelInvocations.id, input.handle.id));
+}
+
+export async function recordExternalProviderInvocation(input: {
+  userId: string;
+  conversationId: string;
+  messageId: string;
+  agentRunId: string;
+  clientRequestId: string;
+  provider: string;
+  model: string;
+  purpose: "web_search";
+  phase: string;
+  status: "succeeded" | "failed";
+  providerRequestId?: string;
+  latencyMs: number;
+  errorCode?: string;
+  costMicros?: number;
+  priceVersion?: string;
+}): Promise<void> {
+  const completedAt = new Date();
+  const startedAt = new Date(completedAt.getTime() - input.latencyMs);
+  await db.transaction(async (tx) => {
+    await assertAccountWritable(tx, input.userId);
+    await tx.insert(modelInvocations).values({
+      userId: input.userId,
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      agentRunId: input.agentRunId,
+      clientRequestId: input.clientRequestId,
+      purpose: input.purpose,
+      provider: input.provider,
+      model: input.model,
+      providerRequestId: input.providerRequestId,
+      protocol: "responses",
+      phase: input.phase,
+      status: input.status,
+      latencyMs: input.latencyMs,
+      costMicros: input.costMicros ?? 0,
+      priceVersion: input.priceVersion,
+      requestMetadata: {
+        costState:
+          input.costMicros === undefined
+            ? "provider_price_unconfigured"
+            : "configured_per_call"
+      },
+      responseMetadata: {
+        costState:
+          input.costMicros === undefined
+            ? "provider_price_unconfigured"
+            : "configured_per_call"
+      },
+      errorCode: input.errorCode,
+      providerErrorCode: input.errorCode,
+      errorMessage: input.errorCode
+        ? "External provider call failed."
+        : undefined,
+      startedAt,
+      completedAt
+    });
+    const usageDate = beijingUsageWindows(completedAt).dayStart;
+    await tx
+      .insert(dailyUsage)
+      .values({
+        date: usageDate,
+        provider: input.provider,
+        model: input.model,
+        requestCount: 1,
+        inputTokens: 0,
+        outputTokens: 0,
+        costCents: Math.ceil((input.costMicros ?? 0) / MICROS_PER_CENT),
+        updatedAt: completedAt
+      })
+      .onConflictDoUpdate({
+        target: [dailyUsage.date, dailyUsage.provider, dailyUsage.model],
+        set: {
+          requestCount: sql`${dailyUsage.requestCount} + 1`,
+          costCents: sql`${dailyUsage.costCents} + ${Math.ceil((input.costMicros ?? 0) / MICROS_PER_CENT)}`,
+          updatedAt: completedAt
+        }
+      });
+  });
 }
 
 export function failedInvocationAccounting(

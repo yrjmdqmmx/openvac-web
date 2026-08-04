@@ -82,6 +82,46 @@ export function normalizeBaseUrl(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
+export function normalizeTrustedHttpsBaseUrl(
+  provider: string,
+  value: string,
+  allowedHosts: readonly string[]
+): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch (cause) {
+    throw new ConfigurationError(
+      provider,
+      `${provider} base URL must be an absolute HTTPS URL.`,
+      cause
+    );
+  }
+
+  const normalizedAllowedHosts = allowedHosts
+    .map(normalizeDomain)
+    .filter(Boolean);
+  if (
+    url.protocol !== "https:" ||
+    Boolean(url.username || url.password) ||
+    (url.port !== "" && url.port !== "443") ||
+    !normalizedAllowedHosts.includes(url.hostname.toLowerCase())
+  ) {
+    throw new ConfigurationError(
+      provider,
+      `${provider} base URL must use HTTPS on an explicitly trusted host.`
+    );
+  }
+  if (url.search || url.hash) {
+    throw new ConfigurationError(
+      provider,
+      `${provider} base URL must not contain a query string or fragment.`
+    );
+  }
+
+  return normalizeBaseUrl(url.toString());
+}
+
 export function parseCommaSeparated(value: string | undefined): string[] {
   return (value ?? "").split(",").map(normalizeDomain).filter(Boolean);
 }
@@ -132,7 +172,11 @@ export async function readJsonResponse(
     throw new ProviderResponseError(
       provider,
       `${provider} returned a non-JSON response (${response.status}).`,
-      { status: response.status, retryable: response.status >= 500, cause }
+      {
+        status: response.status,
+        retryable: isRetryableProviderStatus(response.status),
+        cause
+      }
     );
   }
 
@@ -146,7 +190,10 @@ export async function readJsonResponse(
     throw new ProviderResponseError(
       provider,
       `${provider} request failed: ${message}`,
-      { status: response.status, retryable: response.status >= 500 }
+      {
+        status: response.status,
+        retryable: isRetryableProviderStatus(response.status)
+      }
     );
   }
 
@@ -208,8 +255,12 @@ function responseTooLarge(
   return new ProviderResponseError(
     provider,
     `${provider} response exceeds the ${maxBytes}-byte limit.`,
-    { status, retryable: status >= 500 }
+    { status, retryable: isRetryableProviderStatus(status) }
   );
+}
+
+export function isRetryableProviderStatus(status: number): boolean {
+  return status === 429 || status >= 500;
 }
 
 export function pickString(

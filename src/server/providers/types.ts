@@ -23,7 +23,9 @@ export interface ModelStreamRequest {
 
 export interface ModelUsage {
   inputTokens?: number;
+  cachedInputTokens?: number;
   outputTokens?: number;
+  reasoningTokens?: number;
   totalTokens?: number;
 }
 
@@ -48,6 +50,121 @@ export interface ModelProvider {
   readonly model: string;
   stream(request: ModelStreamRequest): AsyncIterable<ModelStreamEvent>;
 }
+
+export type ResponsesReasoningEffort =
+  "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export type ResponsesInputItem = Record<string, unknown> & {
+  type: string;
+};
+
+export interface ResponsesFunctionTool {
+  type: "function";
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  strict?: boolean;
+}
+
+export interface ResponsesWebSearchTool {
+  type: "web_search" | "web_search_2025_08_26";
+}
+
+export type ResponsesTool = ResponsesFunctionTool | ResponsesWebSearchTool;
+
+export type ResponsesToolChoice =
+  | "none"
+  | "auto"
+  | "required"
+  | { type: "function"; name: string }
+  | { type: "web_search" | "web_search_2025_08_26" };
+
+export type ResponsesTextFormat =
+  | { type: "text" }
+  | { type: "json_object" }
+  | {
+      type: "json_schema";
+      name: string;
+      schema: Record<string, unknown>;
+      strict?: boolean;
+    };
+
+export interface ResponsesStreamRequest {
+  instructions?: string;
+  input: string | ResponsesInputItem[];
+  tools?: ResponsesTool[];
+  toolChoice?: ResponsesToolChoice;
+  reasoningEffort?: ResponsesReasoningEffort;
+  textFormat?: ResponsesTextFormat;
+  maxOutputTokens?: number;
+  user: string;
+  signal?: AbortSignal;
+}
+
+export interface ResponsesUsage {
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  totalTokens?: number;
+}
+
+export interface ResponsesIncompleteDetails {
+  reason?: string;
+}
+
+export interface ResponsesFailure {
+  code?: string;
+  message: string;
+}
+
+/**
+ * `continuationItems` can include private reasoning items. They are only for
+ * the next provider request in the current in-memory tool loop. Callers must
+ * never persist, log, or send them to the browser.
+ */
+export type ResponsesStreamEvent =
+  | { type: "response-created"; responseId: string }
+  | { type: "text-delta"; text: string }
+  | {
+      type: "function-call";
+      callId: string;
+      name: string;
+      arguments: string;
+    }
+  | {
+      type: "web-search-status";
+      status: "in_progress" | "searching" | "completed";
+    }
+  | {
+      type: "finish";
+      status: "completed" | "incomplete" | "failed";
+      responseId: string;
+      outputText: string;
+      continuationItems: ResponsesInputItem[];
+      usage?: ResponsesUsage;
+      incomplete?: ResponsesIncompleteDetails;
+      error?: ResponsesFailure;
+      providerRequestId?: string;
+      firstEventLatencyMs?: number;
+    };
+
+export interface ResponsesProvider {
+  readonly id: string;
+  readonly model: string;
+  readonly capabilities: ResponsesCapabilities;
+  stream(request: ResponsesStreamRequest): AsyncIterable<ResponsesStreamEvent>;
+}
+
+export type ResponsesCapabilities = {
+  protocol: "responses";
+  semanticTerminalEvents: true;
+  reasoningItems: true;
+  functionTools: true;
+  parallelFunctionCalls: true;
+  nativeWebSearch: true;
+  structuredOutputs: true;
+};
 
 export interface EmbeddingResult {
   model: string;

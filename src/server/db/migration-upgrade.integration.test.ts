@@ -24,7 +24,7 @@ async function applyMigration(database: Sql, path: string) {
 }
 
 describeDatabase("migration upgrade compatibility", () => {
-  it("upgrades a pre-0002 database through rollback-compatible 0007", async () => {
+  it("upgrades a pre-0002 database through expand-only Agent V2 migration 0008", async () => {
     const configuredUrl = new URL(
       process.env.DATABASE_URL ??
         "postgres://openvac:openvac@127.0.0.1:5432/openvac"
@@ -58,6 +58,26 @@ describeDatabase("migration upgrade compatibility", () => {
       await applyMigration(target, "0005_sharp_lady_deathstrike.sql");
       await applyMigration(target, "0006_sour_roulette.sql");
       await applyMigration(target, "0007_consultation_rollback_compat.sql");
+      await applyMigration(target, "0008_agent_v2_responses.sql");
+
+      const agentV2Tables = await target<Array<{ table_name: string }>>`
+        select table_name
+        from information_schema.tables
+        where table_schema = 'public'
+          and table_name in (
+            'conversation_turn', 'agent_run', 'agent_tool_call',
+            'conversation_memory', 'user_memory', 'web_domain_policy'
+          )
+        order by table_name
+      `;
+      expect(agentV2Tables.map((row) => row.table_name)).toEqual([
+        "agent_run",
+        "agent_tool_call",
+        "conversation_memory",
+        "conversation_turn",
+        "user_memory",
+        "web_domain_policy"
+      ]);
 
       const modelingTables = await target<Array<{ table_name: string }>>`
         select table_name

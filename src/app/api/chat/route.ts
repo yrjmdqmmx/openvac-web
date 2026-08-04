@@ -50,6 +50,7 @@ import {
   reserveModelAttemptQuota,
   type QuotaReservation
 } from "@/server/quota";
+import { agentResponsesV2Enabled, postAgentV2 } from "@/server/agent/http-v2";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -68,6 +69,21 @@ type PersistedTurn = {
 };
 
 export async function POST(request: Request) {
+  if (await agentResponsesV2Enabled()) {
+    const envelope = (await request
+      .clone()
+      .json()
+      .catch(() => null)) as {
+      protocolVersion?: unknown;
+    } | null;
+    if (envelope?.protocolVersion === 2) {
+      return postAgentV2(request);
+    }
+  }
+  return postLegacyChat(request);
+}
+
+async function postLegacyChat(request: Request) {
   const session = await auth.api.getSession({ headers: request.headers });
   if (!session) {
     return jsonError(401, "UNAUTHENTICATED", "请先登录并完成邮箱验证。");

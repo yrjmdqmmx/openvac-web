@@ -157,7 +157,9 @@ eligible AS (
     ks.publisher,
     ks.canonical_url,
     ks.source_tier,
-    kv.citation_metadata
+    kv.citation_metadata,
+    kv.metadata ->> 'reviewStatus' AS review_status,
+    kv.metadata ->> 'retrievalStatus' AS retrieval_status
   FROM knowledge_chunk kc
   JOIN knowledge_version kv ON kv.id = kc.version_id
   JOIN knowledge_document kd ON kd.id = kv.document_id
@@ -255,6 +257,8 @@ SELECT
   e.canonical_url,
   e.source_tier,
   e.citation_metadata,
+  e.review_status,
+  e.retrieval_status,
   f.vector_rank,
   f.lexical_rank,
   f.score
@@ -335,7 +339,10 @@ function mapRetrievalRow(row: Record<string, unknown>): RetrievalCandidate {
           url: canonicalUrl,
           pageOrSection: citationLocation(pageStart, pageEnd, sectionPath),
           fetchedAt,
-          licenseClass: mapLicenseClass(stringValue(row.source_tier))
+          licenseClass: mapLicenseClass(stringValue(row.source_tier)),
+          reviewStatus: (stringValue(row.review_status) === "approved"
+            ? "reviewed"
+            : "pending_review") as Citation["reviewStatus"]
         }
       : undefined;
 

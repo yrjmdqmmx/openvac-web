@@ -1,60 +1,61 @@
 import {
-  buildExpertPrompt,
-  hasRequiredAnswerSections,
-  REQUIRED_ANSWER_SECTIONS,
-  validateCitations
+  AGENT_V2_INSTRUCTIONS,
+  ANSWER_V2_JSON_SCHEMA,
+  answerV2Schema
 } from "../src/server/agent";
-import { DeepSeekModelProvider } from "../src/server/providers/deepseek";
-import type { ModelUsage } from "../src/server/providers/types";
+import {
+  createDeepSeekUserPartition,
+  DeepSeekResponsesProvider
+} from "../src/server/providers";
 
 async function main() {
-  const provider = new DeepSeekModelProvider();
-  const prompt = buildExpertPrompt({
-    question:
-      "在没有具体型号和工况数据时，说明水环真空泵选型前还需要确认哪些输入。不要虚构参数或来源。",
-    evidence: []
-  });
+  const provider = new DeepSeekResponsesProvider();
+  const partitionSecret = process.env.DEEPSEEK_USER_PARTITION_SECRET?.trim();
+  if (!partitionSecret) {
+    throw new Error("DEEPSEEK_USER_PARTITION_SECRET is required.");
+  }
   let answer = "";
-  let finishReason = "";
-  let usage: ModelUsage | undefined;
+  let terminal = "";
+  let usage;
 
   for await (const event of provider.stream({
-    messages: prompt.messages,
-    temperature: 0,
-    maxOutputTokens: 1200
+    instructions: AGENT_V2_INSTRUCTIONS,
+    input:
+      "在没有具体型号和工况数据时，说明水环真空泵选型前还需要确认哪些输入。不要虚构参数或来源。",
+    toolChoice: "none",
+    reasoningEffort: "low",
+    textFormat: {
+      type: "json_schema",
+      name: "openvac_answer_v2",
+      schema: ANSWER_V2_JSON_SCHEMA as unknown as Record<string, unknown>,
+      strict: true
+    },
+    maxOutputTokens: 1_200,
+    user: createDeepSeekUserPartition(
+      "openvac-responses-smoke",
+      partitionSecret
+    )
   })) {
     if (event.type === "text-delta") answer += event.text;
     if (event.type === "finish") {
-      finishReason = event.finishReason ?? "";
+      answer = event.outputText || answer;
+      terminal = event.status;
       usage = event.usage;
     }
   }
 
-  const citationCheck = validateCitations(answer, []);
-  const sectionsValid = hasRequiredAnswerSections(answer);
-  const headings = REQUIRED_ANSWER_SECTIONS.filter((heading) =>
-    answer.includes(heading)
-  );
-
-  if (!sectionsValid || !citationCheck.valid || !finishReason) {
-    throw new Error(
-      JSON.stringify({
-        sectionsValid,
-        citationErrors: citationCheck.errors,
-        finishReason: finishReason || null
-      })
-    );
+  if (terminal !== "completed") {
+    throw new Error(`Responses smoke ended with ${terminal || "no terminal"}.`);
   }
-
+  const parsed = answerV2Schema.parse(JSON.parse(answer));
   console.log(
     JSON.stringify(
       {
         provider: provider.id,
-        model: provider.model,
-        finishReason,
-        characters: answer.length,
-        headings,
-        citationsValid: citationCheck.valid,
+        protocol: "responses",
+        terminal,
+        answerKind: parsed.answerKind,
+        conclusionCount: parsed.conclusion.length,
         usage
       },
       null,
@@ -65,7 +66,7 @@ async function main() {
 
 main().catch((error) => {
   console.error(
-    "DeepSeek smoke test failed:",
+    "DeepSeek Responses smoke test failed:",
     error instanceof Error ? error.message : String(error)
   );
   process.exitCode = 1;

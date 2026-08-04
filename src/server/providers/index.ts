@@ -7,6 +7,15 @@ export {
   parseSseJson
 } from "./deepseek";
 export {
+  DEEPSEEK_RESPONSES_CAPABILITIES,
+  DeepSeekResponsesProvider,
+  getResponsesProvider
+} from "./deepseek-responses";
+export {
+  createDeepSeekUserPartition,
+  getDeepSeekUserPartition
+} from "./user-partition";
+export {
   AlibabaEmbeddingProvider,
   getEmbeddingProvider
 } from "./alibaba-embedding";
