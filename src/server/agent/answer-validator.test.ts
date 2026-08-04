@@ -4,7 +4,8 @@ import type { AnswerV2 } from "@/types/chat";
 
 import {
   AnswerValidator,
-  buildDeterministicCalculationAnswer
+  buildDeterministicCalculationAnswer,
+  shouldPreferDeterministicCalculationAnswer
 } from "./answer-validator";
 import { EvidenceRegistry } from "./evidence-registry";
 
@@ -161,6 +162,16 @@ describe("buildDeterministicCalculationAnswer", () => {
     expect(() => buildDeterministicCalculationAnswer([])).toThrow(
       "At least one validated calculation is required."
     );
+  });
+
+  it("prefers validated local calculations before model repair for low and medium risk", () => {
+    expect(shouldPreferDeterministicCalculationAnswer("low", 1)).toBe(true);
+    expect(shouldPreferDeterministicCalculationAnswer("medium", 2)).toBe(true);
+    expect(shouldPreferDeterministicCalculationAnswer("low", 0)).toBe(false);
+  });
+
+  it("never lets a calculation-only fallback bypass the high-risk boundary", () => {
+    expect(shouldPreferDeterministicCalculationAnswer("high", 1)).toBe(false);
   });
 });
 
