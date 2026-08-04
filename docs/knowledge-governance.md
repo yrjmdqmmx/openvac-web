@@ -31,7 +31,14 @@ move to dedicated private OSS prefixes before they are used in production.
 
 ## Ingestion state machine
 
-`draft → human review → embedding (full text only) → published`
+Current Phase 1 activation path:
+
+`draft → rights check + hash pin → embedding → published/pending review → human review`
+
+Human approval keeps the pinned version active and changes its review state to
+approved. Human rejection archives it immediately, which removes it from both
+semantic and lexical retrieval. Later uploads and OCR-derived numeric product
+data continue to use the stricter review-before-publication path.
 
 Any state can become `failed` or `archived`. Publishing creates an immutable
 version; rollback activates an earlier reviewed version rather than overwriting
@@ -68,9 +75,10 @@ Each of the 45 CERN draft blocks stores the printed-page locator, a short
 English excerpt checked against the review copy identified in candidate
 metadata, the compatible Chinese statement, its applicability boundary, the
 block-level licence class, a SHA-256 content hash, and
-`reviewStatus: required`. The structural evidence audit can be complete while
-the separate human-review gate remains pending; the audit fields never amount
-to technical approval.
+`reviewStatus: required`. These blocks may now be activated for retrieval before
+technical review, but they retain `active_pending_review` plus the exact content
+hash. The audit fields and provisional activation never amount to technical
+approval.
 
 The hash uses the versioned canonical form
 `openvac-cern-section-audit-v1`. It covers the canonical source URL, governed
@@ -87,9 +95,8 @@ audit. Those excerpts were checked against the same-work arXiv PDF linked by
 the CERN record, and this limitation is stored in `excerptVerification`.
 `cernOfficialPdfBinaryGate` must therefore remain
 `pending_2014_anubis_recheck` until a human passes the challenge and repeats
-the page-by-page check against the formal CERN binary. A complete structural
-evidence gate does not override this publication blocker or the separate human
-review gate.
+the page-by-page check against the formal CERN binary. Until then, the source is
+retrievable only as a clearly pending-review, hash-pinned Phase 1 version.
 
 PDFs, extracted page text, OCR and rendered audit images remain temporary or
 in access-restricted ECS storage while private OSS is not yet provisioned;
@@ -114,13 +121,13 @@ production use requires migration to private OSS. None are committed to Git.
    existing CERN core, the second CERN paper, three HSE safety sources, and two
    metadata-only patent drafts. It refuses to overwrite changed drafts or any
    record whose human review workflow has started.
-6. A human checks the exact content hash, page/section locators, formulas,
+6. `pnpm knowledge:activate-phase-one` validates source rights, embeds all
+   full-text Phase 1 sections, publishes the two patent records without vectors,
+   and marks every activated version as hash-pinned and pending human review.
+7. A human later checks the exact content hash, page/section locators, formulas,
    units, technical scope, attribution, and third-party-asset exclusions in the
-   admin workflow. Full-text approval queues the worker; metadata-only approval
-   never creates an embedding task.
-7. Publish only after worker embedding is complete for full text. Run
-   `pnpm knowledge:embed-published` only as a rights-gated backfill for a
-   reviewed published version that is missing vectors.
+   admin workflow. Approval keeps the version active; rejection archives it and
+   removes it from retrieval immediately.
 8. `pnpm knowledge:verify-governance` must report two patent sources/documents,
    zero patent chunks/embeddings, zero source-less published chunks, and zero
    restricted published chunks.
@@ -131,7 +138,7 @@ production use requires migration to private OSS. None are committed to Git.
 
 Metadata-only patents never enter the vector or full-text index. When a user
 explicitly supplies a publication number, OpenVac may perform an exact identifier
-lookup against a reviewed, published metadata record and cite only its
+lookup against a published metadata record and cite only its
 bibliographic data plus independently written summary. This path is reported
 separately from Top-5 retrieval and does not support fuzzy patent search, legal
 status conclusions, or performance generalisation.
@@ -161,5 +168,5 @@ The two CERN works permit text adaptation with attribution. OpenVac excludes
 third-party courtesy images, vendor curves, and tables unless their rights are
 checked separately. CERN teaching examples do not replace a target pump's
 manual or an engineering safety decision. The source-rights decision is
-record-scoped; it does not replace the separate human technical review required
-for every Chinese knowledge section before publication.
+record-scoped; it does not replace the pending human technical review of every
+Chinese knowledge section.

@@ -1,3 +1,5 @@
+import { RETRIEVAL_REVIEW_POLICY_SQL } from "./review-policy";
+
 const DOMAIN_TERMS = [
   "涡轮分子泵",
   "油封旋片泵",
@@ -95,8 +97,7 @@ eligible AS (
     AND kd.status = 'published'
     AND kd.current_version_id = kv.id
     AND kv.citation_metadata ->> 'ingestionMode' = 'full_text'
-    AND kv.metadata ->> 'reviewStatus' = 'approved'
-    AND kv.metadata #>> '{review,status}' = 'approved'
+    AND ${RETRIEVAL_REVIEW_POLICY_SQL}
     AND ks.enabled = TRUE
     AND ks.deleted_at IS NULL
     AND ks.canonical_url ~ '^https://[^/?#[:space:]@]+([/?#]|$)'

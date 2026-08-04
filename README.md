@@ -98,9 +98,13 @@ seeding never impersonates a reviewer, creates patent vectors, or overwrites a
 draft that may contain human edits. `pnpm knowledge:validate` checks the local
 Phase 1 catalogue, record-scoped rights, page locators, patent metadata-only
 boundary, and 150-case evaluation structure without claiming human approval or
-live retrieval quality. After a human review, worker completion, and
-publication, run `pnpm knowledge:verify-governance` and
-`pnpm eval:core:live` against the real PostgreSQL/pgvector path.
+live retrieval quality. The product owner may run
+`pnpm knowledge:activate-phase-one` to embed and publish the pinned Phase 1
+catalogue before technical review. Such versions remain visibly marked
+`active_pending_review`; changing their content hash or rejecting them removes
+them from retrieval. Human approval later converts the same pinned version to
+the reviewed state. Run `pnpm knowledge:verify-governance` and
+`pnpm eval:core:live` against the real PostgreSQL/pgvector path after activation.
 
 Database changes are generated and applied with:
 
@@ -141,7 +145,7 @@ bibliographic facts, short claim/figure locators, an independently written
 summary, and an authority link; it does not store or vectorize patent full text
 or drawings without a separate record-level rights decision. A patent
 disclosure is not independent performance validation, a safety certification,
-or legal advice. A reviewed metadata record can be recalled only by an explicit
+or legal advice. A published metadata record can be recalled only by an explicit
 publication-number lookup; this is not semantic retrieval and is not counted in
 the Top-5 corpus hit rate.
 

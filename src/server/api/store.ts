@@ -48,6 +48,10 @@ import {
   type GovernedKnowledgeSource
 } from "@/server/knowledge/source-policy";
 import {
+  ACTIVE_REVIEWED,
+  isPendingReviewRetrievalActive
+} from "@/server/knowledge/review-policy";
+import {
   problemReportClosureTransition,
   problemReportRetentionUntil
 } from "@/server/problem-reports/retention";
@@ -2221,7 +2225,9 @@ export const apiStore: ApiStore = {
       if (!document) return null;
       if (
         !document.currentVersionId ||
-        (document.status !== "draft" && document.status !== "review")
+        (document.status !== "draft" &&
+          document.status !== "review" &&
+          document.status !== "published")
       ) {
         throw new ApiError(
           409,
@@ -2239,7 +2245,18 @@ export const apiStore: ApiStore = {
       if (!version || version.documentId !== documentId) {
         return null;
       }
-      if (version.status !== "draft" && version.status !== "review") {
+      const publishedPendingReview =
+        document.status === "published" &&
+        version.status === "published" &&
+        isPendingReviewRetrievalActive({
+          metadata: version.metadata,
+          contentHash: version.contentHash
+        });
+      if (
+        version.status !== "draft" &&
+        version.status !== "review" &&
+        !publishedPendingReview
+      ) {
         throw new ApiError(
           409,
           "KNOWLEDGE_REVIEW_STATE_INVALID",
@@ -2286,7 +2303,9 @@ export const apiStore: ApiStore = {
       const existingEmbeddingMatchesReview =
         existingKnowledgeEmbeddingMatchesReview({
           ingestionMode: version.citationMetadata.ingestionMode,
-          reviewedContentHash: existingReview.contentHash,
+          reviewedContentHash: publishedPendingReview
+            ? version.metadata.retrievalContentHash
+            : existingReview.contentHash,
           nextContentHash: transition.contentHash
         });
       const [existingChunkResult] = existingEmbeddingMatchesReview
@@ -2304,6 +2323,18 @@ export const apiStore: ApiStore = {
           totalChunks: Number(existingChunkResult?.total ?? 0),
           embeddedChunks: Number(existingChunkResult?.embedded ?? 0)
         });
+      if (
+        publishedPendingReview &&
+        input.decision === "approved" &&
+        version.citationMetadata.ingestionMode === "full_text" &&
+        !preserveCompletedEmbedding
+      ) {
+        throw new ApiError(
+          409,
+          "KNOWLEDGE_PROVISIONAL_EMBEDDING_INCOMPLETE",
+          "待复核知识的向量数据不完整，不能记录人工批准。"
+        );
+      }
       const embeddingStatus = preserveCompletedEmbedding
         ? "completed"
         : transition.embeddingStatus;
@@ -2311,13 +2342,33 @@ export const apiStore: ApiStore = {
         ...version.metadata,
         reviewStatus: transition.review.status,
         embeddingStatus,
-        review: transition.review
+        review: transition.review,
+        ...(publishedPendingReview
+          ? {
+              retrievalStatus:
+                input.decision === "approved"
+                  ? ACTIVE_REVIEWED
+                  : "inactive_rejected",
+              humanTechnicalReviewRequired: false
+            }
+          : {})
       };
+
+      const nextVersionStatus = publishedPendingReview
+        ? input.decision === "approved"
+          ? "published"
+          : "archived"
+        : transition.versionStatus;
+      const nextDocumentStatus = publishedPendingReview
+        ? input.decision === "approved"
+          ? "published"
+          : "archived"
+        : transition.documentStatus;
 
       await tx
         .update(knowledgeVersions)
         .set({
-          status: transition.versionStatus,
+          status: nextVersionStatus,
           contentHash: transition.contentHash,
           metadata,
           updatedAt: now
@@ -2325,7 +2376,7 @@ export const apiStore: ApiStore = {
         .where(eq(knowledgeVersions.id, document.currentVersionId));
       await tx
         .update(knowledgeDocuments)
-        .set({ status: transition.documentStatus, updatedAt: now })
+        .set({ status: nextDocumentStatus, updatedAt: now })
         .where(eq(knowledgeDocuments.id, documentId));
 
       if (transition.task && !preserveCompletedEmbedding) {
@@ -2362,6 +2413,7 @@ export const apiStore: ApiStore = {
             versionId: document.currentVersionId,
             contentHash: transition.contentHash,
             embeddingStatus,
+            provisionalPublicationReviewed: publishedPendingReview,
             noteProvided: Boolean(input.note)
           }
         )

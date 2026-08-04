@@ -35,7 +35,7 @@ export async function collectEvidence(input: {
   signal?: AbortSignal;
   onStage?: (label: string) => void;
 }): Promise<EvidenceResult> {
-  input.onStage?.("正在检索已审核知识…");
+  input.onStage?.("正在检索 OpenVac 知识库…");
   const patentReferences = await retrievePatentMetadataReferences(
     input.question,
     async (query, parameters) => {

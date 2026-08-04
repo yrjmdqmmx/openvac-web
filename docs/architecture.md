@@ -8,7 +8,7 @@
 3. The question is classified for high-risk vacuum hazards.
 4. PostgreSQL full-text search and pgvector similarity are fused into a ranked
    evidence set.
-5. If reviewed local evidence is insufficient or stale, a separate web-search
+5. If eligible local evidence is insufficient or stale, a separate web-search
    lease is reserved and committed immediately before the paid outbound
    attempt. DashScope `turbo` search is restricted to the authority allowlist
    and must report exactly one `search_info` call.
@@ -20,6 +20,10 @@
 8. OpenVac buffers the candidate answer, validates the fixed five sections and
    citation numbers, saves the answer and citations, commits the answer lease,
    and only then emits text events to the browser. Any failure releases it.
+
+Phase 1 local evidence may be either human-approved or explicitly activated as
+`active_pending_review`. Pending-review evidence is pinned to its content hash;
+an edit, rejection, source disable, or archive removes it from retrieval.
 
 ## Stable provider boundaries
 

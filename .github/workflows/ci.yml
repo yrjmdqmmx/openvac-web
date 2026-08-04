@@ -57,9 +57,6 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # brace-expansion 1.1.18 backports CVE-2026-14257's maxLength
-      # guard, but the advisory range still flags the compatible 1.x line.
-      - run: pnpm audit --audit-level high --ignore CVE-2026-14257
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
