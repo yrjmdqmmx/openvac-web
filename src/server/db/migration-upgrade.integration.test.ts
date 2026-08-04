@@ -79,6 +79,48 @@ describeDatabase("migration upgrade compatibility", () => {
         "web_domain_policy"
       ]);
 
+      const messageStatuses = await target<Array<{ value: string }>>`
+        select enumlabel as value
+        from pg_enum
+        join pg_type on pg_type.oid = pg_enum.enumtypid
+        join pg_namespace on pg_namespace.oid = pg_type.typnamespace
+        where pg_namespace.nspname = 'public'
+          and pg_type.typname = 'message_status'
+        order by pg_enum.enumsortorder
+      `;
+      expect(messageStatuses.map((row) => row.value)).toEqual([
+        "pending",
+        "streaming",
+        "completed",
+        "incomplete",
+        "failed",
+        "cancelled"
+      ]);
+
+      const expandedColumns = await target<
+        Array<{ table_name: string; column_name: string }>
+      >`
+        select table_name, column_name
+        from information_schema.columns
+        where table_schema = 'public'
+          and (
+            (table_name = 'citation' and column_name in (
+              'trust_tier', 'review_status'
+            ))
+            or (table_name = 'message' and column_name in (
+              'turn_id', 'answer_schema_version', 'answer_payload'
+            ))
+            or (table_name = 'model_invocation' and column_name in (
+              'agent_run_id', 'protocol', 'phase', 'attempt', 'retry_of_id',
+              'cache_hit_input_tokens', 'cache_miss_input_tokens',
+              'reasoning_tokens', 'first_event_latency_ms',
+              'provider_http_status', 'provider_error_code', 'price_version'
+            ))
+          )
+        order by table_name, column_name
+      `;
+      expect(expandedColumns).toHaveLength(17);
+
       const modelingTables = await target<Array<{ table_name: string }>>`
         select table_name
         from information_schema.tables
@@ -694,6 +736,9 @@ async function verifyConsultationRollbackCompatibility(
 async function createPre0002Schema(database: Sql) {
   await database.unsafe(`
     CREATE TYPE quota_resource AS ENUM ('answer', 'web_search');
+    CREATE TYPE message_status AS ENUM (
+      'pending', 'streaming', 'completed', 'failed', 'cancelled'
+    );
 
     CREATE TABLE "user" (
       id text PRIMARY KEY,
@@ -706,6 +751,15 @@ async function createPre0002Schema(database: Sql) {
     );
 
     CREATE TABLE message (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      status message_status DEFAULT 'pending' NOT NULL
+    );
+
+    CREATE TABLE citation (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid()
+    );
+
+    CREATE TABLE model_invocation (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid()
     );
 
