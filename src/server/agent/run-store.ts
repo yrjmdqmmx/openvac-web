@@ -543,6 +543,13 @@ export class RunStore {
     code: string;
     message: string;
     context?: Record<string, unknown>;
+    counters?: {
+      toolRounds: number;
+      toolCalls: number;
+      modelRequests: number;
+      retries: number;
+      repairs: number;
+    };
   }): Promise<void> {
     await db.transaction(async (tx) => {
       await lockConversation(tx, input.run.conversationId);
@@ -553,6 +560,15 @@ export class RunStore {
           errorCode: input.code,
           errorMessage: input.message,
           contextMetadata: input.context ?? {},
+          ...(input.counters
+            ? {
+                toolRoundCount: input.counters.toolRounds,
+                toolCallCount: input.counters.toolCalls,
+                modelRequestCount: input.counters.modelRequests,
+                retryCount: input.counters.retries,
+                repairCount: input.counters.repairs
+              }
+            : {}),
           completedAt: new Date()
         })
         .where(

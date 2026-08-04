@@ -492,7 +492,8 @@ function streamRun(input: {
             run: input.run,
             status: cancelled ? "cancelled" : "failed",
             code: cancelled ? "CANCELLED" : publicErrorCode(error),
-            message: safeStoredError(error)
+            message: safeStoredError(error),
+            counters: orchestrator.counters
           })
         ]);
         if (cancelled) {

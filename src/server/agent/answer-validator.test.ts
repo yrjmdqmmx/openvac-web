@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { AnswerV2 } from "@/types/chat";
 
-import { AnswerValidator } from "./answer-validator";
+import {
+  AnswerValidator,
+  buildDeterministicCalculationAnswer
+} from "./answer-validator";
 import { EvidenceRegistry } from "./evidence-registry";
 
 const numericAnswer = (evidenceIds: string[]): AnswerV2 => ({
@@ -113,6 +116,51 @@ describe("AnswerValidator V2 evidence boundaries", () => {
 
     expect(result.valid).toBe(false);
     if (!result.valid) expect(result.errors.join(" ")).toContain("URLs");
+  });
+});
+
+describe("buildDeterministicCalculationAnswer", () => {
+  it("produces a valid grounded fallback from validated local calculations", () => {
+    const calculation = {
+      id: "calc_pumpdown",
+      tool: "estimate_pumpdown_time",
+      formulaId: "openvac.formula.pumpdown.constant-speed-load.v1",
+      formulaVersion: "1.1.0",
+      normalizedInputs: {
+        volumeM3: 0.1,
+        speedM3S: 0.01,
+        initialPa: 100_000,
+        targetPa: 100,
+        gasLoadPaM3S: 0
+      },
+      result: {
+        reachable: true,
+        equilibriumPressurePa: 0,
+        time: 69.07755278982137,
+        unit: "s"
+      },
+      assumptions: ["容器充分混合；抽速与气载恒定。"],
+      warnings: ["这是理想化估算。"],
+      sourceIds: ["openvac.formula.pumpdown.constant-speed-load.v1"]
+    };
+    const answer = buildDeterministicCalculationAnswer([calculation]);
+    expect(answer.calculationRefs).toEqual(["calc_pumpdown"]);
+    expect(answer.conclusion[0]?.text).toContain("69.07755278982137");
+    expect(
+      new AnswerValidator().validate({
+        value: answer,
+        evidence: new EvidenceRegistry(),
+        riskLevel: "low",
+        calculationIds: new Set(["calc_pumpdown"]),
+        requiresEvidence: true
+      })
+    ).toEqual({ valid: true, answer });
+  });
+
+  it("rejects construction without a validated calculation", () => {
+    expect(() => buildDeterministicCalculationAnswer([])).toThrow(
+      "At least one validated calculation is required."
+    );
   });
 });
 
