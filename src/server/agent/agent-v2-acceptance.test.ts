@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  agentRunBudgetProfile,
   estimateTokens,
   executeCalculator,
   EvidenceRegistry,
@@ -56,7 +57,8 @@ describe("Agent V2: 40 multi-turn, budget, and memory policy cases", () => {
     ["auto", "当前型号", "low", 3, "fast", true],
     ["auto", "概念解释", "medium", 3, "deep", false],
     ["auto", "高风险", "high", 3, "fast", false],
-    ["always", "已有证据", "low", 9, "deep", true]
+    ["always", "已有证据", "low", 9, "deep", true],
+    ["auto", "请计算抽空时间", "low", 6, "deep", false]
   ] as const)(
     "resolves web policy case %s / %s",
     (
@@ -78,6 +80,32 @@ describe("Agent V2: 40 multi-turn, budget, and memory policy cases", () => {
       ).toBe(expected);
     }
   );
+
+  it("keeps automatic-run limits even when automatic reasoning resolves deep", () => {
+    const resolved = resolveAgentMode({
+      requested: "auto",
+      question: "请计算抽空时间",
+      riskLevel: "low"
+    });
+    expect(resolved).toBe("deep");
+    expect(agentRunBudgetProfile("auto")).toEqual({
+      timeoutEnvironmentName: "AGENT_AUTO_TIMEOUT_MS",
+      timeoutFallbackMs: 60_000,
+      inputTokenBudget: 64 * 1024,
+      outputTokenEnvironmentName: "AGENT_AUTO_MAX_OUTPUT_TOKENS",
+      outputTokenFallback: 4_096
+    });
+  });
+
+  it("uses expanded limits only when the user explicitly requests deep mode", () => {
+    expect(agentRunBudgetProfile("deep")).toEqual({
+      timeoutEnvironmentName: "AGENT_DEEP_TIMEOUT_MS",
+      timeoutFallbackMs: 180_000,
+      inputTokenBudget: 128 * 1024,
+      outputTokenEnvironmentName: "AGENT_DEEP_MAX_OUTPUT_TOKENS",
+      outputTokenFallback: 8_192
+    });
+  });
 });
 
 describe("Agent V2: 30 web source governance cases", () => {

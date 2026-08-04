@@ -10,6 +10,15 @@ const TIME_SENSITIVE =
 const COMPLEX =
   /(?:计算|估算|比较|选型|方案|故障|异常|联锁|漏率|放气|抽空时间|导流|为什么).{0,80}(?:并且|同时|以及|然后|如何|多少)?/u;
 
+export type AgentRunBudgetProfile = {
+  timeoutEnvironmentName: "AGENT_AUTO_TIMEOUT_MS" | "AGENT_DEEP_TIMEOUT_MS";
+  timeoutFallbackMs: 60_000 | 180_000;
+  inputTokenBudget: 65_536 | 131_072;
+  outputTokenEnvironmentName:
+    "AGENT_AUTO_MAX_OUTPUT_TOKENS" | "AGENT_DEEP_MAX_OUTPUT_TOKENS";
+  outputTokenFallback: 4_096 | 8_192;
+};
+
 export function resolveAgentMode(input: {
   requested: RequestedAgentMode;
   question: string;
@@ -33,4 +42,25 @@ export function shouldUseWeb(input: {
     input.localEvidenceCount === 0 ||
     (input.riskLevel === "high" && input.resolvedMode === "deep")
   );
+}
+
+export function agentRunBudgetProfile(
+  requestedMode: RequestedAgentMode
+): AgentRunBudgetProfile {
+  if (requestedMode === "deep") {
+    return {
+      timeoutEnvironmentName: "AGENT_DEEP_TIMEOUT_MS",
+      timeoutFallbackMs: 180_000,
+      inputTokenBudget: 131_072,
+      outputTokenEnvironmentName: "AGENT_DEEP_MAX_OUTPUT_TOKENS",
+      outputTokenFallback: 8_192
+    };
+  }
+  return {
+    timeoutEnvironmentName: "AGENT_AUTO_TIMEOUT_MS",
+    timeoutFallbackMs: 60_000,
+    inputTokenBudget: 65_536,
+    outputTokenEnvironmentName: "AGENT_AUTO_MAX_OUTPUT_TOKENS",
+    outputTokenFallback: 4_096
+  };
 }
