@@ -44,14 +44,11 @@ short SHAs are not accepted. The commit must still be reachable from the current
 default-branch history. Before building anything, the workflow queries the
 GitHub Actions API for a completed, successful `CI` run whose `head_sha` is that
 exact commit, whose source repository is this repository, whose `head_branch`
-is the default branch, and whose event was a push or manual CI run. Both the
-image builds and deployment-bundle checkout then use that same SHA. The web and
-CAD-kernel images are built separately, must have distinct immutable digests,
-and are deployed as one release set; mutable tags are never used for
-activation. The ECS host authenticates to the private GHCR package with the
-job-scoped GitHub token in an ephemeral mode-`0700` Docker configuration. The
-token is supplied through `docker login --password-stdin` and both the token
-file and temporary Docker configuration are removed after the run.
+is the default branch, and whose event was a push or manual CI run. The web
+image build and deployment-bundle checkout then use that same SHA. The image is
+published by immutable digest and also exported as a checksum-verified same-run
+archive. Activation validates the archive image ID and commit label before
+using a content-addressed local tag; mutable tags are never deployment inputs.
 
 This rule applies to both staging and production. A feature-branch CI result is
 never a deployment credential: branch code can change its own CI and deployment
@@ -102,15 +99,6 @@ GitHub environment secrets:
 - `ECS_USER`
 - `ECS_SSH_KEY`
 - `ECS_KNOWN_HOSTS`
-- `MODELING_SERVICE_TOKEN` (exactly 64 lowercase hexadecimal characters)
-
-Generate independent modeling-service tokens for staging and production. The
-release sends a token only over standard input to
-`deploy/configure-modeling-runtime.sh`, which atomically updates the target
-mode-`0600` `.env` without printing the value. An existing valid token cannot
-be replaced by the release workflow; rotation requires a separate approved
-procedure. Staging and production are separate GitHub environments as
-described above.
 
 ### Alibaba Cloud DirectMail
 
@@ -181,12 +169,10 @@ sh deploy/configure-staging-secrets.sh user@ecs-host
 2. Install the new Nginx file under a new filename.
 3. Obtain the dedicated TLS certificate.
 4. Run `nginx -t`, then reload Nginx.
-5. Trigger the workflow with the exact default-branch SHA, target `staging`,
-   and `enable_modeling=true`. Before changing the active release it runs all
-   modeling benchmarks for 20 iterations in the isolated CAD image, starts the
-   authenticated CAD service, and verifies a private-OSS put/get/signed-HTTPS-
-   download/delete round trip. Benchmark JSON is retained as a 30-day workflow
-   artifact. Missing OSS credentials or any failed round trip stops the release.
+5. Trigger the workflow with the exact default-branch SHA and target `staging`.
+   The workflow verifies the same-run web archive, release commit label,
+   deployment bundle checksums, host preflight and configured model before the
+   migration or active containers change.
 6. Seed and activate the governed Phase 1 knowledge inside the deployed web
    container with `pnpm knowledge:seed` followed by
    `pnpm knowledge:activate-phase-one`. Verify the reported document and chunk
@@ -203,19 +189,36 @@ sh deploy/configure-staging-secrets.sh user@ecs-host
    check the previous application image while `current-release` remains
    unchanged.
 9. Trigger production with the same SHA only after the signed staging
-   acceptance record. Production repeats the complete benchmark suite once as
-   a smoke check and repeats CAD/OSS runtime verification before activation.
+   acceptance record, passing the exact digest reported by staging. Staging
+   builds the production-target image once and enforces the static SemaCAD
+   release manifest. A `preparing` manifest may publish the product page only
+   with downloads disabled; a `public-beta` manifest additionally requires the
+   immutable DMG identity, size, SHA-256, notarized status, and sanitized real
+   screenshot. Production pulls and promotes the exact staging digest without
+   rebuilding it.
 
 Migrations must remain backward-compatible with the previously deployed
 application. Before every managed upgrade, `deploy.sh` requires a successful
 logical backup from the active release; a running container without a
 `current-release` record is treated as an unmanaged state and refused. On
-migration, runtime-verification, container-start, or health failure,
-`deploy.sh` explicitly restarts the previous web/worker and modeling release
-set and requires its health checks to pass. It does not
+migration, model-verification, container-start, or health failure,
+`deploy.sh` explicitly restarts the previous web/worker release and requires
+its health checks to pass. For the R0-to-R1 cutover only, it also detects and
+restarts the previous modeling service and worker; after a healthy R1 cutover
+it stops those legacy containers without deleting images or data. It does not
 automatically restore the database because doing so can discard live writes;
 use the pre-release backup and an approved recovery procedure for a data
 rollback.
+
+Host activation is serialized by `/opt/openvac/.activation-lock` (or the
+staging equivalent). Before the runtime changes, `deploy.sh` writes a
+mode-`0600` `deployment-transaction` journal containing only release and image
+identities. A successful commit or verified rollback removes the journal and a
+healthy commit writes a release-scoped `deployment-receipt`. If a hard crash
+leaves either the lock directory or journal behind, the next activation fails
+closed: inspect the journal, reconcile the running web image with
+`current-release`, restore the recorded previous release when necessary, and
+only then remove those exact recovery markers.
 
 Migration `0007_consultation_rollback_compat.sql` keeps `problem_report` as the
 single source of truth while exposing a writable `security_invoker`
@@ -239,12 +242,11 @@ same-SHA staging acceptance and atomic cutover procedure in
 
 If the ECS host cannot reach Docker Hub, manually dispatch
 `.github/workflows/offline-image.yml` from the exact release branch. The job
-builds separate `linux/amd64` web and CAD-kernel archives and exports the pinned
-`pgvector/pgvector:pg17` database image as a third archive. Each artifact has a
-SHA-256 checksum and is retained for one day. Download and verify all three
-locally, then stream each decompressed archive to `docker load` over the
-approved SSH path. The workflow never receives ECS credentials and never
-connects to the server.
+builds a `linux/amd64` web archive and exports the pinned
+`pgvector/pgvector:pg17` database image. Both artifacts have SHA-256 checksums
+and are retained for one day. Download and verify both locally, then stream
+each decompressed archive to `docker load` over the approved SSH path. The
+workflow never receives ECS credentials and never connects to the server.
 
 ## 6. Backup, private OSS, and restore drills
 

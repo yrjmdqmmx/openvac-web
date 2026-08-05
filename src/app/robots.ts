@@ -14,7 +14,16 @@ export default function robots(): MetadataRoute.Robots {
     rules: [
       {
         userAgent: "*",
-        allow: ["/", "/sources", "/product", "/legal/", "/help"],
+        allow: [
+          "/",
+          "/semacad",
+          "/sources",
+          "/product",
+          "/legal/",
+          "/help",
+          "/feedback",
+          "/complaints"
+        ],
         disallow: ["/api/", "/chat", "/admin", "/settings"]
       }
     ],

@@ -11,6 +11,8 @@ playwright-report
 test-results
 concepts
 *.png
+!public/semacad/semacad-app-icon.png
+!public/semacad/semacad-main-window.png
 .env*
 !.env.example
 storage

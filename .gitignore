@@ -8,7 +8,6 @@ __pycache__/
 .next/
 out/
 dist/
-modeling-service/build/
 *.tsbuildinfo
 coverage/
 playwright-report/

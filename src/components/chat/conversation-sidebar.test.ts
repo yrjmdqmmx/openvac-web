@@ -71,7 +71,6 @@ function SidebarHarness({
       loading: false,
       hasMore: false,
       onLoadMore: vi.fn(),
-      modelingEnabled: true,
       userName: "工程用户",
       userEmail: "engineer@openvac.test"
     })
@@ -83,9 +82,9 @@ describe("ConversationSidebar", () => {
     render(createElement(SidebarHarness));
 
     expect(screen.getByText("旋片泵排查")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "智能建模" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "SemaCAD" })).toHaveAttribute(
       "href",
-      "/modeling"
+      "/semacad"
     );
     fireEvent.click(screen.getByRole("button", { name: "收起边栏" }));
 
@@ -100,12 +99,12 @@ describe("ConversationSidebar", () => {
     expect(screen.getByRole("tooltip", { name: "新对话" })).toBeInTheDocument();
     const searchButton = screen.getByRole("button", { name: "搜索对话" });
     expect(searchButton).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "智能建模" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "SemaCAD" })).toHaveAttribute(
       "href",
-      "/modeling"
+      "/semacad"
     );
     expect(
-      screen.getByRole("tooltip", { name: "智能建模" })
+      screen.getByRole("tooltip", { name: "SemaCAD" })
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "展开边栏" })).toHaveAttribute(
       "aria-describedby",

@@ -102,26 +102,7 @@ export type AnswerMeta = {
   context?: ContextDisclosure;
   calculations?: CalculationResult[];
   incomplete?: boolean;
-  modelingCards?: ModelingCard[];
 };
-
-export type ModelingCard =
-  | {
-      kind: "project";
-      projectId: string;
-      title: string;
-      description?: string;
-    }
-  | {
-      kind: "artifact";
-      artifactId: string;
-      projectId: string;
-      title: string;
-      projectTitle: string;
-      format: string;
-      sizeBytes: number;
-      expiresAt?: string;
-    };
 
 export type ConversationSummary = {
   id: string;

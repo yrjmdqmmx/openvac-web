@@ -1,8 +1,17 @@
 import { ContentPage } from "@/components/content-page";
+import { getPublicOperationsDetails } from "@/lib/public-operations";
+
+export const dynamic = "force-dynamic";
 
 export default function ProductPage() {
-  const filingNumber =
-    process.env.GEN_AI_FILING_NUMBER?.trim() || "公开试用前补充备案号";
+  const operations = getPublicOperationsDetails();
+  const publicDetails = [
+    ["运营主体", operations.operatorName],
+    ["运营地址", operations.operatorAddress],
+    ["联系邮箱", operations.publicContactEmail],
+    ["ICP备案号", operations.icpFilingNumber],
+    ["生成式 AI 备案号", operations.genAiFilingNumber]
+  ].filter((entry): entry is [string, string] => Boolean(entry[1]));
 
   return (
     <ContentPage
@@ -17,8 +26,6 @@ export default function ProductPage() {
           <dd>Responses Agent；按问题自动选择快速或深度回答</dd>
           <dt className="text-[var(--muted)]">向量模型</dt>
           <dd>阿里云 text-embedding-v4，1024 维</dd>
-          <dt className="text-[var(--muted)]">生成式 AI 备案号</dt>
-          <dd>{filingNumber}</dd>
         </dl>
       </section>
       <section>
@@ -35,6 +42,19 @@ export default function ProductPage() {
           发布。运行时密钥、用户数据、私有知识原件和备份不进入公开仓库。
         </p>
       </section>
+      {publicDetails.length > 0 ? (
+        <section>
+          <h2 className="text-2xl font-semibold">运营信息</h2>
+          <dl className="mt-5 grid gap-4 text-sm sm:grid-cols-[180px_1fr]">
+            {publicDetails.map(([label, value]) => (
+              <div key={label} className="contents">
+                <dt className="text-[var(--muted)]">{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      ) : null}
     </ContentPage>
   );
 }

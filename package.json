@@ -14,8 +14,6 @@
     "build": "next build",
     "start": "next start",
     "worker": "tsx src/worker/index.ts",
-    "modeling:worker": "tsx src/modeling-worker/index.ts",
-    "modeling:verify-runtime": "tsx scripts/verify-modeling-runtime.ts",
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -42,6 +40,7 @@
     "eval": "tsx scripts/run-evals.ts",
     "eval:live": "tsx scripts/eval-v1-live.ts",
     "model:verify": "tsx scripts/verify-deepseek-model.ts",
+    "semacad:verify-release": "tsx scripts/verify-semacad-release.ts",
     "smoke:deepseek": "tsx scripts/smoke-deepseek.ts",
     "problem-reports:cleanup": "tsx scripts/cleanup-problem-reports.ts"
   },
@@ -63,7 +62,6 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "tailwind-merge": "3.4.0",
-    "three": "0.180.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -74,7 +72,6 @@
     "@types/node": "26.1.2",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
-    "@types/three": "0.180.0",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.5",
     "eslint-config-next": "16.2.12",

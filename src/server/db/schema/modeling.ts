@@ -14,12 +14,6 @@ import {
 } from "drizzle-orm/pg-core";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
-import type {
-  ModelDocument,
-  ModelingPlanDraft,
-  ModelOperation
-} from "@/types/modeling";
-
 import { user } from "./auth";
 
 const modelingTimestamp = (name: string) =>
@@ -138,9 +132,9 @@ export const modelingRevision = pgTable(
     revisionNumber: integer("revision_number").notNull(),
     source: modelingRevisionSource("source").notNull(),
     idempotencyKey: text("idempotency_key").notNull(),
-    document: jsonb("document").$type<ModelDocument>().notNull(),
+    document: jsonb("document").$type<Record<string, unknown>>().notNull(),
     operations: jsonb("operations")
-      .$type<ModelOperation[]>()
+      .$type<Array<Record<string, unknown>>>()
       .default([])
       .notNull(),
     contentHash: text("content_hash").notNull(),
@@ -283,9 +277,9 @@ export const modelingPlan = pgTable(
     baseRevisionHash: text("base_revision_hash").notNull(),
     planHash: text("plan_hash").notNull(),
     prompt: text("prompt").notNull(),
-    draft: jsonb("draft").$type<ModelingPlanDraft>().notNull(),
+    draft: jsonb("draft").$type<Record<string, unknown>>().notNull(),
     operations: jsonb("operations")
-      .$type<ModelOperation[]>()
+      .$type<Array<Record<string, unknown>>>()
       .default([])
       .notNull(),
     missingInputs: jsonb("missing_inputs")

@@ -63,8 +63,7 @@ function renderWorkspace() {
     createElement(ChatWorkspace, {
       userId: "user-a",
       userName: "用户 A",
-      userEmail: "user-a@openvac.test",
-      modelingEnabled: true
+      userEmail: "user-a@openvac.test"
     })
   );
 }
@@ -110,9 +109,9 @@ describe("ChatWorkspace conversation history", () => {
     expect(
       screen.getByRole("button", { name: "账户：用户 A" })
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "智能建模" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "SemaCAD" })).toHaveAttribute(
       "href",
-      "/modeling"
+      "/semacad"
     );
   });
 
