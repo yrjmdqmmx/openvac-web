@@ -9,7 +9,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -25,6 +25,9 @@ afterEach(() => {
 function temporaryRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "openvac-deploy-bundle-"));
   temporaryRoots.push(root);
+  const fakeBin = join(root, "bin");
+  mkdirSync(fakeBin);
+  write(join(fakeBin, "sync"), "#!/bin/sh\nexit 0\n", 0o700);
   return root;
 }
 
@@ -133,6 +136,7 @@ function runActivation(deployRoot: string, bundle: string, releaseId: string) {
       encoding: "utf8",
       env: {
         ...process.env,
+        PATH: `${join(dirname(deployRoot), "bin")}:${process.env.PATH ?? ""}`,
         OPENVAC_ACTIVATION_TEST_ROOT: deployRoot
       }
     }
@@ -161,6 +165,7 @@ function runActivationWithImages(
       encoding: "utf8",
       env: {
         ...process.env,
+        PATH: `${join(dirname(deployRoot), "bin")}:${process.env.PATH ?? ""}`,
         OPENVAC_ACTIVATION_TEST_ROOT: deployRoot,
         ...extraEnv
       }
@@ -443,7 +448,7 @@ describe("deployment bundle activation", () => {
     const deployRoot = join(root, "host");
     const fakeBin = join(root, "bin");
     mkdirSync(deployRoot);
-    mkdirSync(fakeBin);
+    mkdirSync(fakeBin, { recursive: true });
     write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
     write(
       join(fakeBin, "sync"),

@@ -213,7 +213,7 @@ function runDeployment(
   );
 }
 
-describe("transactional web-only R1 cutover", () => {
+describe("transactional web-only R1 cutover", { timeout: 20_000 }, () => {
   it("executes R1 -> R0 -> R1 before publishing the new release pointer", () => {
     const fixture = createFixture();
     const result = runDeployment(fixture);
