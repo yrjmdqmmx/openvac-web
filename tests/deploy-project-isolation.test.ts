@@ -96,6 +96,15 @@ describe("web-only deployment and R0 rollback compatibility", () => {
   it("ships a checksum-verified, secret-free deployment bundle", () => {
     expect(release).toContain("DEPLOY_BUNDLE.sha256");
     expect(release).toContain("sha256sum --check DEPLOY_BUNDLE.sha256");
+    expect(release).toContain(
+      "sha256sum --check openvac-web-release.tar.zst.sha256 >&2"
+    );
+    expect(release).toContain(
+      "sha256sum --check openvac-deploy-bundle.tar.gz.sha256 >&2"
+    );
+    expect(release).toContain(
+      "(cd bundle && sha256sum --check DEPLOY_BUNDLE.sha256 >&2)"
+    );
     expect(release).toContain("ref: ${{ inputs.commit_sha }}");
     expect(activation).toContain("bundle must not contain environment files");
     expect(activation).toContain("current-release");
