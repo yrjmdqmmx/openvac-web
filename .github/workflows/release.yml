@@ -492,11 +492,11 @@ jobs:
           expected_registry_digest="$4"
           case "$remote_stage" in /tmp/openvac-deploy-*) ;; *) exit 64 ;; esac
           cd "$remote_stage"
-          sha256sum --check openvac-web-release.tar.zst.sha256
-          sha256sum --check openvac-deploy-bundle.tar.gz.sha256
+          sha256sum --check openvac-web-release.tar.zst.sha256 >&2
+          sha256sum --check openvac-deploy-bundle.tar.gz.sha256 >&2
           install -d -m 700 bundle
           tar -xzf openvac-deploy-bundle.tar.gz -C bundle
-          (cd bundle && sha256sum --check DEPLOY_BUNDLE.sha256)
+          (cd bundle && sha256sum --check DEPLOY_BUNDLE.sha256 >&2)
           packaged_registry_digest="$(cat bundle/WEB_IMAGE_DIGEST)"
           if [ "$packaged_registry_digest" != "$expected_registry_digest" ]; then
             echo "Remote deployment bundle digest does not match the selected staging digest" >&2
