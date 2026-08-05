@@ -47,12 +47,13 @@ test("uses a neutral focus treatment and no custom favicon", async ({
 }) => {
   await page.goto("/");
   const input = page.getByLabel("向 OpenVac 提问");
-  await input.focus();
-
-  const form = input.locator("xpath=ancestor::form");
   await expect
     .poll(() =>
-      form.evaluate((element) => window.getComputedStyle(element).boxShadow)
+      input.evaluate((element) => {
+        element.focus();
+        const form = element.closest("form");
+        return form ? window.getComputedStyle(form).boxShadow : "missing-form";
+      })
     )
     .toContain("17, 19, 21");
   await expect(page.locator('link[rel~="icon"]')).toHaveCount(0);
