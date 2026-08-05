@@ -191,8 +191,11 @@ sh deploy/configure-staging-secrets.sh user@ecs-host
 9. Trigger production with the same SHA only after the signed staging
    acceptance record, passing the exact digest reported by staging. Staging
    builds the production-target image once and enforces the static SemaCAD
-   public-Beta release manifest; production pulls and promotes that exact
-   digest without rebuilding it.
+   release manifest. A `preparing` manifest may publish the product page only
+   with downloads disabled; a `public-beta` manifest additionally requires the
+   immutable DMG identity, size, SHA-256, notarized status, and sanitized real
+   screenshot. Production pulls and promotes the exact staging digest without
+   rebuilding it.
 
 Migrations must remain backward-compatible with the previously deployed
 application. Before every managed upgrade, `deploy.sh` requires a successful
