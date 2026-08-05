@@ -168,13 +168,11 @@ export function problemReportDescriptionForMessage(
 export function ChatWorkspace({
   userId,
   userName,
-  userEmail,
-  modelingEnabled = false
+  userEmail
 }: {
   userId: string;
   userName: string;
   userEmail: string;
-  modelingEnabled?: boolean;
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [conversationQuery, setConversationQuery] = useState("");
@@ -1104,7 +1102,6 @@ export function ChatWorkspace({
             append: true
           })
         }
-        modelingEnabled={modelingEnabled}
         userName={userName}
         userEmail={userEmail}
       />
@@ -1266,7 +1263,6 @@ export function ChatWorkspace({
                       timeline={
                         message.status === "streaming" ? timeline : undefined
                       }
-                      modelingEnabled={modelingEnabled}
                       onRunAction={(action) =>
                         void runAnswerAction(message, action)
                       }

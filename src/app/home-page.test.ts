@@ -44,14 +44,22 @@ describe("home page", () => {
     expect(dynamic).toBe("force-dynamic");
   });
 
-  it("renders the approved copy and removes the old feature strip and modeling CTA", async () => {
+  it("renders the approved copy, SemaCAD card, and removes the old modeling CTA", async () => {
     mocks.getSession.mockResolvedValue(null);
 
-    render(await HomePage());
+    const { container } = render(await HomePage());
 
     expect(
       screen.getByRole("heading", { name: "今天想解决什么真空问题？" })
     ).toBeInTheDocument();
+    const titleGroups = container.querySelectorAll("h1 > span");
+    expect(titleGroups).toHaveLength(2);
+    expect(titleGroups[0]).toHaveClass("block", "sm:inline");
+    expect(titleGroups[1]).toHaveClass(
+      "block",
+      "whitespace-nowrap",
+      "sm:inline"
+    );
     expect(
       screen.getByText(
         "描述泵型、工况或故障现象，OpenVac 会结合资料给出可核查的回答。"
@@ -63,6 +71,13 @@ describe("home page", () => {
     expect(
       screen.queryByRole("link", { name: "进入智能建模工作台" })
     ).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /SemaCAD/ })).toHaveAttribute(
+      "href",
+      "/semacad"
+    );
+    expect(
+      screen.getByText(/基于 FreeCAD 的本地优先 CAD，让手动建模与 OpenVac/)
+    ).toBeInTheDocument();
     expect(screen.getByTestId("site-header")).toHaveAttribute(
       "data-authenticated",
       "false"

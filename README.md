@@ -17,11 +17,10 @@ The released Q&A product boundary is intentionally narrow:
 - role-based operations for users, conversations, sources, prompts, budgets,
   problem reports, and audit logs.
 
-The repository includes a deterministic CAD workbench behind the fail-closed
-`MODELING_ENABLED` flag. It remains development-stage code until the CAD,
-interoperability, and original rotary-vane-pump acceptance gates are run on the
-target Debian host; it must not be described as production-ready before those
-results exist.
+CAD work now lives in the separate native macOS application
+[SemaCAD](https://github.com/zdywrnm/SemaCAD). This repository only publishes
+the product/download page; it does not run a browser CAD kernel or modeling
+worker.
 
 The released Q&A surface does **not** make final engineering decisions, expose
 a deterministic pump calculator, display live inventory or prices, process
@@ -37,13 +36,10 @@ to problem reports, or provide real-time/emergency support.
 - Alibaba Cloud adapters for embeddings, web search, document parsing,
   transactional mail, and private object storage
 - a Node worker for OCR, review-gated ingestion, chunking, and embeddings
-- an isolated Python 3.12 CadQuery/OCP service and serial modeling worker
-- Docker Compose for `web`, both workers, `modeling-service`, `migrate`, and
-  `postgres`
+- Docker Compose for `web`, the knowledge worker, `migrate`, and `postgres`
 
 See [architecture](docs/architecture.md), [knowledge governance](docs/knowledge-governance.md),
-[modeling V1](docs/modeling-v1.md), [security](docs/security.md), and
-[deployment](docs/deployment.md).
+[security](docs/security.md), and [deployment](docs/deployment.md).
 
 ## Local development
 
@@ -78,17 +74,11 @@ pnpm test
 pnpm build
 pnpm test:e2e
 pnpm worker
-pnpm modeling:worker
 pnpm problem-reports:cleanup
 pnpm eval
 pnpm eval:core
 pnpm knowledge:validate
 ```
-
-The modeling service has its own pinned Python environment and test suite. See
-[`modeling-service/README.md`](modeling-service/README.md). Keep
-`MODELING_ENABLED=false` in production until every required acceptance gate in
-[`docs/modeling-v1.md`](docs/modeling-v1.md) is evidenced.
 
 Knowledge Phase 1 uses only tracked, record-scoped source decisions. The local
 `知识库/` directory is intentionally ignored by both Git and Docker and must not
@@ -185,13 +175,14 @@ and secrets remain on Alibaba Cloud ECS. Deploy staging first at
 `staging-openvac.openvac.cn`; production at `openvac.cn`
 requires a manually approved GitHub environment.
 
-The deployment workflow builds separate web and CAD-kernel images from the same
-verified default-branch SHA and activates their immutable digests as one release
-set. Before switching, it enforces host resources, runs target-host CAD
-benchmarks, checks authenticated CAD readiness, and performs a real private-OSS
-put/get/signed-download/delete round trip. A failed migration, runtime check, or
-health check restores the previous release set. Production additionally
-requires a successful staging deployment for the exact same SHA.
+The deployment workflow builds one web image from a verified default-branch
+SHA, verifies the same-run archive, and activates it by content-addressed image
+ID. A failed migration, model check, worker start, or health check restores the
+previous release set. During the R1 cutover it can also restart the previous
+modeling containers for one rollback rehearsal; a healthy cutover stops those
+containers without deleting their images or data. Production additionally
+requires a successful staging deployment for the exact same SHA and promotes
+that staging run's accepted immutable image digest without rebuilding it.
 
 Public launch remains blocked until HTTPS, ICP status, legal pages, complaint
 contact details, AI-generated-content labelling, model filing disclosure, the

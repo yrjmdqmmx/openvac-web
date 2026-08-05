@@ -392,8 +392,8 @@ export function AccountSettingsContent({
           </div>
           <h3 className="mt-6 text-base font-semibold">清空对话数据</h3>
           <p className="mt-3 text-sm leading-7 text-[var(--muted)]">
-            在线数据会立即删除，无法在产品中恢复。当前封闭测试环境的受限运维备份可能延迟反映删除；公开试用前将启用并验证不超过
-            30 天的自动过期机制。
+            在线数据会立即删除，无法在产品中恢复。受限运维备份可能在不超过 30
+            天的保留周期内延迟反映删除，并在保留期届满后过期。
           </p>
           <button
             type="button"

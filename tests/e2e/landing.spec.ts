@@ -78,3 +78,79 @@ test("does not expose a model picker or upload affordance", async ({
   await expect(page.getByRole("button", { name: /上传|附件/ })).toHaveCount(0);
   await expect(page.locator('input[type="file"]')).toHaveCount(0);
 });
+
+test("links the homepage to the SemaCAD product page", async ({ page }) => {
+  await page.goto("/");
+
+  const semacadCard = page
+    .locator('a[href="/semacad"]')
+    .filter({ hasText: "基于 FreeCAD 的本地优先 CAD" });
+  await expect(semacadCard).toBeVisible();
+  await expect(semacadCard).toHaveAttribute("href", "/semacad");
+
+  await semacadCard.click();
+  await expect(page).toHaveURL(/\/semacad$/);
+  await expect(page.getByRole("heading", { name: "SemaCAD" })).toBeVisible();
+});
+
+test("renders a truthful SemaCAD preparing state", async ({ page }) => {
+  await page.goto("/semacad");
+
+  await expect(page.getByText("下载准备中")).toHaveAttribute(
+    "aria-disabled",
+    "true"
+  );
+  await expect(page.getByRole("link", { name: /查看源代码/ })).toHaveAttribute(
+    "href",
+    "https://github.com/zdywrnm/SemaCAD"
+  );
+  await expect(page.getByAltText(/SemaCAD 公开 Beta 主窗口/)).toHaveCount(0);
+  await expect(page.locator('link[rel~="icon"]')).toHaveCount(0);
+});
+
+test("redirects both legacy modeling URLs directly to SemaCAD", async ({
+  request
+}) => {
+  for (const path of ["/modeling", "/modeling/"]) {
+    const response = await request.get(path, { maxRedirects: 0 });
+    expect(response.status()).toBe(308);
+    expect(response.headers().location).toBe("/semacad");
+  }
+});
+
+test("keeps the 320px title grouping and mobile navigation accessible", async ({
+  page
+}) => {
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto("/");
+
+  const titleGroups = page.locator("h1 > span");
+  await expect(titleGroups).toHaveCount(2);
+  const firstBox = await titleGroups.nth(0).boundingBox();
+  const secondBox = await titleGroups.nth(1).boundingBox();
+  expect(firstBox).not.toBeNull();
+  expect(secondBox).not.toBeNull();
+  expect(secondBox!.y).toBeGreaterThan(firstBox!.y);
+
+  const menuButton = page.getByRole("button", { name: "打开导航菜单" });
+  const menuButtonBox = await menuButton.boundingBox();
+  expect(menuButtonBox?.width).toBeGreaterThanOrEqual(44);
+  expect(menuButtonBox?.height).toBeGreaterThanOrEqual(44);
+
+  await menuButton.click();
+  const closeMenuButton = page.getByRole("button", { name: "关闭导航菜单" });
+  await expect(closeMenuButton).toHaveAttribute("aria-expanded", "true");
+  await expect(
+    page.getByRole("navigation", { name: "移动端导航" })
+  ).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(menuButton).toBeFocused();
+  await expect(menuButton).toHaveAttribute("aria-expanded", "false");
+
+  const dimensions = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth
+  }));
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
+});

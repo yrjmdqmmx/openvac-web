@@ -6,8 +6,6 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
-  Cuboid,
-  Download,
   FileText,
   Flag,
   LoaderCircle,
@@ -15,7 +13,6 @@ import {
   ThumbsDown,
   ThumbsUp
 } from "lucide-react";
-import Link from "next/link";
 import { useMemo, useState } from "react";
 import { evaluateCitationLink } from "@/lib/citation-link-policy";
 import type { AgentTimelineEntry } from "@/components/chat/chat-workspace";
@@ -23,8 +20,7 @@ import type {
   AnswerV2,
   CalculationResult,
   ChatMessage,
-  Citation,
-  ModelingCard
+  Citation
 } from "@/types/chat";
 
 function AnswerText({ content }: { content: string }) {
@@ -366,81 +362,6 @@ function SourceItem({
   );
 }
 
-function ModelingCards({ cards }: { cards: ModelingCard[] }) {
-  return (
-    <section
-      aria-label="建模项目与制品"
-      className="mt-7 rounded-xl border border-[var(--border)] p-4"
-    >
-      <div className="flex items-center gap-2">
-        <Cuboid className="h-4 w-4 text-[var(--accent)]" />
-        <h2 className="text-sm font-medium">建模项目与制品</h2>
-      </div>
-      <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
-        链接已由服务端按当前账号校验；打开链接不会让问答 Agent 执行 CAD 操作。
-      </p>
-      <ul className="mt-3 grid gap-2">
-        {cards.map((card) => (
-          <li
-            key={`${card.kind}:${card.kind === "project" ? card.projectId : card.artifactId}`}
-          >
-            {card.kind === "project" ? (
-              <Link
-                href={`/modeling?project=${encodeURIComponent(card.projectId)}`}
-                className="flex items-center gap-3 rounded-lg bg-[var(--surface)] px-3 py-3 transition-colors hover:bg-[var(--surface-strong)]"
-              >
-                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white text-[var(--accent)]">
-                  <Cuboid className="h-4 w-4" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <strong className="block truncate text-sm font-medium">
-                    {card.title}
-                  </strong>
-                  <span className="mt-0.5 block truncate text-xs text-[var(--muted)]">
-                    {card.description || "打开已授权建模项目"}
-                  </span>
-                </span>
-                <span className="text-xs font-medium text-[var(--accent)]">
-                  打开项目
-                </span>
-              </Link>
-            ) : (
-              <a
-                href={`/api/modeling/artifacts/${encodeURIComponent(card.artifactId)}/download`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-3 rounded-lg bg-[var(--surface)] px-3 py-3 transition-colors hover:bg-[var(--surface-strong)]"
-              >
-                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white text-[var(--accent)]">
-                  <Download className="h-4 w-4" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <strong className="block truncate text-sm font-medium">
-                    {card.title}
-                  </strong>
-                  <span className="mt-0.5 block truncate text-xs text-[var(--muted)]">
-                    {card.projectTitle} · {card.format} ·{" "}
-                    {formatBytes(card.sizeBytes)}
-                  </span>
-                </span>
-                <span className="text-xs font-medium text-[var(--accent)]">
-                  授权下载
-                </span>
-              </a>
-            )}
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1_024) return `${bytes} B`;
-  if (bytes < 1_048_576) return `${(bytes / 1_024).toFixed(1)} KB`;
-  return `${(bytes / 1_048_576).toFixed(1)} MB`;
-}
-
 export function ExpertAnswer({
   message,
   stage,
@@ -449,8 +370,7 @@ export function ExpertAnswer({
   onProblemReport,
   onRunAction,
   versionOptions = [],
-  onVersionChange,
-  modelingEnabled = false
+  onVersionChange
 }: {
   message: ChatMessage;
   stage?: string;
@@ -463,7 +383,6 @@ export function ExpertAnswer({
   onRunAction?: (action: "retry" | "regenerate" | "continue") => void;
   versionOptions?: number[];
   onVersionChange?: (version: number) => void;
-  modelingEnabled?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<string>();
@@ -471,10 +390,6 @@ export function ExpertAnswer({
   const citations = useMemo(
     () => message.meta?.citations ?? [],
     [message.meta]
-  );
-  const modelingCards = useMemo(
-    () => (modelingEnabled ? (message.meta?.modelingCards ?? []) : []),
-    [message.meta, modelingEnabled]
   );
 
   return (
@@ -589,10 +504,6 @@ export function ExpertAnswer({
           </ul>
         </div>
       )}
-
-      {modelingCards.length > 0 ? (
-        <ModelingCards cards={modelingCards} />
-      ) : null}
 
       {message.status === "completed" && (
         <div className="mt-6 flex flex-wrap items-center gap-1">

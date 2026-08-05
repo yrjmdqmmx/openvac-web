@@ -14,11 +14,10 @@ on:
         options:
           - staging
           - production
-      enable_modeling:
-        description: Expose the modeling workspace after runtime verification
-        required: true
-        type: boolean
-        default: false
+      staging_web_digest:
+        description: Exact sha256 digest accepted in staging (required for production only)
+        required: false
+        type: string
 
 permissions: {}
 
@@ -46,6 +45,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           RELEASE_SHA: ${{ inputs.commit_sha }}
           TARGET: ${{ inputs.target }}
+          STAGING_WEB_DIGEST: ${{ inputs.staging_web_digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
@@ -56,6 +56,38 @@ jobs:
               ;;
           esac
           test "${#RELEASE_SHA}" -eq 40
+
+          case "$TARGET" in
+            staging)
+              if [ -n "$STAGING_WEB_DIGEST" ]; then
+                echo "staging_web_digest must be empty for a staging release; staging builds the image once." >&2
+                exit 64
+              fi
+              ;;
+            production)
+              case "$STAGING_WEB_DIGEST" in
+                sha256:*) staging_digest_hex="${STAGING_WEB_DIGEST#sha256:}" ;;
+                *)
+                  echo "Production requires staging_web_digest in sha256:<64 lowercase hex> form." >&2
+                  exit 64
+                  ;;
+              esac
+              case "$staging_digest_hex" in
+                ""|*[!0-9a-f]*)
+                  echo "staging_web_digest must contain lowercase hexadecimal only." >&2
+                  exit 64
+                  ;;
+              esac
+              if [ "${#staging_digest_hex}" -ne 64 ]; then
+                echo "staging_web_digest must contain exactly 64 hexadecimal characters." >&2
+                exit 64
+              fi
+              ;;
+            *)
+              echo "target must be staging or production." >&2
+              exit 64
+              ;;
+          esac
 
           if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
             echo "Dispatch this workflow from the default branch ($DEFAULT_BRANCH)." >&2
@@ -154,6 +186,58 @@ jobs:
             jq --exit-status 'sort_by(.id) | .[-1].state == "success"' \
               "$staging_statuses_response" >/dev/null
             echo "The latest same-SHA staging deployment status is success."
+
+            provenance_name="openvac-staging-provenance-$RELEASE_SHA-$staging_digest_hex"
+            artifacts_response="$RUNNER_TEMP/openvac-staging-provenance-artifacts.json"
+            curl --fail-with-body --silent --show-error \
+              --get \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "X-GitHub-Api-Version: 2026-03-10" \
+              --data-urlencode "name=$provenance_name" \
+              --data-urlencode "per_page=100" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts" \
+              --output "$artifacts_response"
+            provenance_run_id="$(
+              jq --raw-output \
+                --arg name "$provenance_name" \
+                --arg sha "$RELEASE_SHA" \
+                '[.artifacts[] |
+                  select(
+                    .name == $name and
+                    .expired == false and
+                    .workflow_run.head_sha == $sha
+                  )] |
+                  sort_by(.id) |
+                  .[-1].workflow_run.id // empty' \
+                "$artifacts_response"
+            )"
+            if [ -z "$provenance_run_id" ]; then
+              echo "Production requires an unexpired staging provenance artifact for this commit and digest." >&2
+              exit 1
+            fi
+
+            provenance_run_response="$RUNNER_TEMP/openvac-staging-provenance-run.json"
+            curl --fail-with-body --silent --show-error \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "X-GitHub-Api-Version: 2026-03-10" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$provenance_run_id" \
+              --output "$provenance_run_response"
+            jq --exit-status \
+              --arg sha "$RELEASE_SHA" \
+              --arg default_branch "$DEFAULT_BRANCH" '
+                .head_sha == $sha and
+                .head_branch == $default_branch and
+                .event == "workflow_dispatch" and
+                .path == ".github/workflows/release.yml" and
+                .status == "completed" and
+                .conclusion == "success"
+              ' "$provenance_run_response" >/dev/null || {
+                echo "The staging provenance artifact is not attached to a successful release workflow run." >&2
+                exit 1
+              }
+            echo "Accepted staging digest provenance: $STAGING_WEB_DIGEST"
           fi
 
   image:
@@ -163,26 +247,28 @@ jobs:
       contents: read
       packages: write
     outputs:
-      web_digest: ${{ steps.web_build.outputs.digest }}
-      modeling_digest: ${{ steps.modeling_build.outputs.digest }}
+      web_digest: ${{ steps.select_image.outputs.digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.commit_sha }}
           persist-credentials: false
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - if: inputs.target == 'staging'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: web_meta
+      - if: inputs.target == 'staging'
+        id: web_meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=sha-${{ inputs.commit_sha }}
-      - id: web_build
+          tags: type=raw,value=sha-${{ inputs.commit_sha }}
+      - if: inputs.target == 'staging'
+        id: web_build
+        name: Build and publish the production-target web image once
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -190,28 +276,95 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.web_meta.outputs.tags }}
-          labels: ${{ steps.web_meta.outputs.labels }}
-          cache-from: type=gha,scope=web
-          cache-to: type=gha,scope=web,mode=max
-      - name: Build the same-run web deployment archive
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          target: web
-          platforms: linux/amd64
-          push: false
-          tags: ghcr.io/${{ github.repository }}:web-archive-${{ github.run_id }}-${{ github.run_attempt }}
           labels: |
             ${{ steps.web_meta.outputs.labels }}
             org.opencontainers.image.revision=${{ inputs.commit_sha }}
-          outputs: type=docker,dest=${{ runner.temp }}/openvac-web-release.tar
-          cache-from: type=gha,scope=web
+          build-args: OPENVAC_DEPLOY_TARGET=production
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - id: select_image
+        name: Select the exact staging-built digest
+        env:
+          TARGET: ${{ inputs.target }}
+          BUILT_WEB_DIGEST: ${{ steps.web_build.outputs.digest }}
+          STAGING_WEB_DIGEST: ${{ inputs.staging_web_digest }}
+        run: |
+          set -Eeuo pipefail
+          case "$TARGET" in
+            staging) selected_digest="$BUILT_WEB_DIGEST" ;;
+            production) selected_digest="$STAGING_WEB_DIGEST" ;;
+            *)
+              echo "target must be staging or production." >&2
+              exit 64
+              ;;
+          esac
+          case "$selected_digest" in
+            sha256:*) digest_hex="${selected_digest#sha256:}" ;;
+            *)
+              echo "Selected web image digest must use sha256:<64 lowercase hex>." >&2
+              exit 64
+              ;;
+          esac
+          case "$digest_hex" in
+            ""|*[!0-9a-f]*)
+              echo "Selected web image digest must contain lowercase hexadecimal only." >&2
+              exit 64
+              ;;
+          esac
+          if [ "${#digest_hex}" -ne 64 ]; then
+            echo "Selected web image digest must contain exactly 64 hexadecimal characters." >&2
+            exit 64
+          fi
+          echo "digest=$selected_digest" >>"$GITHUB_OUTPUT"
+          echo "digest_hex=$digest_hex" >>"$GITHUB_OUTPUT"
+      - name: Package the exact registry digest without rebuilding
+        env:
+          RELEASE_SHA: ${{ inputs.commit_sha }}
+          WEB_IMAGE_DIGEST: ${{ steps.select_image.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+          image_repository="ghcr.io/${GITHUB_REPOSITORY,,}"
+          registry_image="$image_repository@$WEB_IMAGE_DIGEST"
+          archive_tag="$image_repository:archive-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+          docker pull --platform linux/amd64 "$registry_image"
+          digest_found=false
+          for repo_digest in $(
+            docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+              "$registry_image"
+          ); do
+            if [ "$repo_digest" = "$registry_image" ]; then
+              digest_found=true
+              break
+            fi
+          done
+          if [ "$digest_found" != true ]; then
+            echo "Pulled image does not expose the selected immutable registry digest." >&2
+            exit 1
+          fi
+
+          revision="$(
+            docker image inspect \
+              --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+              "$registry_image"
+          )"
+          if [ "$revision" != "$RELEASE_SHA" ]; then
+            echo "Selected web image revision does not match commit_sha." >&2
+            exit 1
+          fi
+
+          docker image tag "$registry_image" "$archive_tag"
+          docker image save --output "$RUNNER_TEMP/openvac-web-release.tar" \
+            "$archive_tag"
+          printf '%s\n' "$WEB_IMAGE_DIGEST" \
+            >"$RUNNER_TEMP/openvac-web-release.digest"
       - name: Compress and checksum the web deployment archive
         run: |
-          set -eu
+          set -Eeuo pipefail
           zstd --threads=0 --rm "$RUNNER_TEMP/openvac-web-release.tar"
           cd "$RUNNER_TEMP"
           sha256sum openvac-web-release.tar.zst > openvac-web-release.tar.zst.sha256
+          sha256sum openvac-web-release.digest > openvac-web-release.digest.sha256
       - name: Upload the same-run web deployment archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -219,62 +372,20 @@ jobs:
           path: |
             ${{ runner.temp }}/openvac-web-release.tar.zst
             ${{ runner.temp }}/openvac-web-release.tar.zst.sha256
-          if-no-files-found: error
-          retention-days: 1
-      - id: modeling_meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=modeling-sha-${{ inputs.commit_sha }}
-      - id: modeling_build
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: ./modeling-service
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.modeling_meta.outputs.tags }}
-          labels: ${{ steps.modeling_meta.outputs.labels }}
-          cache-from: type=gha,scope=modeling
-          cache-to: type=gha,scope=modeling,mode=max
-      - name: Build the same-run modeling deployment archive
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: ./modeling-service
-          platforms: linux/amd64
-          push: false
-          tags: ghcr.io/${{ github.repository }}:modeling-archive-${{ github.run_id }}-${{ github.run_attempt }}
-          labels: |
-            ${{ steps.modeling_meta.outputs.labels }}
-            org.opencontainers.image.revision=${{ inputs.commit_sha }}
-          outputs: type=docker,dest=${{ runner.temp }}/openvac-modeling-release.tar
-          cache-from: type=gha,scope=modeling
-      - name: Compress and checksum the modeling deployment archive
-        run: |
-          set -eu
-          zstd --threads=0 --rm "$RUNNER_TEMP/openvac-modeling-release.tar"
-          cd "$RUNNER_TEMP"
-          sha256sum openvac-modeling-release.tar.zst > openvac-modeling-release.tar.zst.sha256
-      - name: Upload the same-run modeling deployment archive
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: openvac-modeling-release-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/openvac-modeling-release.tar.zst
-            ${{ runner.temp }}/openvac-modeling-release.tar.zst.sha256
+            ${{ runner.temp }}/openvac-web-release.digest
+            ${{ runner.temp }}/openvac-web-release.digest.sha256
           if-no-files-found: error
           retention-days: 1
 
   deploy:
     needs: [ci_gate, image]
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
-      packages: read
     environment:
       name: ${{ inputs.target }}
       url: ${{ inputs.target == 'production' && 'https://openvac.cn' || 'https://staging-openvac.openvac.cn' }}
-    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -285,484 +396,173 @@ jobs:
         with:
           name: openvac-web-release-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/openvac-web-release
-      - name: Download the same-run modeling deployment archive
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: openvac-modeling-release-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/openvac-modeling-release
       - name: Configure SSH
         env:
           ECS_SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
           ECS_KNOWN_HOSTS: ${{ secrets.ECS_KNOWN_HOSTS }}
         run: |
+          set -Eeuo pipefail
           install -m 700 -d "$HOME/.ssh"
-          printf '%s\n' "$ECS_SSH_KEY" > "$HOME/.ssh/openvac"
+          printf '%s\n' "$ECS_SSH_KEY" >"$HOME/.ssh/openvac"
           chmod 600 "$HOME/.ssh/openvac"
-          printf '%s\n' "$ECS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          printf '%s\n' "$ECS_KNOWN_HOSTS" >"$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/known_hosts"
-      - id: deploy_release
-        name: Deploy immutable images
+      - id: deploy
+        name: Activate immutable web-only release
         env:
+          TARGET: ${{ inputs.target }}
+          RELEASE_SHA: ${{ inputs.commit_sha }}
           ECS_HOST: ${{ secrets.ECS_HOST }}
           ECS_USER: ${{ secrets.ECS_USER }}
-          TARGET: ${{ inputs.target }}
-          ENABLE_MODELING: ${{ inputs.enable_modeling }}
-          MODELING_SERVICE_TOKEN: ${{ secrets.MODELING_SERVICE_TOKEN }}
-          GHCR_PULL_TOKEN: ${{ github.token }}
-          GHCR_USERNAME: ${{ github.actor }}
           WEB_IMAGE_DIGEST: ${{ needs.image.outputs.web_digest }}
-          MODELING_IMAGE_DIGEST: ${{ needs.image.outputs.modeling_digest }}
-          RELEASE_SHA: ${{ inputs.commit_sha }}
         run: |
           set -Eeuo pipefail
-          test -n "$ECS_HOST"
-          test -n "$ECS_USER"
-          case "$ENABLE_MODELING" in
-            true|false) ;;
-            *)
-              echo "enable_modeling must be true or false" >&2
-              exit 64
-              ;;
-          esac
-          case "$MODELING_SERVICE_TOKEN" in
-            ""|*[!0-9a-f]*)
-              echo "MODELING_SERVICE_TOKEN must be 64 lowercase hexadecimal characters" >&2
-              exit 64
-              ;;
-          esac
-          if [ "${#MODELING_SERVICE_TOKEN}" -ne 64 ]; then
-            echo "MODELING_SERVICE_TOKEN must be 64 lowercase hexadecimal characters" >&2
-            exit 64
-          fi
-          test -n "$GHCR_PULL_TOKEN"
-          case "$GHCR_USERNAME" in
-            ""|-*|*[!A-Za-z0-9-]*)
-              echo "GitHub actor is not a safe GHCR username" >&2
-              exit 64
-              ;;
-          esac
-          release_id="$RELEASE_SHA"
-          case "$release_id" in
-            ""|*[!0-9a-f]*)
-              echo "commit_sha must be lowercase hexadecimal" >&2
-              exit 64
-              ;;
-          esac
-          test "${#release_id}" -eq 40
-          image_repository="ghcr.io/${GITHUB_REPOSITORY,,}"
-          release_image="$image_repository@$WEB_IMAGE_DIGEST"
-          release_modeling_image="$image_repository@$MODELING_IMAGE_DIGEST"
-          validate_release_image() {
-            image="$1"
-            label="$2"
-            if [[ ! "$image" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] ||
-              [[ "$image" == *//* ]]; then
-              echo "$label output is not an exact immutable GHCR digest" >&2
-              exit 64
-            fi
-          }
-          validate_release_image "$release_image" "Web image"
-          validate_release_image "$release_modeling_image" "Modeling registry image"
-          validate_digest() {
-            value="$1"
-            label="$2"
-            case "$value" in
-              sha256:*) digest="${value#sha256:}" ;;
-              *) echo "$label must use sha256" >&2; exit 64 ;;
-            esac
-            case "$digest" in
-              ""|*[!0-9a-f]*) echo "$label must be lowercase hexadecimal" >&2; exit 64 ;;
-            esac
-            test "${#digest}" -eq 64
-          }
-          if [ "$WEB_IMAGE_DIGEST" = "$MODELING_IMAGE_DIGEST" ]; then
-            echo "Web and modeling images must have distinct digests" >&2
-            exit 64
-          fi
-          release_web_registry_image="$release_image"
-          release_modeling_registry_image="$release_modeling_image"
-          loaded_web_tag="$image_repository:web-archive-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          loaded_modeling_tag="$image_repository:modeling-archive-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          release_image=""
-          release_modeling_image=""
-
-          web_archive_dir="$RUNNER_TEMP/openvac-web-release"
-          web_archive="$web_archive_dir/openvac-web-release.tar.zst"
-          web_archive_checksum="$web_archive.sha256"
-          test -f "$web_archive" && test ! -L "$web_archive"
-          test -f "$web_archive_checksum" && test ! -L "$web_archive_checksum"
-          (cd "$web_archive_dir" && sha256sum --check "$(basename "$web_archive_checksum")")
-          modeling_archive_dir="$RUNNER_TEMP/openvac-modeling-release"
-          modeling_archive="$modeling_archive_dir/openvac-modeling-release.tar.zst"
-          modeling_archive_checksum="$modeling_archive.sha256"
-          test -f "$modeling_archive" && test ! -L "$modeling_archive"
-          test -f "$modeling_archive_checksum" && test ! -L "$modeling_archive_checksum"
-          (cd "$modeling_archive_dir" && sha256sum --check "$(basename "$modeling_archive_checksum")")
           case "$TARGET" in
             production)
-              deploy_dir="/opt/openvac"
-              compose_project="openvac-production"
-              health_url="http://127.0.0.1:3010/api/health"
-              benchmark_iterations=1
+              deploy_dir=/opt/openvac
+              compose_project=openvac-production
+              health_url=https://openvac.cn/api/health
               ;;
             staging)
-              deploy_dir="/opt/openvac-staging"
-              compose_project="openvac-staging"
-              health_url="http://127.0.0.1:3011/api/health"
-              benchmark_iterations=20
+              deploy_dir=/opt/openvac-staging
+              compose_project=openvac-staging
+              health_url=https://staging-openvac.openvac.cn/api/health
               ;;
-            *)
-              echo "Unsupported deployment target: $TARGET" >&2
-              exit 64
-              ;;
+            *) exit 64 ;;
           esac
+          case "$RELEASE_SHA" in ""|*[!0-9a-f]*) exit 64 ;; esac
+          test "${#RELEASE_SHA}" -eq 40
+          case "$WEB_IMAGE_DIGEST" in sha256:*) web_digest="${WEB_IMAGE_DIGEST#sha256:}" ;; *) exit 64 ;; esac
+          case "$web_digest" in ""|*[!0-9a-f]*) exit 64 ;; esac
+          test "${#web_digest}" -eq 64
 
-          bundle_root="$RUNNER_TEMP/openvac-deploy-$release_id"
-          bundle_archive="$RUNNER_TEMP/bundle.tar.gz"
-          bundle_checksum="$RUNNER_TEMP/bundle.tar.gz.sha256"
-          ghcr_token_file="$RUNNER_TEMP/openvac-ghcr-token"
-          benchmark_file="$RUNNER_TEMP/modeling-benchmark.json"
+          image_repository="ghcr.io/${GITHUB_REPOSITORY,,}"
+          release_registry_image="$image_repository@$WEB_IMAGE_DIGEST"
+          archive_dir="$RUNNER_TEMP/openvac-web-release"
+          archive="$archive_dir/openvac-web-release.tar.zst"
+          archive_checksum="$archive.sha256"
+          archive_digest="$archive_dir/openvac-web-release.digest"
+          archive_digest_checksum="$archive_digest.sha256"
+          test -f "$archive" && test ! -L "$archive"
+          test -f "$archive_checksum" && test ! -L "$archive_checksum"
+          test -f "$archive_digest" && test ! -L "$archive_digest"
+          test -f "$archive_digest_checksum" && test ! -L "$archive_digest_checksum"
+          (cd "$archive_dir" && sha256sum --check "$(basename "$archive_checksum")")
+          (cd "$archive_dir" && sha256sum --check "$(basename "$archive_digest_checksum")")
+          packaged_digest="$(cat "$archive_digest")"
+          if [ "$packaged_digest" != "$WEB_IMAGE_DIGEST" ]; then
+            echo "Deployment archive digest does not match the selected staging digest." >&2
+            exit 1
+          fi
+
+          bundle_root="$RUNNER_TEMP/openvac-deploy-$RELEASE_SHA"
+          bundle_archive="$RUNNER_TEMP/openvac-deploy-bundle.tar.gz"
+          bundle_checksum="$bundle_archive.sha256"
           install -d -m 700 "$bundle_root"
           cp docker-compose.yml "$bundle_root/docker-compose.yml"
           cp -R deploy "$bundle_root/deploy"
+          cp "$archive_digest" "$bundle_root/WEB_IMAGE_DIGEST"
           (
             cd "$bundle_root"
-            find docker-compose.yml deploy -type f -print |
+            find docker-compose.yml deploy WEB_IMAGE_DIGEST -type f -print |
               LC_ALL=C sort |
-              xargs sha256sum > DEPLOY_BUNDLE.sha256
-            tar -czf "$bundle_archive" \
-              docker-compose.yml deploy DEPLOY_BUNDLE.sha256
+              xargs sha256sum >DEPLOY_BUNDLE.sha256
           )
+          tar -czf "$bundle_archive" -C "$bundle_root"             docker-compose.yml deploy WEB_IMAGE_DIGEST DEPLOY_BUNDLE.sha256
           (
             cd "$RUNNER_TEMP"
-            sha256sum bundle.tar.gz > "$bundle_checksum"
+            sha256sum "$(basename "$bundle_archive")" >"$(basename "$bundle_checksum")"
           )
-          (umask 077; printf '%s' "$GHCR_PULL_TOKEN" >"$ghcr_token_file")
-          chmod 600 "$ghcr_token_file"
 
-          remote_stage="/tmp/openvac-deploy-$release_id-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          cleanup_release_staging() {
-            rm -f -- "$ghcr_token_file"
-            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
-              "$ECS_USER@$ECS_HOST" \
-              "case '$remote_stage' in /tmp/openvac-deploy-*) rm -rf -- '$remote_stage' ;; esac" \
-              >/dev/null 2>&1 || true
+          remote_stage="/tmp/openvac-deploy-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          ssh_base="${ECS_USER}@${ECS_HOST}"
+          cleanup() {
+            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base"               "case '$remote_stage' in /tmp/openvac-deploy-*) rm -rf -- '$remote_stage' ;; esac"               >/dev/null 2>&1 || true
           }
-          trap cleanup_release_staging EXIT HUP INT TERM
-          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
-            "$ECS_USER@$ECS_HOST" "install -d -m 700 '$remote_stage'"
-          scp -i "$HOME/.ssh/openvac" -o BatchMode=yes \
-            "$bundle_archive" "$bundle_checksum" "$ghcr_token_file" \
-            "$ECS_USER@$ECS_HOST:$remote_stage/"
-          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
-            "$ECS_USER@$ECS_HOST" \
-            sh -s -- "$remote_stage" "$GHCR_USERNAME" <<'REMOTE_PREPARE'
-          set -eu
-          if [ "$#" -ne 2 ]; then
-            exit 64
-          fi
-          remote_stage="$1"
-          ghcr_username="$2"
-          case "$remote_stage" in
-            /tmp/openvac-deploy-*) ;;
-            *) exit 64 ;;
-          esac
-          case "$ghcr_username" in
-            ""|-*|*[!A-Za-z0-9-]*) exit 64 ;;
-          esac
-          cd "$remote_stage"
-          sha256sum --check bundle.tar.gz.sha256
-          install -d -m 700 bundle
-          tar -xzf bundle.tar.gz -C bundle
-          token_file="$remote_stage/openvac-ghcr-token"
-          [ -f "$token_file" ] && [ ! -L "$token_file" ] || exit 64
-          [ "$(stat -c '%a' "$token_file")" = 600 ] || exit 64
-          sh bundle/deploy/authenticate-ghcr.sh "$remote_stage" "$ghcr_username"
-          REMOTE_PREPARE
-
-          echo "Streaming the checksum-verified same-run web archive"
-          zstd --decompress --stdout "$web_archive" |
-            dd bs=4M status=progress |
-            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
-              -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
-              "$ECS_USER@$ECS_HOST" docker load
+          trap cleanup EXIT HUP INT TERM
+          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base"             "install -d -m 700 '$remote_stage'"
+          scp -i "$HOME/.ssh/openvac" -o BatchMode=yes             "$archive" "$archive_checksum" "$bundle_archive" "$bundle_checksum"             "$ssh_base:$remote_stage/"
 
           loaded_web_id="$(
-            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
-              "$ECS_USER@$ECS_HOST" \
-              sh -s -- "$loaded_web_tag" "$release_id" <<'REMOTE_WEB_IMAGE_IDENTITY'
+            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base"               sh -s -- "$remote_stage" "$RELEASE_SHA" "$image_repository:archive-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$WEB_IMAGE_DIGEST" <<'REMOTE_PREPARE'
           set -eu
-          if [ "$#" -ne 2 ]; then
-            exit 64
-          fi
-          loaded_web_tag="$1"
+          remote_stage="$1"
           release_id="$2"
-          case "$loaded_web_tag" in
-            ghcr.io/*:web-archive-*) ;;
-            *) exit 64 ;;
-          esac
-          case "$release_id" in
-            ""|*[!0-9a-f]*) exit 64 ;;
-          esac
-          [ "${#release_id}" -eq 40 ] || exit 64
-          loaded_id="$(docker image inspect --format '{{.Id}}' "$loaded_web_tag")"
-          case "$loaded_id" in
-            sha256:*) loaded_hex="${loaded_id#sha256:}" ;;
-            *) exit 1 ;;
-          esac
-          case "$loaded_hex" in
-            ""|*[!0-9a-f]*) exit 1 ;;
-          esac
-          [ "${#loaded_hex}" -eq 64 ] || exit 1
-          loaded_revision="$(
-            docker image inspect \
-              --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
-              "$loaded_web_tag"
-          )"
-          [ "$loaded_revision" = "$release_id" ] || {
+          loaded_tag="$3"
+          expected_registry_digest="$4"
+          case "$remote_stage" in /tmp/openvac-deploy-*) ;; *) exit 64 ;; esac
+          cd "$remote_stage"
+          sha256sum --check openvac-web-release.tar.zst.sha256
+          sha256sum --check openvac-deploy-bundle.tar.gz.sha256
+          install -d -m 700 bundle
+          tar -xzf openvac-deploy-bundle.tar.gz -C bundle
+          (cd bundle && sha256sum --check DEPLOY_BUNDLE.sha256)
+          packaged_registry_digest="$(cat bundle/WEB_IMAGE_DIGEST)"
+          if [ "$packaged_registry_digest" != "$expected_registry_digest" ]; then
+            echo "Remote deployment bundle digest does not match the selected staging digest" >&2
+            exit 1
+          fi
+          zstd --decompress --stdout openvac-web-release.tar.zst | docker load >/dev/null
+          loaded_id="$(docker image inspect --format '{{.Id}}' "$loaded_tag")"
+          revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$loaded_tag")"
+          architecture="$(docker image inspect --format '{{.Architecture}}' "$loaded_tag")"
+          [ "$revision" = "$release_id" ] || {
             echo "Loaded web image revision does not match the release commit" >&2
             exit 1
           }
-          docker image tag "$loaded_web_tag" "openvac-web-release:$loaded_hex"
-          printf '%s\n' "$loaded_id"
-          REMOTE_WEB_IMAGE_IDENTITY
-          )"
-          validate_digest "$loaded_web_id" "Loaded web image ID"
-          release_image="openvac-web-release:${loaded_web_id#sha256:}"
-
-          echo "Streaming the checksum-verified same-run modeling archive"
-          zstd --decompress --stdout "$modeling_archive" |
-            dd bs=4M status=progress |
-            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
-              -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
-              "$ECS_USER@$ECS_HOST" docker load
-
-          loaded_modeling_id="$(
-            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
-              "$ECS_USER@$ECS_HOST" \
-              sh -s -- "$loaded_modeling_tag" "$release_id" <<'REMOTE_IMAGE_IDENTITY'
-          set -eu
-          if [ "$#" -ne 2 ]; then
-            exit 64
-          fi
-          loaded_modeling_tag="$1"
-          release_id="$2"
-          case "$loaded_modeling_tag" in
-            ghcr.io/*:modeling-archive-*) ;;
-            *) exit 64 ;;
-          esac
-          case "$release_id" in
-            ""|*[!0-9a-f]*) exit 64 ;;
-          esac
-          [ "${#release_id}" -eq 40 ] || exit 64
-          loaded_id="$(docker image inspect --format '{{.Id}}' "$loaded_modeling_tag")"
-          case "$loaded_id" in
-            sha256:*) loaded_hex="${loaded_id#sha256:}" ;;
-            *) exit 1 ;;
-          esac
-          case "$loaded_hex" in
-            ""|*[!0-9a-f]*) exit 1 ;;
-          esac
+          [ "$architecture" = amd64 ] || {
+            echo "Loaded web image is not linux/amd64" >&2
+            exit 1
+          }
+          case "$loaded_id" in sha256:*) ;; *) exit 1 ;; esac
+          loaded_hex="${loaded_id#sha256:}"
+          case "$loaded_hex" in ""|*[!0-9a-f]*) exit 1 ;; esac
           [ "${#loaded_hex}" -eq 64 ] || exit 1
-          loaded_revision="$(
-            docker image inspect \
-              --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
-              "$loaded_modeling_tag"
-          )"
-          [ "$loaded_revision" = "$release_id" ] || {
-            echo "Loaded modeling image revision does not match the release commit" >&2
-            exit 1
-          }
-          docker image tag "$loaded_modeling_tag" "openvac-modeling-release:$loaded_hex"
+          docker image tag "$loaded_tag" "openvac-web-release:$loaded_hex"
           printf '%s\n' "$loaded_id"
-          REMOTE_IMAGE_IDENTITY
+          REMOTE_PREPARE
           )"
-          validate_digest "$loaded_modeling_id" "Loaded modeling image ID"
-          release_modeling_image="openvac-modeling-release:${loaded_modeling_id#sha256:}"
+          case "$loaded_web_id" in sha256:*) loaded_hex="${loaded_web_id#sha256:}" ;; *) exit 1 ;; esac
+          release_image="openvac-web-release:$loaded_hex"
 
-          set +e
-          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
-            "$ECS_USER@$ECS_HOST" \
-            sh -s -- "$remote_stage" "$release_modeling_image" \
-            "$loaded_modeling_id" "$release_id" \
-            "$benchmark_iterations" "$TARGET" >"$benchmark_file" <<'REMOTE_BENCHMARK'
+          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base"             sh -s -- "$remote_stage" "$deploy_dir" "$RELEASE_SHA"             "$release_image" "$loaded_web_id" "$compose_project" "$health_url" <<'REMOTE_ACTIVATE'
           set -eu
-          if [ "$#" -ne 6 ]; then
-            exit 64
-          fi
-          remote_stage="$1"
-          release_modeling_image="$2"
-          expected_modeling_id="$3"
-          release_id="$4"
-          iterations="$5"
-          target="$6"
-          case "$remote_stage" in
-            /tmp/openvac-deploy-*) ;;
-            *) exit 64 ;;
-          esac
-          case "$release_modeling_image" in
-            openvac-modeling-release:*) ;;
-            *) exit 64 ;;
-          esac
-          case "$expected_modeling_id" in
-            sha256:*) ;;
-            *) exit 64 ;;
-          esac
-          expected_modeling_hex="${expected_modeling_id#sha256:}"
-          [ "$release_modeling_image" = "openvac-modeling-release:$expected_modeling_hex" ] ||
-            exit 64
-          case "$release_id" in
-            ""|*[!0-9a-f]*) exit 64 ;;
-          esac
-          [ "${#release_id}" -eq 40 ] || exit 64
-          case "$iterations" in
-            1|20) ;;
-            *) exit 64 ;;
-          esac
-          case "$target" in
-            production|staging) ;;
-            *) exit 64 ;;
-          esac
-          docker_config="$remote_stage/docker-config"
-          [ -d "$docker_config" ] && [ ! -L "$docker_config" ] || exit 64
-          run_with_heartbeat() {
-            operation_label="$1"
-            shift
-            "$@" &
-            operation_pid="$!"
-            while kill -0 "$operation_pid" 2>/dev/null; do
-              printf 'OpenVac %s is still running (pid=%s)\n' \
-                "$operation_label" "$operation_pid" >&2
-              sleep 30
-            done
-            wait "$operation_pid"
-          }
-          sh "$remote_stage/bundle/deploy/preflight-host.sh" "$target" >&2
-          loaded_modeling_id="$(docker image inspect --format '{{.Id}}' "$release_modeling_image")"
-          [ "$loaded_modeling_id" = "$expected_modeling_id" ] || {
-            echo "Loaded modeling image ID does not match the same-run archive" >&2
-            exit 1
-          }
-          loaded_revision="$(
-            docker image inspect \
-              --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
-              "$release_modeling_image"
-          )"
-          [ "$loaded_revision" = "$release_id" ] || {
-            echo "Loaded modeling image revision does not match the release commit" >&2
-            exit 1
-          }
-          run_with_heartbeat "modeling benchmark" docker run --rm \
-            --network none \
-            --read-only \
-            --tmpfs /tmp:size=2g,uid=10001,gid=10001,mode=1770 \
-            --cap-drop ALL \
-            --security-opt no-new-privileges:true \
-            --pids-limit 64 \
-            --memory 4g \
-            --cpus 2 \
-            "$release_modeling_image" \
-            python -m app.benchmark --case all --iterations "$iterations"
-          REMOTE_BENCHMARK
-          benchmark_status="$?"
-          set -e
-          echo "::group::OpenVac modeling benchmark JSON"
-          if [ -f "$benchmark_file" ]; then
-            cat "$benchmark_file"
-          fi
-          echo "::endgroup::"
-          benchmark_pass=false
-          if [ "$benchmark_status" -eq 0 ] &&
-            jq --exit-status --argjson iterations "$benchmark_iterations" \
-              '.iterations == $iterations and .passed == true' \
-              "$benchmark_file" >/dev/null 2>&1; then
-            benchmark_pass=true
-          fi
-          {
-            echo "### Modeling deployment benchmark"
-            echo
-            echo "| Target | SHA | Iterations | Pass |"
-            echo "| --- | --- | ---: | --- |"
-            echo "| $TARGET | \`$release_id\` | $benchmark_iterations | $benchmark_pass |"
-          } >>"$GITHUB_STEP_SUMMARY"
-          if [ "$benchmark_pass" != true ]; then
-            echo "Modeling benchmark failed or returned invalid JSON" >&2
-            exit 1
-          fi
-
-          previous_modeling_enabled="$(
-            printf '%s\n' "$MODELING_SERVICE_TOKEN" |
-              ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
-                "$ECS_USER@$ECS_HOST" \
-                "sh '$remote_stage/bundle/deploy/configure-modeling-runtime.sh' '$TARGET' '$ENABLE_MODELING'"
-          )"
-          case "$previous_modeling_enabled" in
-            true|false) ;;
-            *)
-              echo "Remote modeling configuration returned an invalid previous flag" >&2
-              exit 1
-              ;;
-          esac
-
-          if ! ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
-            "$ECS_USER@$ECS_HOST" \
-            sh -s -- \
-            "$remote_stage" "$deploy_dir" "$release_id" "$release_image" \
-            "$loaded_web_id" "$release_modeling_image" "$loaded_modeling_id" \
-            "$compose_project" "$health_url" <<'REMOTE_ACTIVATE'
-          set -eu
-          if [ "$#" -ne 9 ]; then
-            exit 64
-          fi
           remote_stage="$1"
           deploy_dir="$2"
           release_id="$3"
           release_image="$4"
           loaded_web_id="$5"
-          release_modeling_image="$6"
-          loaded_modeling_id="$7"
-          compose_project="$8"
-          health_url="$9"
-          case "$remote_stage" in
-            /tmp/openvac-deploy-*) ;;
-            *) exit 64 ;;
-          esac
-          docker_config="$remote_stage/docker-config"
-          [ -d "$docker_config" ] && [ ! -L "$docker_config" ] || exit 64
-          [ "$(stat -c '%a' "$docker_config")" = 700 ] || exit 64
-          DOCKER_CONFIG="$docker_config" \
-            OPENVAC_WEB_PRELOADED_ID="$loaded_web_id" \
-            OPENVAC_MODELING_PRELOADED_ID="$loaded_modeling_id" \
-            sh "$remote_stage/bundle/deploy/activate-bundle.sh" \
-            "$deploy_dir" "$release_id" "$remote_stage/bundle" \
-            "$release_image" "$release_modeling_image" "$compose_project" \
-            "$health_url"
+          compose_project="$6"
+          health_url="$7"
+          case "$remote_stage" in /tmp/openvac-deploy-*) ;; *) exit 64 ;; esac
+          OPENVAC_WEB_PRELOADED_ID="$loaded_web_id"             sh "$remote_stage/bundle/deploy/activate-bundle.sh"             "$deploy_dir" "$release_id" "$remote_stage/bundle"             "$release_image" "$compose_project" "$health_url"
           REMOTE_ACTIVATE
-          then
-            echo "Activation failed; restoring the previous MODELING_ENABLED value" >&2
-            if ! printf '%s\n' "$MODELING_SERVICE_TOKEN" |
-              ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes \
-                "$ECS_USER@$ECS_HOST" \
-                "sh '$remote_stage/bundle/deploy/configure-modeling-runtime.sh' '$TARGET' '$previous_modeling_enabled'" \
-                >/dev/null; then
-              echo "Failed to restore the previous MODELING_ENABLED value" >&2
-            fi
-            exit 1
-          fi
 
-          printf 'release_image=%s\n' "$release_image" >>"$GITHUB_OUTPUT"
-          printf 'release_web_registry_image=%s\n' \
-            "$release_web_registry_image" >>"$GITHUB_OUTPUT"
-          printf 'release_modeling_image=%s\n' "$release_modeling_image" >>"$GITHUB_OUTPUT"
-          printf 'release_modeling_registry_image=%s\n' \
-            "$release_modeling_registry_image" >>"$GITHUB_OUTPUT"
-          cleanup_release_staging
+          {
+            echo "### Web-only deployment"
+            echo
+            printf -- '- Target: `%s`\n' "$TARGET"
+            printf -- '- Commit: `%s`\n' "$RELEASE_SHA"
+            printf -- '- Registry image: `%s`\n' "$release_registry_image"
+            printf -- '- Loaded image ID: `%s`\n' "$loaded_web_id"
+          } >>"$GITHUB_STEP_SUMMARY"
+          echo "digest_hex=$web_digest" >>"$GITHUB_OUTPUT"
+          if [ "$TARGET" = staging ]; then
+            jq --null-input \
+              --arg commit_sha "$RELEASE_SHA" \
+              --arg staging_web_digest "$WEB_IMAGE_DIGEST" \
+              '{
+                commit_sha: $commit_sha,
+                staging_web_digest: $staging_web_digest
+              }' >"$RUNNER_TEMP/openvac-staging-provenance.json"
+          fi
           trap - EXIT HUP INT TERM
-      - name: Upload modeling benchmark evidence
-        if: ${{ always() }}
+          cleanup
+      - if: inputs.target == 'staging'
+        name: Save accepted staging digest provenance
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: modeling-benchmark-${{ inputs.target }}-${{ inputs.commit_sha }}
-          path: ${{ runner.temp }}/modeling-benchmark.json
-          if-no-files-found: warn
+          name: openvac-staging-provenance-${{ inputs.commit_sha }}-${{ steps.deploy.outputs.digest_hex }}
+          path: ${{ runner.temp }}/openvac-staging-provenance.json
+          if-no-files-found: error
           retention-days: 30

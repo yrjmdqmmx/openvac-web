@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -27,13 +28,21 @@ function temporaryRoot(): string {
   return root;
 }
 
-function write(path: string, value: string): void {
-  writeFileSync(path, value, { encoding: "utf8", mode: 0o600 });
+function write(path: string, value: string, mode = 0o600): void {
+  writeFileSync(path, value, { encoding: "utf8", mode });
 }
 
 function createBundle(
   root: string,
-  options: { deployExit?: number; includeEnv?: boolean } = {}
+  options: {
+    deployExit?: number;
+    deployExitAfterCommit?: number;
+    includeEnv?: boolean;
+    publishPointer?: boolean;
+    publishJournal?: boolean;
+    publishReceipt?: boolean;
+    publishedReleaseId?: string;
+  } = {}
 ): string {
   const bundle = join(root, "bundle");
   const deployDirectory = join(bundle, "deploy");
@@ -44,7 +53,43 @@ function createBundle(
     [
       "#!/bin/sh",
       'printf "%s\\n" "$*" > "$1/deploy-invocation"',
-      `exit ${options.deployExit ?? 0}`,
+      `if [ ${options.deployExit ?? 0} -ne 0 ]; then exit ${options.deployExit ?? 0}; fi`,
+      'release_dir="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"',
+      'case "${OPENVAC_WEB_PRELOADED_ID:-}" in',
+      '  sha256:*) image_id="$OPENVAC_WEB_PRELOADED_ID" ;;',
+      '  *) image_id="sha256:${2##*@sha256:}" ;;',
+      "esac",
+      'identity_tmp="$release_dir/.web-image-id-$$"',
+      'printf "%s\\n" "$image_id" >"$identity_tmp"',
+      'chmod 600 "$identity_tmp"',
+      'if [ -f "$release_dir/web-image-id" ] && ! cmp -s "$identity_tmp" "$release_dir/web-image-id"; then',
+      '  echo "release SHA is already bound to a different web image ID" >&2',
+      '  rm -f "$identity_tmp"',
+      "  exit 64",
+      "fi",
+      'mv -f "$identity_tmp" "$release_dir/web-image-id"',
+      ...(options.publishReceipt === false
+        ? []
+        : [
+            'printf "%s\\n" "release=$4" "web_image=$image_id" "rollback_rehearsal=not-required" "status=healthy" "activation=$OPENVAC_ACTIVATION_ID" >"$release_dir/deployment-receipt"',
+            'chmod 600 "$release_dir/deployment-receipt"'
+          ]),
+      ...(options.publishPointer === false
+        ? []
+        : [
+            options.publishedReleaseId
+              ? `printf "%s\\n" "${options.publishedReleaseId}" > "$1/current-release"`
+              : 'printf "%s\\n" "$4" > "$1/current-release"',
+            'chmod 600 "$1/current-release"'
+          ]),
+      ...(options.publishJournal
+        ? [
+            'printf "%s\\n" "status=in-progress" >"$1/deployment-transaction"',
+            'chmod 600 "$1/deployment-transaction"'
+          ]
+        : []),
+      `if [ ${options.deployExitAfterCommit ?? 0} -ne 0 ]; then exit ${options.deployExitAfterCommit ?? 0}; fi`,
+      "exit 0",
       ""
     ].join("\n")
   );
@@ -81,7 +126,6 @@ function runActivation(deployRoot: string, bundle: string, releaseId: string) {
       releaseId,
       bundle,
       `ghcr.io/example/openvac@sha256:${"a".repeat(64)}`,
-      `ghcr.io/example/openvac@sha256:${"b".repeat(64)}`,
       "openvac-production",
       "https://openvac.example/api/health"
     ],
@@ -100,7 +144,6 @@ function runActivationWithImages(
   bundle: string,
   releaseId: string,
   webImage: string,
-  modelingImage = `ghcr.io/example/openvac@sha256:${"b".repeat(64)}`,
   extraEnv: Record<string, string> = {}
 ) {
   return spawnSync(
@@ -111,7 +154,6 @@ function runActivationWithImages(
       releaseId,
       bundle,
       webImage,
-      modelingImage,
       "openvac-production",
       "https://openvac.example/api/health"
     ],
@@ -153,11 +195,50 @@ describe("deployment bundle activation", () => {
     expect(
       readFileSync(join(deployRoot, "deploy-invocation"), "utf8")
     ).toContain(
-      `ghcr.io/example/openvac@sha256:${"a".repeat(64)} ghcr.io/example/openvac@sha256:${"b".repeat(64)} openvac-production`
+      `ghcr.io/example/openvac@sha256:${"a".repeat(64)} openvac-production ${releaseId}`
     );
+    expect(
+      readFileSync(
+        join(deployRoot, "releases", releaseId, "web-image-id"),
+        "utf8"
+      )
+    ).toBe(`sha256:${"a".repeat(64)}\n`);
     expect(() =>
       readFileSync(join(deployRoot, "releases", releaseId, ".env"), "utf8")
     ).toThrow();
+    expect(
+      readFileSync(
+        join(deployRoot, "releases", releaseId, "deployment-receipt"),
+        "utf8"
+      )
+    ).toMatch(new RegExp(`activation=${releaseId}-[0-9a-f]{32}\\n$`));
+  });
+
+  it("uses a fresh high-entropy activation nonce when redeploying one release", () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    mkdirSync(deployRoot);
+    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+    const bundle = createBundle(root);
+    const releaseId = "2".repeat(40);
+
+    const firstResult = runActivation(deployRoot, bundle, releaseId);
+    const firstReceipt = readFileSync(
+      join(deployRoot, "releases", releaseId, "deployment-receipt"),
+      "utf8"
+    );
+    const secondResult = runActivation(deployRoot, bundle, releaseId);
+    const secondReceipt = readFileSync(
+      join(deployRoot, "releases", releaseId, "deployment-receipt"),
+      "utf8"
+    );
+
+    expect(firstResult.status, firstResult.stderr).toBe(0);
+    expect(secondResult.status, secondResult.stderr).toBe(0);
+    expect(secondReceipt).not.toBe(firstReceipt);
+    expect(secondReceipt).toMatch(
+      new RegExp(`activation=${releaseId}-[0-9a-f]{32}\\n$`)
+    );
   });
 
   it("keeps the previous release active when deployment fails", () => {
@@ -217,47 +298,6 @@ describe("deployment bundle activation", () => {
     expect(() => readFileSync(join(deployRoot, "current-release"))).toThrow();
   });
 
-  it("rejects a truncated modeling-image digest before installing a release", () => {
-    const root = temporaryRoot();
-    const deployRoot = join(root, "host");
-    mkdirSync(deployRoot);
-    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
-    const bundle = createBundle(root);
-
-    const result = runActivationWithImages(
-      deployRoot,
-      bundle,
-      "1".repeat(40),
-      `ghcr.io/example/openvac@sha256:${"a".repeat(64)}`,
-      "ghcr.io/example/openvac@sha256:abc123"
-    );
-
-    expect(result.status).toBe(64);
-    expect(result.stderr).toContain("64-character SHA-256 digest");
-    expect(() => readFileSync(join(deployRoot, "current-release"))).toThrow();
-  });
-
-  it("rejects identical web and modeling digests", () => {
-    const root = temporaryRoot();
-    const deployRoot = join(root, "host");
-    mkdirSync(deployRoot);
-    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
-    const bundle = createBundle(root);
-    const image = `ghcr.io/example/openvac@sha256:${"a".repeat(64)}`;
-
-    const result = runActivationWithImages(
-      deployRoot,
-      bundle,
-      "2".repeat(40),
-      image,
-      image
-    );
-
-    expect(result.status).toBe(64);
-    expect(result.stderr).toContain("must have distinct digests");
-    expect(() => readFileSync(join(deployRoot, "current-release"))).toThrow();
-  });
-
   it("accepts a content-addressed preloaded web image", () => {
     const root = temporaryRoot();
     const deployRoot = join(root, "host");
@@ -271,7 +311,6 @@ describe("deployment bundle activation", () => {
       bundle,
       "3".repeat(40),
       `openvac-web-release:${webDigest}`,
-      `ghcr.io/example/openvac@sha256:${"b".repeat(64)}`,
       { OPENVAC_WEB_PRELOADED_ID: `sha256:${webDigest}` }
     );
 
@@ -279,6 +318,202 @@ describe("deployment bundle activation", () => {
     expect(readFileSync(join(deployRoot, "current-release"), "utf8")).toBe(
       `${"3".repeat(40)}\n`
     );
+    expect(
+      readFileSync(
+        join(deployRoot, "releases", "3".repeat(40), "web-image-id"),
+        "utf8"
+      )
+    ).toBe(`sha256:${webDigest}\n`);
+  });
+
+  it("rejects rebinding one release SHA to a different loaded web image ID", () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    mkdirSync(deployRoot);
+    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+    const bundle = createBundle(root);
+    const releaseId = "7".repeat(40);
+    const firstDigest = "c".repeat(64);
+    const secondDigest = "d".repeat(64);
+
+    const firstResult = runActivationWithImages(
+      deployRoot,
+      bundle,
+      releaseId,
+      `openvac-web-release:${firstDigest}`,
+      { OPENVAC_WEB_PRELOADED_ID: `sha256:${firstDigest}` }
+    );
+    const secondResult = runActivationWithImages(
+      deployRoot,
+      bundle,
+      releaseId,
+      `openvac-web-release:${secondDigest}`,
+      { OPENVAC_WEB_PRELOADED_ID: `sha256:${secondDigest}` }
+    );
+
+    expect(firstResult.status, firstResult.stderr).toBe(0);
+    expect(secondResult.status).not.toBe(0);
+    expect(secondResult.stderr).toContain(
+      "release SHA is already bound to a different web image ID"
+    );
+    expect(
+      readFileSync(
+        join(deployRoot, "releases", releaseId, "web-image-id"),
+        "utf8"
+      )
+    ).toBe(`sha256:${firstDigest}\n`);
+  });
+
+  it("completes the pointer when deploy.sh leaves a verified receipt", () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    mkdirSync(deployRoot);
+    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+    const bundle = createBundle(root, { publishPointer: false });
+    const releaseId = "8".repeat(40);
+
+    const result = runActivation(deployRoot, bundle, releaseId);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain(
+      "Completed the release pointer from the verified deployment receipt"
+    );
+    expect(readFileSync(join(deployRoot, "current-release"), "utf8")).toBe(
+      `${releaseId}\n`
+    );
+  });
+
+  it("corrects a pointer using the receipt from the current activation", () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    mkdirSync(deployRoot);
+    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+    const publishedReleaseId = "9".repeat(40);
+    const bundle = createBundle(root, { publishedReleaseId });
+
+    const result = runActivation(deployRoot, bundle, "a".repeat(40));
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(deployRoot, "current-release"), "utf8")).toBe(
+      `${"a".repeat(40)}\n`
+    );
+  });
+
+  it("refuses a receipt-less success without rewriting its pointer", () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    mkdirSync(join(deployRoot, "releases"), { recursive: true });
+    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+    const previousRelease = "6".repeat(40);
+    write(join(deployRoot, "current-release"), `${previousRelease}\n`);
+    const bundle = createBundle(root, { publishReceipt: false });
+
+    const result = runActivation(deployRoot, bundle, "a".repeat(40));
+
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain(
+      "deploy.sh did not publish a regular deployment receipt"
+    );
+    expect(readFileSync(join(deployRoot, "current-release"), "utf8")).toBe(
+      `${"a".repeat(40)}\n`
+    );
+  });
+
+  it("recovers a committed release when deploy.sh exits after its commit", () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    mkdirSync(deployRoot);
+    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+    const releaseId = "4".repeat(40);
+    const bundle = createBundle(root, { deployExitAfterCommit: 137 });
+
+    const result = runActivation(deployRoot, bundle, releaseId);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain(
+      "Recovered a committed release after the deployment child exited unexpectedly"
+    );
+    expect(readFileSync(join(deployRoot, "current-release"), "utf8")).toBe(
+      `${releaseId}\n`
+    );
+  });
+
+  it("keeps the journal when recovery cannot durably sync an already visible pointer", () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    const fakeBin = join(root, "bin");
+    mkdirSync(deployRoot);
+    mkdirSync(fakeBin);
+    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+    write(
+      join(fakeBin, "sync"),
+      [
+        "#!/bin/sh",
+        "set -eu",
+        'case "${2:-}" in',
+        "  */current-release) exit 1 ;;",
+        "esac",
+        "exit 0",
+        ""
+      ].join("\n"),
+      0o700
+    );
+    const releaseId = "0".repeat(40);
+    const bundle = createBundle(root, {
+      deployExitAfterCommit: 137,
+      publishJournal: true
+    });
+
+    const result = runActivationWithImages(
+      deployRoot,
+      bundle,
+      releaseId,
+      `ghcr.io/example/openvac@sha256:${"a".repeat(64)}`,
+      { PATH: `${fakeBin}:${process.env.PATH ?? ""}` }
+    );
+
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain(
+      "verified deployment pointer could not be durably synced"
+    );
+    expect(
+      readFileSync(join(deployRoot, "deployment-transaction"), "utf8")
+    ).toBe("status=in-progress\n");
+  });
+
+  it("does not recover a deliberate non-signal failure after pointer publication", () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    mkdirSync(deployRoot);
+    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+    const releaseId = "1".repeat(40);
+    const bundle = createBundle(root, { deployExitAfterCommit: 1 });
+
+    const result = runActivation(deployRoot, bundle, releaseId);
+
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain(
+      "deploy.sh failed without a recoverable termination signal"
+    );
+    expect(readFileSync(join(deployRoot, "current-release"), "utf8")).toBe(
+      `${releaseId}\n`
+    );
+  });
+
+  it("refuses a concurrent activation without removing the existing lock", () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    mkdirSync(deployRoot);
+    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+    mkdirSync(join(deployRoot, ".activation-lock"), { mode: 0o700 });
+    const bundle = createBundle(root);
+
+    const result = runActivation(deployRoot, bundle, "5".repeat(40));
+
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain("activation is already in progress");
+    expect(() => readFileSync(join(deployRoot, "current-release"))).toThrow();
+    expect(readdirSync(deployRoot)).toContain(".activation-lock");
   });
 
   it("rejects a preloaded web tag that does not match its image ID", () => {
@@ -293,7 +528,6 @@ describe("deployment bundle activation", () => {
       bundle,
       "4".repeat(40),
       `openvac-web-release:${"c".repeat(64)}`,
-      `ghcr.io/example/openvac@sha256:${"b".repeat(64)}`,
       { OPENVAC_WEB_PRELOADED_ID: `sha256:${"d".repeat(64)}` }
     );
 

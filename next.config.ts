@@ -11,6 +11,24 @@ const nextConfig: NextConfig = {
   ],
   poweredByHeader: false,
   reactStrictMode: true,
+  skipTrailingSlashRedirect: true,
+  redirects: async () => [
+    {
+      source: "/modeling",
+      destination: "/semacad",
+      permanent: true
+    },
+    {
+      source: "/modeling/",
+      destination: "/semacad",
+      permanent: true
+    },
+    {
+      source: "/:path+/",
+      destination: "/:path+",
+      permanent: true
+    }
+  ],
   experimental: {
     serverActions: {
       bodySizeLimit: "1mb"

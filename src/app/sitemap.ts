@@ -12,6 +12,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
   const base = runtimeAppUrl();
   return [
     "",
+    "/semacad",
     "/sources",
     "/product",
     "/legal/terms",

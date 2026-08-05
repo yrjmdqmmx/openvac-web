@@ -1,5 +1,10 @@
 # syntax=docker/dockerfile:1.7
 
+FROM scratch AS semacad-context-check
+COPY public/semacad/semacad-app-icon.png /semacad-app-icon.png
+COPY scripts/verify-semacad-release.ts /verify-semacad-release.ts
+COPY src/lib/semacad-release.ts /semacad-release.ts
+
 FROM node:24-alpine AS base
 ARG PNPM_VERSION=10.28.2
 ENV PNPM_HOME="/pnpm"
@@ -14,6 +19,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile
 
 FROM deps AS builder
+ARG OPENVAC_DEPLOY_TARGET=ci
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV DATABASE_URL="postgres://build:build@127.0.0.1:5432/openvac_build"
@@ -21,7 +27,10 @@ ENV APP_URL="http://127.0.0.1:3000"
 ENV NEXT_PUBLIC_APP_URL="http://127.0.0.1:3000"
 ENV BETTER_AUTH_URL="http://127.0.0.1:3000"
 ENV BETTER_AUTH_SECRET="build-only-secret-with-at-least-32-characters"
-RUN pnpm build
+RUN if [ "$OPENVAC_DEPLOY_TARGET" = "production" ]; then \
+      pnpm exec tsx scripts/verify-semacad-release.ts --production; \
+    fi \
+    && pnpm build
 
 FROM base AS web
 ENV NODE_ENV=production

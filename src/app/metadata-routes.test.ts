@@ -22,6 +22,7 @@ describe("runtime metadata routes", () => {
     );
     expect(sitemap().map((entry) => entry.url)).toEqual([
       "https://runtime.openvac.example",
+      "https://runtime.openvac.example/semacad",
       "https://runtime.openvac.example/sources",
       "https://runtime.openvac.example/product",
       "https://runtime.openvac.example/legal/terms",
@@ -30,6 +31,11 @@ describe("runtime metadata routes", () => {
       "https://runtime.openvac.example/feedback",
       "https://runtime.openvac.example/complaints"
     ]);
+    expect(robots().rules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ allow: expect.arrayContaining(["/semacad"]) })
+      ])
+    );
   });
 
   it("falls back to the public production origin when APP_URL is empty", () => {
