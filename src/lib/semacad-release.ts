@@ -118,9 +118,10 @@ export type SemacadReleaseManifest = z.infer<
 >;
 
 /**
- * This manifest is deliberately checked into the website repository. It must
- * only be promoted to public-beta after the exact DMG has passed checksum,
- * Developer ID, notarization, staple and Gatekeeper verification.
+ * This manifest is deliberately checked into the website repository. The
+ * preparing state may be published with downloads disabled. It must only be
+ * promoted to public-beta after the exact DMG has passed checksum, Developer
+ * ID, notarization, staple and Gatekeeper verification.
  */
 export const semacadRelease = semacadReleaseManifestSchema.parse({
   status: "preparing",
@@ -143,15 +144,8 @@ export function isSemacadDownloadReady(
   return release.status === "public-beta";
 }
 
-export function assertSemacadProductionRelease(
+export function assertSemacadProductionManifest(
   release: SemacadReleaseManifest = semacadRelease
-): asserts release is Extract<
-  SemacadReleaseManifest,
-  { status: "public-beta" }
-> {
-  if (!isSemacadDownloadReady(release)) {
-    throw new Error(
-      "Production requires a verified public SemaCAD Beta release; the manifest is still preparing."
-    );
-  }
+): SemacadReleaseManifest {
+  return semacadReleaseManifestSchema.parse(release);
 }

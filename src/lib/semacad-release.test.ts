@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  assertSemacadProductionRelease,
+  assertSemacadProductionManifest,
   isSemacadDownloadReady,
   semacadRelease,
   semacadReleaseManifestSchema
@@ -24,19 +24,17 @@ const verifiedPublicBeta = {
 };
 
 describe("SemaCAD release manifest", () => {
-  it("keeps the unverified website in a non-downloadable preparing state", () => {
+  it("allows the non-downloadable preparing page in production", () => {
     expect(semacadRelease.status).toBe("preparing");
     expect(isSemacadDownloadReady()).toBe(false);
-    expect(() => assertSemacadProductionRelease()).toThrow(
-      /verified public SemaCAD Beta/
-    );
+    expect(assertSemacadProductionManifest()).toEqual(semacadRelease);
   });
 
   it("accepts a complete immutable public Beta release", () => {
     const release = semacadReleaseManifestSchema.parse(verifiedPublicBeta);
 
     expect(isSemacadDownloadReady(release)).toBe(true);
-    expect(() => assertSemacadProductionRelease(release)).not.toThrow();
+    expect(assertSemacadProductionManifest(release)).toEqual(release);
   });
 
   it("rejects the internal staging release", () => {
