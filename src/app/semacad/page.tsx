@@ -195,7 +195,7 @@ export default async function SemacadPage() {
             <div className="overflow-hidden rounded-[28px] border border-[var(--border)] bg-[#e9ebeb] p-2 shadow-[0_30px_90px_rgba(17,19,21,0.12)] sm:p-3">
               <Image
                 src="/semacad/semacad-main-window.png"
-                alt="SemaCAD 公开 Beta 主窗口，显示 FreeCAD 工作区与 OpenVac 辅助面板"
+                alt="SemaCAD 公开 Beta 主窗口，显示干净的 FreeCAD 工作区"
                 width={1600}
                 height={1000}
                 sizes="(max-width: 1420px) calc(100vw - 48px), 1368px"

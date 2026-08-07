@@ -120,15 +120,17 @@ describe("SemaCAD product page", () => {
     mocks.ready = true;
     Object.assign(mocks.release, {
       status: "public-beta",
-      assetName: "SemaCAD-0.2.0-macOS-arm64.dmg",
+      assetName: "semaCAD-0.2.0-beta.1-macOS26-arm64.dmg",
       downloadUrl:
-        "https://github.com/zdywrnm/SemaCAD/releases/download/v0.2.0-beta.1/SemaCAD-0.2.0-macOS-arm64.dmg",
+        "https://github.com/zdywrnm/SemaCAD/releases/download/v0.2.0-beta.1/semaCAD-0.2.0-beta.1-macOS26-arm64.dmg",
       releaseUrl:
         "https://github.com/zdywrnm/SemaCAD/releases/tag/v0.2.0-beta.1",
-      sizeBytes: 1_741_668_864,
-      sha256: "a".repeat(64),
+      build: "2026080605",
+      sizeBytes: 1_742_524_586,
+      sha256:
+        "ab4fb2e669422a2fc9407fac1340c01e3a2cc02ae16e08ff7cb89936408fadfb",
       notarized: true,
-      publishedAt: "2026-08-05T09:00:00+08:00"
+      publishedAt: "2026-08-06T16:10:24Z"
     });
 
     render(await SemacadPage());
@@ -140,7 +142,11 @@ describe("SemaCAD product page", () => {
       "src",
       "/semacad/semacad-main-window.png"
     );
-    expect(screen.getByText("a".repeat(64))).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "ab4fb2e669422a2fc9407fac1340c01e3a2cc02ae16e08ff7cb89936408fadfb"
+      )
+    ).toBeInTheDocument();
     expect(screen.getByText("已公证")).toBeInTheDocument();
   });
 });

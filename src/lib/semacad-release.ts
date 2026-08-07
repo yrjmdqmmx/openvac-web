@@ -46,7 +46,7 @@ const publicBetaReleaseSchema = baseReleaseSchema.extend({
     .trim()
     .min(1)
     .endsWith(".dmg")
-    .startsWith("SemaCAD-")
+    .startsWith("semaCAD-")
     .refine((value) => !/(?:internal|staging)/i.test(value)),
   downloadUrl: immutableGithubDownloadUrl,
   releaseUrl: z
@@ -124,18 +124,19 @@ export type SemacadReleaseManifest = z.infer<
  * ID, notarization, staple and Gatekeeper verification.
  */
 export const semacadRelease = semacadReleaseManifestSchema.parse({
-  status: "preparing",
+  status: "public-beta",
   version: "0.2.0",
-  build: "2026080501",
-  assetName: null,
-  downloadUrl: null,
-  releaseUrl: null,
-  sizeBytes: null,
-  sha256: null,
+  build: "2026080605",
+  assetName: "semaCAD-0.2.0-beta.1-macOS26-arm64.dmg",
+  downloadUrl:
+    "https://github.com/zdywrnm/SemaCAD/releases/download/v0.2.0-beta.1/semaCAD-0.2.0-beta.1-macOS26-arm64.dmg",
+  releaseUrl: "https://github.com/zdywrnm/SemaCAD/releases/tag/v0.2.0-beta.1",
+  sizeBytes: 1_742_524_586,
+  sha256: "ab4fb2e669422a2fc9407fac1340c01e3a2cc02ae16e08ff7cb89936408fadfb",
   architecture: "arm64",
   minimumMacOS: "26.0",
-  notarized: false,
-  publishedAt: null
+  notarized: true,
+  publishedAt: "2026-08-06T16:10:24Z"
 } satisfies SemacadReleaseManifest);
 
 export function isSemacadDownloadReady(
