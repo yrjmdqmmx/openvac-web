@@ -15,7 +15,15 @@ on:
           - staging
           - production
       staging_web_digest:
-        description: Exact sha256 digest accepted in staging (required for production only)
+        description: Exact staging sha256 digest (required for production or archive reuse)
+        required: false
+        type: string
+      reuse_run_id:
+        description: Successful release workflow run ID whose exact staging archive should be reused
+        required: false
+        type: string
+      reuse_run_attempt:
+        description: Successful attempt number within reuse_run_id
         required: false
         type: string
 
@@ -46,6 +54,8 @@ jobs:
           RELEASE_SHA: ${{ inputs.commit_sha }}
           TARGET: ${{ inputs.target }}
           STAGING_WEB_DIGEST: ${{ inputs.staging_web_digest }}
+          REUSE_RUN_ID: ${{ inputs.reuse_run_id }}
+          REUSE_RUN_ATTEMPT: ${{ inputs.reuse_run_attempt }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
@@ -57,14 +67,48 @@ jobs:
           esac
           test "${#RELEASE_SHA}" -eq 40
 
+          reuse_requested=false
+          if [ -n "$REUSE_RUN_ID" ] || [ -n "$REUSE_RUN_ATTEMPT" ]; then
+            if [ -z "$REUSE_RUN_ID" ] || [ -z "$REUSE_RUN_ATTEMPT" ]; then
+              echo "reuse_run_id and reuse_run_attempt must be provided together." >&2
+              exit 64
+            fi
+            case "$REUSE_RUN_ID:$REUSE_RUN_ATTEMPT" in
+              *[!0-9:]*|:*|*:) echo "Archive reuse identifiers must contain decimal digits only." >&2; exit 64 ;;
+            esac
+            reuse_requested=true
+          fi
+
           case "$TARGET" in
             staging)
-              if [ -n "$STAGING_WEB_DIGEST" ]; then
+              if [ "$reuse_requested" = true ]; then
+                case "$STAGING_WEB_DIGEST" in
+                  sha256:*) staging_digest_hex="${STAGING_WEB_DIGEST#sha256:}" ;;
+                  *)
+                    echo "Archive reuse requires staging_web_digest in sha256:<64 lowercase hex> form." >&2
+                    exit 64
+                    ;;
+                esac
+                case "$staging_digest_hex" in
+                  ""|*[!0-9a-f]*)
+                    echo "staging_web_digest must contain lowercase hexadecimal only." >&2
+                    exit 64
+                    ;;
+                esac
+                if [ "${#staging_digest_hex}" -ne 64 ]; then
+                  echo "staging_web_digest must contain exactly 64 hexadecimal characters." >&2
+                  exit 64
+                fi
+              elif [ -n "$STAGING_WEB_DIGEST" ]; then
                 echo "staging_web_digest must be empty for a staging release; staging builds the image once." >&2
                 exit 64
               fi
               ;;
             production)
+              if [ "$reuse_requested" = true ]; then
+                echo "Archive reuse is only allowed while re-validating staging; production still consumes staging provenance." >&2
+                exit 64
+              fi
               case "$STAGING_WEB_DIGEST" in
                 sha256:*) staging_digest_hex="${STAGING_WEB_DIGEST#sha256:}" ;;
                 *)
@@ -127,6 +171,57 @@ jobs:
           )"
           test -n "$ci_run_url"
           echo "Release commit passed CI: $ci_run_url"
+
+          if [ "$reuse_requested" = true ]; then
+            source_attempt_response="$RUNNER_TEMP/openvac-reuse-run-attempt.json"
+            curl --fail-with-body --silent --show-error \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "X-GitHub-Api-Version: 2026-03-10" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$REUSE_RUN_ID/attempts/$REUSE_RUN_ATTEMPT" \
+              --output "$source_attempt_response"
+            jq --exit-status \
+              --arg sha "$RELEASE_SHA" \
+              --arg default_branch "$DEFAULT_BRANCH" \
+              --argjson attempt "$REUSE_RUN_ATTEMPT" '
+                .head_sha == $sha and
+                .head_branch == $default_branch and
+                .event == "workflow_dispatch" and
+                .path == ".github/workflows/release.yml" and
+                .run_attempt == $attempt and
+                .status == "completed" and
+                .conclusion == "success"
+              ' "$source_attempt_response" >/dev/null || {
+                echo "Archive reuse requires an exact successful release workflow attempt for commit_sha." >&2
+                exit 1
+              }
+
+            source_artifact_name="openvac-web-release-$REUSE_RUN_ID-$REUSE_RUN_ATTEMPT"
+            source_artifacts_response="$RUNNER_TEMP/openvac-reuse-artifacts.json"
+            curl --fail-with-body --silent --show-error \
+              --get \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "X-GitHub-Api-Version: 2026-03-10" \
+              --data-urlencode "name=$source_artifact_name" \
+              --data-urlencode "per_page=100" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts" \
+              --output "$source_artifacts_response"
+            jq --exit-status \
+              --arg name "$source_artifact_name" \
+              --argjson run_id "$REUSE_RUN_ID" '
+                any(
+                  .artifacts[]?;
+                  .name == $name and
+                  .expired == false and
+                  .workflow_run.id == $run_id
+                )
+              ' "$source_artifacts_response" >/dev/null || {
+                echo "The exact source deployment archive is missing or expired." >&2
+                exit 1
+              }
+            echo "Accepted immutable archive from release run $REUSE_RUN_ID attempt $REUSE_RUN_ATTEMPT."
+          fi
 
           if [ "$TARGET" = production ]; then
             environment_response="$RUNNER_TEMP/openvac-production-environment.json"
@@ -244,6 +339,7 @@ jobs:
     needs: ci_gate
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       packages: write
     outputs:
@@ -253,20 +349,21 @@ jobs:
         with:
           ref: ${{ inputs.commit_sha }}
           persist-credentials: false
-      - if: inputs.target == 'staging'
+      - if: inputs.target == 'staging' && inputs.reuse_run_id == ''
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - if: inputs.target == 'production' || inputs.reuse_run_id == ''
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - if: inputs.target == 'staging'
+      - if: inputs.target == 'staging' && inputs.reuse_run_id == ''
         id: web_meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ghcr.io/${{ github.repository }}
           tags: type=raw,value=sha-${{ inputs.commit_sha }}
-      - if: inputs.target == 'staging'
+      - if: inputs.target == 'staging' && inputs.reuse_run_id == ''
         id: web_build
         name: Build and publish the production-target web image once
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
@@ -288,10 +385,17 @@ jobs:
           TARGET: ${{ inputs.target }}
           BUILT_WEB_DIGEST: ${{ steps.web_build.outputs.digest }}
           STAGING_WEB_DIGEST: ${{ inputs.staging_web_digest }}
+          REUSE_RUN_ID: ${{ inputs.reuse_run_id }}
         run: |
           set -Eeuo pipefail
           case "$TARGET" in
-            staging) selected_digest="$BUILT_WEB_DIGEST" ;;
+            staging)
+              if [ -n "$REUSE_RUN_ID" ]; then
+                selected_digest="$STAGING_WEB_DIGEST"
+              else
+                selected_digest="$BUILT_WEB_DIGEST"
+              fi
+              ;;
             production) selected_digest="$STAGING_WEB_DIGEST" ;;
             *)
               echo "target must be staging or production." >&2
@@ -317,7 +421,8 @@ jobs:
           fi
           echo "digest=$selected_digest" >>"$GITHUB_OUTPUT"
           echo "digest_hex=$digest_hex" >>"$GITHUB_OUTPUT"
-      - name: Package the exact registry digest without rebuilding
+      - if: inputs.reuse_run_id == ''
+        name: Package the exact registry digest without rebuilding
         env:
           RELEASE_SHA: ${{ inputs.commit_sha }}
           WEB_IMAGE_DIGEST: ${{ steps.select_image.outputs.digest }}
@@ -358,13 +463,48 @@ jobs:
             "$archive_tag"
           printf '%s\n' "$WEB_IMAGE_DIGEST" \
             >"$RUNNER_TEMP/openvac-web-release.digest"
-      - name: Compress and checksum the web deployment archive
+      - if: inputs.reuse_run_id == ''
+        name: Compress and checksum the web deployment archive
         run: |
           set -Eeuo pipefail
           zstd --threads=0 --rm "$RUNNER_TEMP/openvac-web-release.tar"
           cd "$RUNNER_TEMP"
           sha256sum openvac-web-release.tar.zst > openvac-web-release.tar.zst.sha256
           sha256sum openvac-web-release.digest > openvac-web-release.digest.sha256
+      - if: inputs.target == 'staging' && inputs.reuse_run_id != ''
+        name: Download the exact successful deployment archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: openvac-web-release-${{ inputs.reuse_run_id }}-${{ inputs.reuse_run_attempt }}
+          path: ${{ runner.temp }}/openvac-web-release-reused
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.reuse_run_id }}
+      - if: inputs.target == 'staging' && inputs.reuse_run_id != ''
+        name: Verify and normalize the reused deployment archive
+        env:
+          WEB_IMAGE_DIGEST: ${{ steps.select_image.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+          source_dir="$RUNNER_TEMP/openvac-web-release-reused"
+          test -f "$source_dir/openvac-web-release.tar.zst" && test ! -L "$source_dir/openvac-web-release.tar.zst"
+          test -f "$source_dir/openvac-web-release.tar.zst.sha256" && test ! -L "$source_dir/openvac-web-release.tar.zst.sha256"
+          test -f "$source_dir/openvac-web-release.digest" && test ! -L "$source_dir/openvac-web-release.digest"
+          test -f "$source_dir/openvac-web-release.digest.sha256" && test ! -L "$source_dir/openvac-web-release.digest.sha256"
+          (
+            cd "$source_dir"
+            sha256sum --check openvac-web-release.tar.zst.sha256
+            sha256sum --check openvac-web-release.digest.sha256
+          )
+          reused_digest="$(cat "$source_dir/openvac-web-release.digest")"
+          if [ "$reused_digest" != "$WEB_IMAGE_DIGEST" ]; then
+            echo "Reused deployment archive digest does not match staging_web_digest." >&2
+            exit 1
+          fi
+          cp "$source_dir/openvac-web-release.tar.zst" "$RUNNER_TEMP/openvac-web-release.tar.zst"
+          cp "$source_dir/openvac-web-release.tar.zst.sha256" "$RUNNER_TEMP/openvac-web-release.tar.zst.sha256"
+          cp "$source_dir/openvac-web-release.digest" "$RUNNER_TEMP/openvac-web-release.digest"
+          cp "$source_dir/openvac-web-release.digest.sha256" "$RUNNER_TEMP/openvac-web-release.digest.sha256"
       - name: Upload the same-run web deployment archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
