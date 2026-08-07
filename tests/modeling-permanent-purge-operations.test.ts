@@ -178,6 +178,8 @@ describe("legacy modeling permanent purge operations", () => {
     expect(purge).toContain(
       "target-specific purge requires a dedicated environment host"
     );
+    expect(inventory).toContain('"$other_deploy_dir/current-release"');
+    expect(purge).toContain('"$other_deploy_dir/current-release"');
   });
 
   it("does not overstate the shared OSS prefix in staging receipts", () => {

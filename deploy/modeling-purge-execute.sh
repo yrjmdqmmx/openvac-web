@@ -29,7 +29,7 @@ case "$target" in
     ;;
   *) fail "target must be production or staging" ;;
 esac
-[[ ! -e "$other_deploy_dir" && ! -L "$other_deploy_dir" ]] ||
+[[ ! -e "$other_deploy_dir/current-release" && ! -L "$other_deploy_dir/current-release" ]] ||
   fail "target-specific purge requires a dedicated environment host"
 expected_inventory_sha256="$2"
 pre_migration_inventory_json="$3"
