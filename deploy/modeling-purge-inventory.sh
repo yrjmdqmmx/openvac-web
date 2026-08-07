@@ -8,12 +8,30 @@ fail() {
   exit 64
 }
 
-if [[ "$#" -lt 1 || "$#" -gt 2 ]]; then
-  fail "usage: modeling-purge-inventory.sh production [private-state-directory]"
+if [[ "$#" -ne 6 ]]; then
+  fail "usage: modeling-purge-inventory.sh production PRIVATE_STATE_DIR pre-migration|post-migration R1_SHA R2_SHA DEPLOYMENT_IMAGE_DIGEST_OR_EMPTY"
 fi
 [[ "$1" == "production" ]] || fail "only the production purge scope is supported"
 
-requested_state_dir="${2:-}"
+requested_state_dir="$2"
+inventory_phase="$3"
+r1_sha="$4"
+r2_sha="$5"
+deployment_image_digest="$6"
+case "$inventory_phase" in
+  pre-migration | post-migration) ;;
+  *) fail "inventory phase must be pre-migration or post-migration" ;;
+esac
+[[ "$r1_sha" =~ ^[0-9a-f]{40}$ ]] || fail "invalid R1 commit SHA"
+[[ "$r2_sha" =~ ^[0-9a-f]{40}$ ]] || fail "invalid R2 commit SHA"
+[[ "$r1_sha" != "$r2_sha" ]] || fail "R1 and R2 commit SHAs must differ"
+if [[ "$inventory_phase" == "pre-migration" ]]; then
+  [[ -z "$deployment_image_digest" ]] || fail "pre-migration inventory must not claim an R2 image digest"
+else
+  [[ "$deployment_image_digest" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    fail "post-migration inventory requires the exact R2 image digest"
+fi
+
 cleanup_state=false
 if [[ -n "$requested_state_dir" ]]; then
   [[ -d "$requested_state_dir" && ! -L "$requested_state_dir" ]] ||
@@ -32,10 +50,53 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-for command_name in docker sha256sum sed grep awk sort wc stat find ossutil; do
+for command_name in docker sha256sum sed grep awk sort wc stat find ossutil python3; do
   command -v "$command_name" >/dev/null 2>&1 ||
     fail "required command is unavailable: $command_name"
 done
+
+release_evidence_file="$state_dir/release-evidence.txt"
+: >"$release_evidence_file"
+verify_active_release() {
+  local deploy_dir="$1"
+  local expected_sha="$2"
+  local expected_digest="$3"
+  local current_release_file active_sha release_dir receipt_file digest_file
+  current_release_file="$deploy_dir/current-release"
+  [[ -f "$current_release_file" && ! -L "$current_release_file" ]] ||
+    fail "current-release is unavailable for $deploy_dir"
+  IFS= read -r active_sha <"$current_release_file"
+  [[ "$active_sha" == "$expected_sha" ]] || fail "unexpected active release for $deploy_dir"
+  release_dir="$deploy_dir/releases/$active_sha"
+  [[ -d "$release_dir" && ! -L "$release_dir" ]] || fail "active release directory is unavailable"
+  receipt_file="$release_dir/deployment-receipt"
+  [[ -f "$receipt_file" && ! -L "$receipt_file" ]] || fail "active deployment receipt is unavailable"
+  [[ "$(wc -l <"$receipt_file" | tr -d '[:space:]')" == "5" ]] || fail "active deployment receipt is malformed"
+  [[ "$(sed -n '1p' "$receipt_file")" == "release=$active_sha" ]] || fail "deployment receipt SHA mismatch"
+  [[ "$(sed -n '4p' "$receipt_file")" == "status=healthy" ]] || fail "active deployment receipt is not healthy"
+  if [[ -n "$expected_digest" ]]; then
+    digest_file="$release_dir/WEB_IMAGE_DIGEST"
+    [[ -f "$digest_file" && ! -L "$digest_file" ]] || fail "active image digest file is unavailable"
+    [[ "$(sed -n '1p' "$digest_file")" == "$expected_digest" ]] || fail "active image digest mismatch"
+  fi
+  printf '%s\t%s\t%s\t%s\n' \
+    "$deploy_dir" "$active_sha" "$(sed -n '3p' "$receipt_file")" \
+    "$(sha256sum "$receipt_file" | awk '{print $1}')" >>"$release_evidence_file"
+}
+
+rollback_rehearsal=not-applicable
+if [[ "$inventory_phase" == "pre-migration" ]]; then
+  verify_active_release /opt/openvac "$r1_sha" ""
+  verify_active_release /opt/openvac-staging "$r1_sha" ""
+  production_rehearsal="$(awk -F '\t' '$1 == "/opt/openvac" { print $3 }' "$release_evidence_file")"
+  [[ "$production_rehearsal" == "rollback_rehearsal=passed" ]] ||
+    fail "production R1 deployment receipt does not prove the rollback rehearsal passed"
+  rollback_rehearsal=passed
+else
+  verify_active_release /opt/openvac "$r2_sha" "$deployment_image_digest"
+  verify_active_release /opt/openvac-staging "$r2_sha" "$deployment_image_digest"
+fi
+sort -u -o "$release_evidence_file" "$release_evidence_file"
 
 oss_bucket="openvac-modeling-hz-20260802"
 modeling_prefix="modeling/"
@@ -58,6 +119,48 @@ set +a
   fail "OSS backup bucket differs from the approved bucket"
 [[ "${OSS_BACKUP_PREFIX%/}" == "$backup_prefix" ]] ||
   fail "OSS backup prefix differs from the approved prefix"
+
+versioning_output="$(mktemp "$state_dir/oss-versioning.XXXXXX")"
+bucket_versioning=""
+if NO_COLOR=1 ossutil api get-bucket-versioning \
+  --bucket "$oss_bucket" --output-format json >"$versioning_output" 2>/dev/null; then
+  bucket_versioning="$(python3 - "$versioning_output" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+def find_status(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key.lower() == "status" and isinstance(child, str):
+                return child
+            found = find_status(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = find_status(child)
+            if found:
+                return found
+    return ""
+
+print(find_status(payload) or "Null")
+PY
+)"
+else
+  NO_COLOR=1 ossutil bucket-versioning --method get "oss://$oss_bucket" >"$versioning_output"
+  bucket_versioning="$(sed -n 's/^bucket versioning status:\([A-Za-z]*\).*$/\1/p' "$versioning_output" | tail -n 1)"
+fi
+case "$bucket_versioning" in
+  Null | Disabled | disabled) bucket_versioning=unversioned ;;
+  Enabled | enabled | Suspended | suspended)
+    fail "approved OSS bucket is versioned; all-version deletion requires a separate reviewed procedure"
+    ;;
+  *) fail "could not prove that the approved OSS bucket is unversioned" ;;
+esac
+rm -f -- "$versioning_output"
 
 containers_file="$state_dir/containers.tsv"
 images_file="$state_dir/images.txt"
@@ -187,7 +290,9 @@ list_oss_prefix() {
   summary_count="$(sed -n 's/^.*Object Number is:[[:space:]]*\([0-9][0-9]*\).*$/\1/p' "$listing" | tail -n 1)"
   extracted_count="$(wc -l <"$destination" | tr -d '[:space:]')"
   [[ "$extracted_count" =~ ^[0-9]+$ ]] || fail "invalid OSS object count"
-  if [[ -n "$summary_count" && "$summary_count" != "$extracted_count" ]]; then
+  [[ "$summary_count" =~ ^[0-9]+$ ]] ||
+    fail "ossutil output did not contain the required object-count summary"
+  if [[ "$summary_count" != "$extracted_count" ]]; then
     fail "ossutil summary count does not match the safely parsed object list"
   fi
   rm -f -- "$listing"
@@ -264,6 +369,13 @@ oss_backup_object_count="$(count_lines "$oss_backups_file")"
 canonical="$state_dir/canonical-inventory.txt"
 {
   echo 'schema=modeling-purge-inventory-v1'
+  printf 'phase=%s\n' "$inventory_phase"
+  printf 'r1_sha=%s\n' "$r1_sha"
+  printf 'r2_sha=%s\n' "$r2_sha"
+  printf 'deployment_image_digest=%s\n' "$deployment_image_digest"
+  printf 'rollback_rehearsal=%s\n' "$rollback_rehearsal"
+  printf 'bucket_versioning=%s\n' "$bucket_versioning"
+  printf 'release_evidence=%s\n' "$(hash_file "$release_evidence_file")"
   printf 'database_modeling_tables=%s\n' "$database_modeling_tables"
   printf 'database_modeling_enums=%s\n' "$database_modeling_enums"
   printf 'database_modeling_cards=%s\n' "$database_modeling_cards"
@@ -277,7 +389,11 @@ canonical="$state_dir/canonical-inventory.txt"
 } >"$canonical"
 inventory_sha256="$(hash_file "$canonical")"
 
-printf '{"schema":"modeling-purge-inventory-v1","inventory_sha256":"%s",' "$inventory_sha256"
+printf '{"schema":"modeling-purge-inventory-v1","phase":"%s","inventory_sha256":"%s",' \
+  "$inventory_phase" "$inventory_sha256"
+printf '"release_evidence":{"r1_sha":"%s","r2_sha":"%s","deployment_image_digest":"%s","rollback_rehearsal":"%s"},' \
+  "$r1_sha" "$r2_sha" "$deployment_image_digest" "$rollback_rehearsal"
+printf '"oss_bucket_versioning":"%s",' "$bucket_versioning"
 printf '"database":{"modeling_tables":%s,"modeling_enums":%s,"modeling_cards":%s},' \
   "$database_modeling_tables" "$database_modeling_enums" "$database_modeling_cards"
 printf '"counts":{"containers":%s,"images":%s,"env_keys":%s,"paths":%s,' \

@@ -8,27 +8,48 @@ fail() {
   exit 64
 }
 
-if [[ "$#" -ne 9 ]]; then
-  fail "usage: modeling-purge-execute.sh production EXPECTED_INVENTORY_SHA256 PRE_MIGRATION_INVENTORY_SHA256 PRE_TABLES PRE_ENUMS PRE_CARDS R1_SHA R2_SHA sha256:IMAGE_DIGEST"
+if [[ "$#" -ne 6 ]]; then
+  fail "usage: modeling-purge-execute.sh production EXPECTED_POST_INVENTORY_SHA256 PRE_MIGRATION_INVENTORY_JSON R1_SHA R2_SHA sha256:IMAGE_DIGEST"
 fi
 [[ "$1" == "production" ]] || fail "only the production purge scope is supported"
 expected_inventory_sha256="$2"
-pre_migration_inventory_sha256="$3"
-pre_migration_database_tables="$4"
-pre_migration_database_enums="$5"
-pre_migration_database_cards="$6"
-r1_sha="$7"
-r2_sha="$8"
-deployment_image_digest="$9"
+pre_migration_inventory_json="$3"
+r1_sha="$4"
+r2_sha="$5"
+deployment_image_digest="$6"
 [[ "$expected_inventory_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "invalid inventory SHA-256"
-[[ "$pre_migration_inventory_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "invalid pre-migration inventory SHA-256"
-[[ "$pre_migration_database_tables" =~ ^[0-9]+$ ]] || fail "invalid pre-migration table count"
-[[ "$pre_migration_database_enums" =~ ^[0-9]+$ ]] || fail "invalid pre-migration enum count"
-[[ "$pre_migration_database_cards" =~ ^[0-9]+$ ]] || fail "invalid pre-migration message-card count"
 [[ "$r1_sha" =~ ^[0-9a-f]{40}$ ]] || fail "invalid R1 commit SHA"
 [[ "$r2_sha" =~ ^[0-9a-f]{40}$ ]] || fail "invalid R2 commit SHA"
 [[ "$r1_sha" != "$r2_sha" ]] || fail "R1 and R2 commit SHAs must differ"
 [[ "$deployment_image_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "invalid deployment image digest"
+[[ -f "$pre_migration_inventory_json" && ! -L "$pre_migration_inventory_json" ]] ||
+  fail "pre-migration inventory artifact must be a regular file"
+
+pre_json_string="$(cat "$pre_migration_inventory_json")"
+pre_json_text() {
+  local key="$1"
+  printf '%s\n' "$pre_json_string" | sed -n "s/^.*\"$key\":\"\([^\"]*\)\".*$/\1/p"
+}
+pre_json_number() {
+  local key="$1"
+  local value
+  value="$(printf '%s\n' "$pre_json_string" | sed -n "s/^.*\"$key\":\([0-9][0-9]*\).*$/\1/p")"
+  [[ "$value" =~ ^[0-9]+$ ]] || fail "pre-migration inventory is missing numeric field: $key"
+  printf '%s\n' "$value"
+}
+[[ "$(pre_json_text phase)" == "pre-migration" ]] || fail "artifact is not a pre-migration inventory"
+pre_migration_inventory_sha256="$(pre_json_text inventory_sha256)"
+[[ "$pre_migration_inventory_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "pre-migration inventory SHA-256 is invalid"
+[[ "$(pre_json_text r1_sha)" == "$r1_sha" ]] || fail "pre-migration inventory R1 SHA mismatch"
+[[ "$(pre_json_text r2_sha)" == "$r2_sha" ]] || fail "pre-migration inventory R2 SHA mismatch"
+[[ "$(pre_json_text rollback_rehearsal)" == "passed" ]] ||
+  fail "pre-migration inventory does not prove the R1 rollback rehearsal"
+[[ "$(pre_json_text oss_bucket_versioning)" == "unversioned" ]] ||
+  fail "pre-migration inventory does not prove the OSS bucket is unversioned"
+pre_migration_database_tables="$(pre_json_number modeling_tables)"
+pre_migration_database_enums="$(pre_json_number modeling_enums)"
+pre_migration_database_cards="$(pre_json_number modeling_cards)"
+pre_migration_artifact_sha256="$(sha256sum "$pre_migration_inventory_json" | awk '{print $1}')"
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 for helper in \
@@ -44,7 +65,34 @@ for command_name in docker ossutil curl awk sed sort sha256sum stat find cmp mkt
   command -v "$command_name" >/dev/null 2>&1 || fail "required command is unavailable: $command_name"
 done
 
+state_dir=""
+post_resource_state_dir=""
+pre_backup_delete_state_dir=""
+final_state_dir=""
+owned_activation_locks=()
+cleanup() {
+  for cleanup_dir in "$state_dir" "$post_resource_state_dir" "$pre_backup_delete_state_dir" "$final_state_dir"; do
+    [[ -z "$cleanup_dir" || ! -d "$cleanup_dir" ]] || rm -rf -- "$cleanup_dir"
+  done
+  for ((lock_index = ${#owned_activation_locks[@]} - 1; lock_index >= 0; lock_index -= 1)); do
+    lock_dir="${owned_activation_locks[$lock_index]}"
+    rm -f -- "$lock_dir/owner"
+    rmdir "$lock_dir" >/dev/null 2>&1 || true
+  done
+}
+trap cleanup EXIT HUP INT TERM
+
 for release_target in /opt/openvac /opt/openvac-staging; do
+  [[ -d "$release_target" && ! -L "$release_target" ]] ||
+    fail "deployment directory is unavailable: $release_target"
+  activation_lock="$release_target/.activation-lock"
+  if ! mkdir -m 700 -- "$activation_lock"; then
+    fail "a deployment activation or another purge is already running for $release_target"
+  fi
+  printf 'modeling-purge:%s:%s\n' "$r2_sha" "$$" >"$activation_lock/owner"
+  chmod 600 "$activation_lock/owner"
+  owned_activation_locks+=("$activation_lock")
+
   current_release_file="$release_target/current-release"
   [[ -f "$current_release_file" && ! -L "$current_release_file" ]] ||
     fail "current-release is unavailable for $release_target"
@@ -64,12 +112,9 @@ post_resource_state_dir="$(mktemp -d)"
 pre_backup_delete_state_dir="$(mktemp -d)"
 final_state_dir="$(mktemp -d)"
 chmod 700 "$state_dir" "$post_resource_state_dir" "$pre_backup_delete_state_dir" "$final_state_dir"
-cleanup() {
-  rm -rf -- "$state_dir" "$post_resource_state_dir" "$pre_backup_delete_state_dir" "$final_state_dir"
-}
-trap cleanup EXIT HUP INT TERM
 
-inventory_json="$(bash "$script_dir/modeling-purge-inventory.sh" production "$state_dir")"
+inventory_json="$(bash "$script_dir/modeling-purge-inventory.sh" production "$state_dir" \
+  post-migration "$r1_sha" "$r2_sha" "$deployment_image_digest")"
 json_number() {
   local key="$1"
   local value
@@ -102,9 +147,7 @@ while IFS=$'\t' read -r container_id container_name project_name service_name im
   [[ -n "$container_id" ]] || continue
   [[ "$container_id" =~ ^[0-9a-f]{64}$ ]] || fail "private inventory contains an invalid container ID"
   case "$project_name:$service_name" in
-    openvac:modeling-service | openvac:modeling-worker |
-    openvac-production:modeling-service | openvac-production:modeling-worker |
-    openvac-staging:modeling-service | openvac-staging:modeling-worker) ;;
+    openvac:modeling-service|openvac:modeling-worker|openvac-production:modeling-service|openvac-production:modeling-worker|openvac-staging:modeling-service|openvac-staging:modeling-worker) ;;
     *) fail "private inventory contains an unapproved container target" ;;
   esac
   current_name="$(docker container inspect --format '{{.Name}}' "$container_id")"
@@ -129,7 +172,7 @@ done <"$state_dir/images.txt"
 
 remove_modeling_env_keys() {
   local env_file="$1"
-  local temporary_env owner group mode
+  local temporary_env current_keys owner group mode
   case "$env_file" in
     /opt/openvac/.env | /opt/openvac-staging/.env) ;;
     *) fail "unapproved environment file" ;;
@@ -139,6 +182,12 @@ remove_modeling_env_keys() {
   group="$(stat -c '%g' "$env_file")"
   mode="$(stat -c '%a' "$env_file")"
   [[ "$mode" == "600" ]] || fail "$env_file must have mode 0600"
+  current_keys="$(mktemp "$state_dir/current-env-keys.XXXXXX")"
+  awk -F= -v file="$env_file" \
+    '$1 ~ /^MODELING_[A-Z0-9_]*$/ { print file "\t" $1 }' "$env_file" | sort -u >"$current_keys"
+  awk -F '\t' -v file="$env_file" '$1 == file' "$state_dir/env-keys.tsv" >"$current_keys.approved"
+  cmp -s "$current_keys" "$current_keys.approved" ||
+    fail "modeling environment keys changed after inventory for $env_file"
   temporary_env="$(mktemp "${env_file}.modeling-purge.XXXXXX")"
   awk '!/^MODELING_[A-Z0-9_]*=/' "$env_file" >"$temporary_env"
   chown "$owner:$group" "$temporary_env"
@@ -151,11 +200,7 @@ remove_modeling_env_keys /opt/openvac-staging/.env
 while IFS=$'\t' read -r approved_path path_type path_size; do
   [[ -n "$approved_path" ]] || continue
   case "$approved_path" in
-    /opt/openvac-modeling | /opt/openvac-staging-modeling |
-    /opt/openvac/modeling | /opt/openvac/modeling-service | /opt/openvac/modeling-worker |
-    /opt/openvac-staging/modeling | /opt/openvac-staging/modeling-service | /opt/openvac-staging/modeling-worker |
-    /var/lib/openvac-modeling | /var/cache/openvac-modeling | /var/log/openvac-modeling |
-    /tmp/openvac-modeling) ;;
+    /opt/openvac-modeling|/opt/openvac-staging-modeling|/opt/openvac/modeling|/opt/openvac/modeling-service|/opt/openvac/modeling-worker|/opt/openvac-staging/modeling|/opt/openvac-staging/modeling-service|/opt/openvac-staging/modeling-worker|/var/lib/openvac-modeling|/var/cache/openvac-modeling|/var/log/openvac-modeling|/tmp/openvac-modeling) ;;
     *) fail "private inventory contains an unapproved filesystem target" ;;
   esac
   [[ -e "$approved_path" && ! -L "$approved_path" ]] ||
@@ -175,9 +220,17 @@ set -a
 source "$backup_env"
 set +a
 [[ "$OSS_BACKUP_BUCKET" == "$oss_bucket" ]] || fail "backup bucket changed after inventory"
-ossutil rm "oss://$oss_bucket/$modeling_prefix" -r -f >/dev/null
+while IFS= read -r modeling_object; do
+  [[ -n "$modeling_object" ]] || continue
+  case "$modeling_object" in
+    "oss://$oss_bucket/$modeling_prefix"*) ;;
+    *) fail "private inventory contains an unapproved OSS modeling target" ;;
+  esac
+  ossutil rm "$modeling_object" -f >/dev/null
+done <"$state_dir/oss-modeling.txt"
 
-post_resource_json="$(bash "$script_dir/modeling-purge-inventory.sh" production "$post_resource_state_dir")"
+post_resource_json="$(bash "$script_dir/modeling-purge-inventory.sh" production "$post_resource_state_dir" \
+  post-migration "$r1_sha" "$r2_sha" "$deployment_image_digest")"
 post_number() {
   local key="$1"
   local value
@@ -190,11 +243,15 @@ for zero_key in containers images env_keys paths oss_modeling_objects modeling_t
 done
 
 clean_production_archive="$(bash "$script_dir/backup.sh" production)"
-clean_production_uri="$(bash "$script_dir/upload-backup-oss.sh" production "$clean_production_archive")"
+clean_production_uri="$(bash "$script_dir/upload-backup-oss.sh" production "$clean_production_archive" | tail -n 1)"
+[[ "$clean_production_uri" == "oss://$oss_bucket/openvac/backups/production/${clean_production_archive##*/}" ]] ||
+  fail "production clean backup upload returned an unexpected object URI"
 bash "$script_dir/verify-clean-restore.sh" production "$clean_production_archive" >/dev/null
 
 clean_staging_archive="$(bash "$script_dir/backup.sh" staging)"
-clean_staging_uri="$(bash "$script_dir/upload-backup-oss.sh" staging "$clean_staging_archive")"
+clean_staging_uri="$(bash "$script_dir/upload-backup-oss.sh" staging "$clean_staging_archive" | tail -n 1)"
+[[ "$clean_staging_uri" == "oss://$oss_bucket/openvac/backups/staging/${clean_staging_archive##*/}" ]] ||
+  fail "staging clean backup upload returned an unexpected object URI"
 bash "$script_dir/verify-clean-restore.sh" staging "$clean_staging_archive" >/dev/null
 
 for health_url in https://openvac.cn/api/health https://staging-openvac.openvac.cn/api/health; do
@@ -212,7 +269,8 @@ preserved_production_checksum_uri="$clean_production_uri.sha256"
 preserved_staging_uri="$clean_staging_uri"
 preserved_staging_checksum_uri="$clean_staging_uri.sha256"
 
-bash "$script_dir/modeling-purge-inventory.sh" production "$pre_backup_delete_state_dir" >/dev/null
+bash "$script_dir/modeling-purge-inventory.sh" production "$pre_backup_delete_state_dir" \
+  post-migration "$r1_sha" "$r2_sha" "$deployment_image_digest" >/dev/null
 expected_local="$pre_backup_delete_state_dir/expected-local-backups.txt"
 expected_oss="$pre_backup_delete_state_dir/expected-oss-backups.txt"
 {
@@ -235,8 +293,7 @@ delete_old_backups() {
   while IFS= read -r old_local; do
     [[ -n "$old_local" ]] || continue
     case "$old_local" in
-      /opt/openvac/backups/openvac-*.sql.gz | /opt/openvac/backups/openvac-*.sql.gz.sha256 |
-      /opt/openvac-staging/backups/openvac-*.sql.gz | /opt/openvac-staging/backups/openvac-*.sql.gz.sha256) ;;
+      /opt/openvac/backups/openvac-*.sql.gz|/opt/openvac/backups/openvac-*.sql.gz.sha256|/opt/openvac-staging/backups/openvac-*.sql.gz|/opt/openvac-staging/backups/openvac-*.sql.gz.sha256) ;;
       *) fail "unapproved local backup target" ;;
     esac
     [[ "$old_local" != "$preserved_archive" && "$old_local" != "$preserved_checksum" &&
@@ -249,8 +306,7 @@ delete_old_backups() {
   while IFS= read -r old_object; do
     [[ -n "$old_object" ]] || continue
     case "$old_object" in
-      "oss://$oss_bucket/openvac/backups/production/"* |
-      "oss://$oss_bucket/openvac/backups/staging/"*) ;;
+      "oss://$oss_bucket/openvac/backups/production/"*|"oss://$oss_bucket/openvac/backups/staging/"*) ;;
       *) fail "unapproved OSS backup target" ;;
     esac
     [[ "$old_object" != "$preserved_production_uri" &&
@@ -263,7 +319,8 @@ delete_old_backups() {
 }
 delete_old_backups
 
-final_json="$(bash "$script_dir/modeling-purge-inventory.sh" production "$final_state_dir")"
+final_json="$(bash "$script_dir/modeling-purge-inventory.sh" production "$final_state_dir" \
+  post-migration "$r1_sha" "$r2_sha" "$deployment_image_digest")"
 final_number() {
   local key="$1"
   local value
@@ -287,9 +344,9 @@ printf '"before_counts":{"database_tables":%s,"database_enums":%s,"message_cards
   "$before_containers" "$before_images" "$before_env_keys" "$before_paths" \
   "$before_oss_modeling" "$before_local_backup_files" "$before_oss_backup_objects" >>"$temporary_receipt"
 printf '"after_counts":{"database_tables":0,"database_enums":0,"message_cards":0,"containers":0,"images":0,"environment_keys":0,"filesystem_paths":0,"oss_modeling_objects":0,"legacy_local_backup_files":0,"legacy_oss_backup_objects":0},' >>"$temporary_receipt"
-printf '"r1_sha":"%s","r2_sha":"%s","deployment_image_digest":"%s","pre_migration_inventory_sha256":"%s","inventory_sha256":"%s","completed_at":"%s","status":"success"}\n' \
+printf '"r1_sha":"%s","r2_sha":"%s","deployment_image_digest":"%s","pre_migration_inventory_sha256":"%s","pre_migration_artifact_sha256":"%s","inventory_sha256":"%s","completed_at":"%s","status":"success"}\n' \
   "$r1_sha" "$r2_sha" "$deployment_image_digest" "$pre_migration_inventory_sha256" \
-  "$expected_inventory_sha256" "$completed_at" >>"$temporary_receipt"
+  "$pre_migration_artifact_sha256" "$expected_inventory_sha256" "$completed_at" >>"$temporary_receipt"
 chmod 600 "$temporary_receipt"
 mv -- "$temporary_receipt" "$receipt"
 

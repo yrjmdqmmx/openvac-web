@@ -10,28 +10,25 @@ on:
         options:
           - inventory
           - purge
+      inventory_phase:
+        description: Inventory evidence phase; purge requires post-migration
+        required: true
+        type: choice
+        options:
+          - pre-migration
+          - post-migration
       expected_inventory_sha256:
         description: Required for purge; copy from the reviewed inventory artifact
         required: false
         default: ""
         type: string
-      pre_migration_inventory_sha256:
-        description: Required for purge; reviewed inventory captured before R2 migration
+      pre_migration_inventory_run_id:
+        description: Required for purge; successful pre-migration inventory workflow run ID
         required: false
         default: ""
         type: string
-      pre_migration_database_tables:
-        description: Required for purge; pre-R2 modeling table count
-        required: false
-        default: ""
-        type: string
-      pre_migration_database_enums:
-        description: Required for purge; pre-R2 modeling enum count
-        required: false
-        default: ""
-        type: string
-      pre_migration_database_cards:
-        description: Required for purge; pre-R2 message modelingCards count
+      pre_migration_inventory_run_attempt:
+        description: Required for purge; pre-migration inventory workflow run attempt
         required: false
         default: ""
         type: string
@@ -44,8 +41,9 @@ on:
         required: true
         type: string
       deployment_image_digest:
-        description: Exact staging-proven production image digest (sha256:...)
-        required: true
+        description: Required after migration; exact staging-proven production image digest (sha256:...)
+        required: false
+        default: ""
         type: string
 
 concurrency:
@@ -54,6 +52,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   operate:
@@ -70,30 +69,77 @@ jobs:
       - name: Validate immutable operation inputs
         env:
           OPERATION: ${{ inputs.operation }}
+          INVENTORY_PHASE: ${{ inputs.inventory_phase }}
           EXPECTED_INVENTORY_SHA256: ${{ inputs.expected_inventory_sha256 }}
-          PRE_MIGRATION_INVENTORY_SHA256: ${{ inputs.pre_migration_inventory_sha256 }}
-          PRE_MIGRATION_DATABASE_TABLES: ${{ inputs.pre_migration_database_tables }}
-          PRE_MIGRATION_DATABASE_ENUMS: ${{ inputs.pre_migration_database_enums }}
-          PRE_MIGRATION_DATABASE_CARDS: ${{ inputs.pre_migration_database_cards }}
+          PRE_MIGRATION_INVENTORY_RUN_ID: ${{ inputs.pre_migration_inventory_run_id }}
+          PRE_MIGRATION_INVENTORY_RUN_ATTEMPT: ${{ inputs.pre_migration_inventory_run_attempt }}
           R1_COMMIT_SHA: ${{ inputs.r1_commit_sha }}
           R2_COMMIT_SHA: ${{ inputs.r2_commit_sha }}
           DEPLOYMENT_IMAGE_DIGEST: ${{ inputs.deployment_image_digest }}
         run: |
           set -Eeuo pipefail
           case "$OPERATION" in inventory|purge) ;; *) exit 64 ;; esac
+          case "$INVENTORY_PHASE" in pre-migration|post-migration) ;; *) exit 64 ;; esac
           [[ "$R1_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$R2_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$R1_COMMIT_SHA" != "$R2_COMMIT_SHA"
-          [[ "$DEPLOYMENT_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           if [ "$OPERATION" = inventory ]; then
             test -z "$EXPECTED_INVENTORY_SHA256"
+            test -z "$PRE_MIGRATION_INVENTORY_RUN_ID"
+            test -z "$PRE_MIGRATION_INVENTORY_RUN_ATTEMPT"
+            if [ "$INVENTORY_PHASE" = pre-migration ]; then
+              test -z "$DEPLOYMENT_IMAGE_DIGEST"
+            else
+              [[ "$DEPLOYMENT_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+            fi
           else
+            test "$INVENTORY_PHASE" = post-migration
             [[ "$EXPECTED_INVENTORY_SHA256" =~ ^[0-9a-f]{64}$ ]]
-            [[ "$PRE_MIGRATION_INVENTORY_SHA256" =~ ^[0-9a-f]{64}$ ]]
-            [[ "$PRE_MIGRATION_DATABASE_TABLES" =~ ^[0-9]+$ ]]
-            [[ "$PRE_MIGRATION_DATABASE_ENUMS" =~ ^[0-9]+$ ]]
-            [[ "$PRE_MIGRATION_DATABASE_CARDS" =~ ^[0-9]+$ ]]
+            [[ "$PRE_MIGRATION_INVENTORY_RUN_ID" =~ ^[0-9]+$ ]]
+            [[ "$PRE_MIGRATION_INVENTORY_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+            [[ "$DEPLOYMENT_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           fi
+      - if: inputs.operation == 'purge'
+        name: Download the reviewed pre-migration inventory artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: modeling-inventory-pre-migration-${{ inputs.pre_migration_inventory_run_id }}-${{ inputs.pre_migration_inventory_run_attempt }}
+          path: ${{ runner.temp }}/pre-migration-inventory
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.pre_migration_inventory_run_id }}
+      - if: inputs.operation == 'purge'
+        name: Validate pre-migration inventory provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRE_RUN_ID: ${{ inputs.pre_migration_inventory_run_id }}
+          PRE_RUN_ATTEMPT: ${{ inputs.pre_migration_inventory_run_attempt }}
+          R1_COMMIT_SHA: ${{ inputs.r1_commit_sha }}
+          R2_COMMIT_SHA: ${{ inputs.r2_commit_sha }}
+        run: |
+          set -Eeuo pipefail
+          artifact="$RUNNER_TEMP/pre-migration-inventory/modeling-operation-result.json"
+          test -f "$artifact" && test ! -L "$artifact"
+          python3 -m json.tool "$artifact" >/dev/null
+          jq -e --arg r1 "$R1_COMMIT_SHA" --arg r2 "$R2_COMMIT_SHA" '
+            .schema == "modeling-purge-inventory-v1" and
+            .phase == "pre-migration" and
+            .release_evidence.r1_sha == $r1 and
+            .release_evidence.r2_sha == $r2 and
+            .release_evidence.deployment_image_digest == "" and
+            .release_evidence.rollback_rehearsal == "passed" and
+            .oss_bucket_versioning == "unversioned" and
+            (.inventory_sha256 | test("^[0-9a-f]{64}$")) and
+            (.database.modeling_tables | type == "number") and
+            (.database.modeling_enums | type == "number") and
+            (.database.modeling_cards | type == "number")
+          ' "$artifact" >/dev/null
+          run_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PRE_RUN_ID/attempts/$PRE_RUN_ATTEMPT")"
+          jq -e --arg sha "$R2_COMMIT_SHA" '
+            .path == ".github/workflows/modeling-permanent-purge.yml" and
+            .event == "workflow_dispatch" and
+            .conclusion == "success" and
+            .head_sha == $sha
+          ' <<<"$run_json" >/dev/null
       - name: Configure SSH
         env:
           ECS_SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
@@ -108,11 +154,8 @@ jobs:
       - name: Run approved operation on the exact production host
         env:
           OPERATION: ${{ inputs.operation }}
+          INVENTORY_PHASE: ${{ inputs.inventory_phase }}
           EXPECTED_INVENTORY_SHA256: ${{ inputs.expected_inventory_sha256 }}
-          PRE_MIGRATION_INVENTORY_SHA256: ${{ inputs.pre_migration_inventory_sha256 }}
-          PRE_MIGRATION_DATABASE_TABLES: ${{ inputs.pre_migration_database_tables }}
-          PRE_MIGRATION_DATABASE_ENUMS: ${{ inputs.pre_migration_database_enums }}
-          PRE_MIGRATION_DATABASE_CARDS: ${{ inputs.pre_migration_database_cards }}
           R1_COMMIT_SHA: ${{ inputs.r1_commit_sha }}
           R2_COMMIT_SHA: ${{ inputs.r2_commit_sha }}
           DEPLOYMENT_IMAGE_DIGEST: ${{ inputs.deployment_image_digest }}
@@ -139,47 +182,51 @@ jobs:
             deploy/restore-drill.sh \
             deploy/verify-clean-restore.sh \
             "$ssh_base:$remote_stage/"
+          if [ "$OPERATION" = purge ]; then
+            scp -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+              "$RUNNER_TEMP/pre-migration-inventory/modeling-operation-result.json" \
+              "$ssh_base:$remote_stage/pre-migration-inventory.json"
+          fi
 
           if [ "$OPERATION" = inventory ]; then
             ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
-              sh -s -- "$remote_stage" >"$result" <<'REMOTE_INVENTORY'
+              sh -s -- "$remote_stage" "$INVENTORY_PHASE" "$R1_COMMIT_SHA" \
+              "$R2_COMMIT_SHA" "$DEPLOYMENT_IMAGE_DIGEST" \
+              >"$result" <<'REMOTE_INVENTORY'
           set -eu
           remote_stage="$1"
+          inventory_phase="$2"
+          r1_sha="$3"
+          r2_sha="$4"
+          deployment_image_digest="$5"
           case "$remote_stage" in /tmp/openvac-modeling-purge-*) ;; *) exit 64 ;; esac
           if [ "$(id -u)" -eq 0 ]; then
-            exec bash "$remote_stage/modeling-purge-inventory.sh" production
+            exec bash "$remote_stage/modeling-purge-inventory.sh" production "" \
+              "$inventory_phase" "$r1_sha" "$r2_sha" "$deployment_image_digest"
           fi
-          exec sudo -n bash "$remote_stage/modeling-purge-inventory.sh" production
+          exec sudo -n bash "$remote_stage/modeling-purge-inventory.sh" production "" \
+            "$inventory_phase" "$r1_sha" "$r2_sha" "$deployment_image_digest"
           REMOTE_INVENTORY
           else
             ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
               sh -s -- "$remote_stage" "$EXPECTED_INVENTORY_SHA256" \
-              "$PRE_MIGRATION_INVENTORY_SHA256" \
-              "$PRE_MIGRATION_DATABASE_TABLES" "$PRE_MIGRATION_DATABASE_ENUMS" \
-              "$PRE_MIGRATION_DATABASE_CARDS" "$R1_COMMIT_SHA" "$R2_COMMIT_SHA" \
-              "$DEPLOYMENT_IMAGE_DIGEST" \
+              "$R1_COMMIT_SHA" "$R2_COMMIT_SHA" "$DEPLOYMENT_IMAGE_DIGEST" \
               >"$result" <<'REMOTE_PURGE'
           set -eu
           remote_stage="$1"
           expected_inventory_sha256="$2"
-          pre_migration_inventory_sha256="$3"
-          pre_migration_database_tables="$4"
-          pre_migration_database_enums="$5"
-          pre_migration_database_cards="$6"
-          r1_sha="$7"
-          r2_sha="$8"
-          deployment_image_digest="$9"
+          r1_sha="$3"
+          r2_sha="$4"
+          deployment_image_digest="$5"
           case "$remote_stage" in /tmp/openvac-modeling-purge-*) ;; *) exit 64 ;; esac
           if [ "$(id -u)" -eq 0 ]; then
             exec bash "$remote_stage/modeling-purge-execute.sh" production \
-              "$expected_inventory_sha256" "$pre_migration_inventory_sha256" \
-              "$pre_migration_database_tables" "$pre_migration_database_enums" \
-              "$pre_migration_database_cards" "$r1_sha" "$r2_sha" "$deployment_image_digest"
+              "$expected_inventory_sha256" "$remote_stage/pre-migration-inventory.json" \
+              "$r1_sha" "$r2_sha" "$deployment_image_digest"
           fi
           exec sudo -n bash "$remote_stage/modeling-purge-execute.sh" production \
-            "$expected_inventory_sha256" "$pre_migration_inventory_sha256" \
-            "$pre_migration_database_tables" "$pre_migration_database_enums" \
-            "$pre_migration_database_cards" "$r1_sha" "$r2_sha" "$deployment_image_digest"
+            "$expected_inventory_sha256" "$remote_stage/pre-migration-inventory.json" \
+            "$r1_sha" "$r2_sha" "$deployment_image_digest"
           REMOTE_PURGE
           fi
           python3 -m json.tool "$result" >/dev/null
@@ -196,7 +243,7 @@ jobs:
       - name: Save deletion-safe inventory or receipt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: modeling-${{ inputs.operation }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: modeling-${{ inputs.operation }}-${{ inputs.inventory_phase }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/modeling-operation-result.json
           if-no-files-found: error
           retention-days: 30

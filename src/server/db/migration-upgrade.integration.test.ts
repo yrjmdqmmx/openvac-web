@@ -59,6 +59,85 @@ describeDatabase("migration upgrade compatibility", () => {
       await applyMigration(target, "0006_sour_roulette.sql");
       await applyMigration(target, "0007_consultation_rollback_compat.sql");
       await applyMigration(target, "0008_agent_v2_responses.sql");
+      const legacyOwnerId = `migration-user-${randomUUID()}`;
+      const legacyProjectId = randomUUID();
+      const legacyRevisionId = randomUUID();
+      const legacyPlanId = randomUUID();
+      const legacyJobId = randomUUID();
+      await target`insert into "user" (id) values (${legacyOwnerId})`;
+      await target`
+        insert into modeling_project (
+          id, owner_id, create_idempotency_key, name
+        ) values (
+          ${legacyProjectId}, ${legacyOwnerId}, 'legacy-project-create', 'Legacy project'
+        )
+      `;
+      await target`
+        insert into modeling_revision (
+          id, project_id, revision_number, source, idempotency_key,
+          document, content_hash
+        ) values (
+          ${legacyRevisionId}, ${legacyProjectId}, 1, 'initial',
+          'legacy-revision', ${target.json({ shape: "legacy" })}, ${"a".repeat(64)}
+        )
+      `;
+      await target`
+        update modeling_project
+        set current_revision_id = ${legacyRevisionId}
+        where id = ${legacyProjectId}
+      `;
+      await target`
+        insert into modeling_plan (
+          id, project_id, base_revision_id, base_revision_hash, plan_hash,
+          prompt, draft, status, idempotency_key
+        ) values (
+          ${legacyPlanId}, ${legacyProjectId}, ${legacyRevisionId},
+          ${"a".repeat(64)}, ${"b".repeat(64)}, 'legacy prompt',
+          ${target.json({ operations: [] })}, 'validated', 'legacy-plan'
+        )
+      `;
+      await target`
+        insert into modeling_job (
+          id, project_id, plan_id, revision_id, kind, idempotency_key
+        ) values (
+          ${legacyJobId}, ${legacyProjectId}, ${legacyPlanId},
+          ${legacyRevisionId}, 'build', 'legacy-job'
+        )
+      `;
+      await target`
+        insert into modeling_job_event (job_id, sequence, type)
+        values (${legacyJobId}, 1, 'queued')
+      `;
+      await target`
+        insert into modeling_artifact (
+          project_id, job_id, revision_id, kind, filename, mime_type,
+          object_key, checksum_sha256, size_bytes
+        ) values (
+          ${legacyProjectId}, ${legacyJobId}, ${legacyRevisionId}, 'source',
+          'legacy.fcstd', 'application/octet-stream', 'modeling/legacy/source.fcstd',
+          ${"c".repeat(64)}, 1
+        )
+      `;
+      await target`
+        insert into modeling_import_intent (
+          owner_id, project_id, idempotency_key, request_hash, object_key,
+          source_name, mime_type, size_bytes, checksum_sha256, expires_at
+        ) values (
+          ${legacyOwnerId}, ${legacyProjectId}, 'legacy-import', ${"d".repeat(64)},
+          'modeling/legacy/import.fcstd', 'legacy.fcstd', 'application/octet-stream',
+          1, ${"e".repeat(64)}, now() + interval '1 day'
+        )
+      `;
+      await target`
+        insert into modeling_validation_attempt (
+          owner_id, project_id, scope_key, kind, idempotency_key, request_hash,
+          reserved_compute_ms, lease_token, reservation_expires_at
+        ) values (
+          ${legacyOwnerId}, ${legacyProjectId}, 'project:legacy', 'operation_batch',
+          'legacy-validation', ${"f".repeat(64)}, 1, 'legacy-lease',
+          now() + interval '1 hour'
+        )
+      `;
       const legacyMessageId = randomUUID();
       await target`
         insert into message (id, metadata)
