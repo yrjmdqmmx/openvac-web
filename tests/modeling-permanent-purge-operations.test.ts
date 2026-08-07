@@ -44,7 +44,9 @@ describe("legacy modeling permanent purge operations", () => {
     expect(ossutilInstaller).toContain(
       "https://gosspublic.alicdn.com/ossutil/v2/"
     );
-    expect(ossutilInstaller).toContain('sha256sum --check "$checksum_file"');
+    expect(ossutilInstaller).toContain(
+      'sha256sum --check "$checksum_file" >/dev/null'
+    );
     expect(ossutilInstaller).toContain(
       'install -m 0755 -- "$binary" /usr/local/bin/ossutil'
     );
