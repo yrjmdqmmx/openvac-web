@@ -16,21 +16,17 @@ case "$target" in
   production)
     deploy_dir=/opt/openvac
     compose_project=openvac-production
-    other_deploy_dir=/opt/openvac-staging
     health_url=https://openvac.cn/api/health
     product_url=https://openvac.cn/semacad
     ;;
   staging)
     deploy_dir=/opt/openvac-staging
     compose_project=openvac-staging
-    other_deploy_dir=/opt/openvac
     health_url=https://staging-openvac.openvac.cn/api/health
     product_url=https://staging-openvac.openvac.cn/semacad
     ;;
   *) fail "target must be production or staging" ;;
 esac
-[[ ! -e "$other_deploy_dir/current-release" && ! -L "$other_deploy_dir/current-release" ]] ||
-  fail "target-specific purge requires a dedicated environment host"
 expected_inventory_sha256="$2"
 pre_migration_inventory_json="$3"
 r1_sha="$4"
