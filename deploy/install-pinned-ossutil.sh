@@ -58,6 +58,7 @@ install -d -m 0700 "$extract_dir"
 python3 -m zipfile -e "$archive" "$extract_dir"
 binary="$extract_dir/ossutil-$version-linux-$package_arch/ossutil"
 [[ -f "$binary" && ! -L "$binary" ]] || fail "verified archive has an unexpected layout"
+chmod 0755 "$binary"
 "$binary" --version 2>&1 | grep -F "$version" >/dev/null ||
   fail "verified binary did not report the pinned version"
 verified_binary_sha256="$(sha256sum "$binary" | awk '{print $1}')"
