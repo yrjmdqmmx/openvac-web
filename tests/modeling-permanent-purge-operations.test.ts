@@ -172,5 +172,21 @@ describe("legacy modeling permanent purge operations", () => {
     expect(purge).not.toContain(
       "for release_target in /opt/openvac /opt/openvac-staging"
     );
+    expect(inventory).toContain(
+      "target-specific purge requires a dedicated environment host"
+    );
+    expect(purge).toContain(
+      "target-specific purge requires a dedicated environment host"
+    );
+  });
+
+  it("does not overstate the shared OSS prefix in staging receipts", () => {
+    expect(purge).toContain('oss_modeling_scope="not-applicable"');
+    expect(purge).toContain("before_oss_modeling_json=null");
+    expect(purge).toContain("after_oss_modeling_json=null");
+    expect(purge).toContain(
+      'target_categories_json=\'["database","containers","images","environment_keys","filesystem_paths","legacy_backups"]\''
+    );
+    expect(purge).toContain('"oss_modeling_scope":"%s"');
   });
 });

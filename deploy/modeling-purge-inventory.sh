@@ -16,13 +16,17 @@ case "$target" in
   production)
     deploy_dir=/opt/openvac
     compose_project=openvac-production
+    other_deploy_dir=/opt/openvac-staging
     ;;
   staging)
     deploy_dir=/opt/openvac-staging
     compose_project=openvac-staging
+    other_deploy_dir=/opt/openvac
     ;;
   *) fail "target must be production or staging" ;;
 esac
+[[ ! -e "$other_deploy_dir" && ! -L "$other_deploy_dir" ]] ||
+  fail "target-specific purge requires a dedicated environment host"
 requested_state_dir="$2"
 inventory_phase="$3"
 r1_sha="$4"

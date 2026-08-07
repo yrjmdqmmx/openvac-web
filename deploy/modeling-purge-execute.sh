@@ -16,17 +16,21 @@ case "$target" in
   production)
     deploy_dir=/opt/openvac
     compose_project=openvac-production
+    other_deploy_dir=/opt/openvac-staging
     health_url=https://openvac.cn/api/health
     product_url=https://openvac.cn/semacad
     ;;
   staging)
     deploy_dir=/opt/openvac-staging
     compose_project=openvac-staging
+    other_deploy_dir=/opt/openvac
     health_url=https://staging-openvac.openvac.cn/api/health
     product_url=https://staging-openvac.openvac.cn/semacad
     ;;
   *) fail "target must be production or staging" ;;
 esac
+[[ ! -e "$other_deploy_dir" && ! -L "$other_deploy_dir" ]] ||
+  fail "target-specific purge requires a dedicated environment host"
 expected_inventory_sha256="$2"
 pre_migration_inventory_json="$3"
 r1_sha="$4"
@@ -336,14 +340,27 @@ done
 completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 receipt="$deploy_dir/modeling-purge-receipt.json"
 temporary_receipt="$(mktemp "$deploy_dir/.modeling-purge-receipt.XXXXXX")"
+if [[ "$target" == production ]]; then
+  target_categories_json='["database","containers","images","environment_keys","filesystem_paths","oss_modeling_prefix","legacy_backups"]'
+  oss_modeling_scope="verified-and-purged"
+  before_oss_modeling_json="$before_oss_modeling"
+  after_oss_modeling_json=0
+else
+  target_categories_json='["database","containers","images","environment_keys","filesystem_paths","legacy_backups"]'
+  oss_modeling_scope="not-applicable"
+  before_oss_modeling_json=null
+  after_oss_modeling_json=null
+fi
 printf '{"schema":"modeling-permanent-purge-receipt-v1",' >"$temporary_receipt"
 printf '"target":"%s",' "$target" >>"$temporary_receipt"
-printf '"target_categories":["database","containers","images","environment_keys","filesystem_paths","oss_modeling_prefix","legacy_backups"],' >>"$temporary_receipt"
+printf '"target_categories":%s,"oss_modeling_scope":"%s",' \
+  "$target_categories_json" "$oss_modeling_scope" >>"$temporary_receipt"
 printf '"before_counts":{"database_tables":%s,"database_enums":%s,"message_cards":%s,"containers":%s,"images":%s,"environment_keys":%s,"filesystem_paths":%s,"oss_modeling_objects":%s,"local_backup_files":%s,"oss_backup_objects":%s},' \
   "$pre_migration_database_tables" "$pre_migration_database_enums" "$pre_migration_database_cards" \
   "$before_containers" "$before_images" "$before_env_keys" "$before_paths" \
-  "$before_oss_modeling" "$before_local_backup_files" "$before_oss_backup_objects" >>"$temporary_receipt"
-printf '"after_counts":{"database_tables":0,"database_enums":0,"message_cards":0,"containers":0,"images":0,"environment_keys":0,"filesystem_paths":0,"oss_modeling_objects":0,"legacy_local_backup_files":0,"legacy_oss_backup_objects":0},' >>"$temporary_receipt"
+  "$before_oss_modeling_json" "$before_local_backup_files" "$before_oss_backup_objects" >>"$temporary_receipt"
+printf '"after_counts":{"database_tables":0,"database_enums":0,"message_cards":0,"containers":0,"images":0,"environment_keys":0,"filesystem_paths":0,"oss_modeling_objects":%s,"legacy_local_backup_files":0,"legacy_oss_backup_objects":0},' \
+  "$after_oss_modeling_json" >>"$temporary_receipt"
 printf '"r1_sha":"%s","r2_sha":"%s","deployment_image_digest":"%s","pre_migration_inventory_sha256":"%s","pre_migration_artifact_sha256":"%s","inventory_sha256":"%s","completed_at":"%s","status":"success"}\n' \
   "$r1_sha" "$r2_sha" "$deployment_image_digest" "$pre_migration_inventory_sha256" \
   "$pre_migration_artifact_sha256" "$expected_inventory_sha256" "$completed_at" >>"$temporary_receipt"
