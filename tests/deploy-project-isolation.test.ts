@@ -81,6 +81,17 @@ describe("web-only deployment and R0 rollback compatibility", () => {
       "Accepted staging digest provenance: $STAGING_WEB_DIGEST"
     );
     expect(release).toContain("Save accepted staging digest provenance");
+    expect(release).toContain('provenance_workflow_sha="$(');
+    expect(release).toContain(
+      '--data-urlencode "sha=$provenance_workflow_sha"'
+    );
+    expect(release).toContain(
+      'expected_log_prefix="https://github.com/$GITHUB_REPOSITORY/actions/runs/$provenance_run_id/job/"'
+    );
+    expect(release).toContain(
+      "The staging provenance run has a successful linked environment deployment."
+    );
+    expect(release).not.toContain('--data-urlencode "sha=$RELEASE_SHA"');
   });
 
   it("can redeploy an exact successful staging archive without rebuilding it", () => {
@@ -230,12 +241,12 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     expect(activation).toContain('[ "${#image_digest}" -eq 64 ]');
   });
 
-  it("retains exact-SHA CI and production staging gates", () => {
+  it("retains exact-SHA CI and provenance-linked production staging gates", () => {
     expect(release).toContain(
       "commit_sha must be a lowercase hexadecimal commit SHA"
     );
     expect(release).toContain(
-      "The latest same-SHA staging deployment status is success."
+      "The staging provenance run has a successful linked environment deployment."
     );
     expect(release).toContain(
       "Production environment has required reviewers and a branch policy."

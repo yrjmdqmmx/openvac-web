@@ -244,44 +244,6 @@ jobs:
             ' "$environment_response" >/dev/null
             echo "Production environment has required reviewers and a branch policy."
 
-            deployments_response="$RUNNER_TEMP/openvac-staging-deployments.json"
-            curl --fail-with-body --silent --show-error \
-              --get \
-              --header "Accept: application/vnd.github+json" \
-              --header "Authorization: Bearer $GH_TOKEN" \
-              --header "X-GitHub-Api-Version: 2026-03-10" \
-              --data-urlencode "environment=staging" \
-              --data-urlencode "sha=$RELEASE_SHA" \
-              --data-urlencode "per_page=100" \
-              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/deployments" \
-              --output "$deployments_response"
-            staging_statuses_url="$(
-              jq --raw-output \
-                --arg sha "$RELEASE_SHA" \
-                '[.[] |
-                  select(.sha == $sha and .environment == "staging")] |
-                  sort_by(.id) |
-                  .[-1].statuses_url // empty' \
-                "$deployments_response"
-            )"
-            case "$staging_statuses_url" in
-              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/deployments/"*/statuses) ;;
-              *)
-                echo "Production requires a prior staging deployment for the same commit SHA." >&2
-                exit 1
-                ;;
-            esac
-            staging_statuses_response="$RUNNER_TEMP/openvac-staging-deployment-statuses.json"
-            curl --fail-with-body --silent --show-error \
-              --header "Accept: application/vnd.github+json" \
-              --header "Authorization: Bearer $GH_TOKEN" \
-              --header "X-GitHub-Api-Version: 2026-03-10" \
-              "$staging_statuses_url" \
-              --output "$staging_statuses_response"
-            jq --exit-status 'sort_by(.id) | .[-1].state == "success"' \
-              "$staging_statuses_response" >/dev/null
-            echo "The latest same-SHA staging deployment status is success."
-
             provenance_name="openvac-staging-provenance-$RELEASE_SHA-$staging_digest_hex"
             artifacts_response="$RUNNER_TEMP/openvac-staging-provenance-artifacts.json"
             curl --fail-with-body --silent --show-error \
@@ -296,12 +258,10 @@ jobs:
             provenance_run_id="$(
               jq --raw-output \
                 --arg name "$provenance_name" \
-                --arg sha "$RELEASE_SHA" \
                 '[.artifacts[] |
                   select(
                     .name == $name and
-                    .expired == false and
-                    .workflow_run.head_sha == $sha
+                    .expired == false
                   )] |
                   sort_by(.id) |
                   .[-1].workflow_run.id // empty' \
@@ -320,9 +280,9 @@ jobs:
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$provenance_run_id" \
               --output "$provenance_run_response"
             jq --exit-status \
-              --arg sha "$RELEASE_SHA" \
+              --arg repository "$GITHUB_REPOSITORY" \
               --arg default_branch "$DEFAULT_BRANCH" '
-                .head_sha == $sha and
+                .head_repository.full_name == $repository and
                 .head_branch == $default_branch and
                 .event == "workflow_dispatch" and
                 .path == ".github/workflows/release.yml" and
@@ -332,6 +292,72 @@ jobs:
                 echo "The staging provenance artifact is not attached to a successful release workflow run." >&2
                 exit 1
               }
+
+            provenance_workflow_sha="$(
+              jq --exit-status --raw-output '.head_sha' "$provenance_run_response"
+            )"
+            case "$provenance_workflow_sha" in
+              ""|*[!0-9a-f]*)
+                echo "The staging provenance workflow SHA is invalid." >&2
+                exit 1
+                ;;
+            esac
+            test "${#provenance_workflow_sha}" -eq 40
+            if ! git cat-file -e "${provenance_workflow_sha}^{commit}" 2>/dev/null ||
+              ! git merge-base --is-ancestor "$provenance_workflow_sha" "$default_head"; then
+              echo "The staging provenance workflow must be reachable from the default branch." >&2
+              exit 1
+            fi
+
+            deployments_response="$RUNNER_TEMP/openvac-staging-deployments.json"
+            curl --fail-with-body --silent --show-error \
+              --get \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "X-GitHub-Api-Version: 2026-03-10" \
+              --data-urlencode "environment=staging" \
+              --data-urlencode "sha=$provenance_workflow_sha" \
+              --data-urlencode "per_page=100" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/deployments" \
+              --output "$deployments_response"
+            expected_log_prefix="https://github.com/$GITHUB_REPOSITORY/actions/runs/$provenance_run_id/job/"
+            linked_staging_deployment=false
+            while IFS= read -r staging_statuses_url; do
+              case "$staging_statuses_url" in
+                "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/deployments/"*/statuses) ;;
+                *) continue ;;
+              esac
+              staging_statuses_response="$RUNNER_TEMP/openvac-staging-deployment-statuses.json"
+              curl --fail-with-body --silent --show-error \
+                --header "Accept: application/vnd.github+json" \
+                --header "Authorization: Bearer $GH_TOKEN" \
+                --header "X-GitHub-Api-Version: 2026-03-10" \
+                "$staging_statuses_url" \
+                --output "$staging_statuses_response"
+              if jq --exit-status --arg prefix "$expected_log_prefix" '
+                sort_by(.id) |
+                .[-1] |
+                .state == "success" and
+                (.log_url | type == "string" and startswith($prefix))
+              ' "$staging_statuses_response" >/dev/null; then
+                linked_staging_deployment=true
+                break
+              fi
+            done < <(
+              jq --raw-output \
+                --arg sha "$provenance_workflow_sha" '
+                  [.[] |
+                    select(.sha == $sha and .environment == "staging")] |
+                    sort_by(.id) |
+                    reverse |
+                    .[].statuses_url
+                ' "$deployments_response"
+            )
+            if [ "$linked_staging_deployment" != true ]; then
+              echo "Production requires a successful staging environment deployment linked to the provenance run." >&2
+              exit 1
+            fi
+            echo "The staging provenance run has a successful linked environment deployment."
             echo "Accepted staging digest provenance: $STAGING_WEB_DIGEST"
           fi
 
