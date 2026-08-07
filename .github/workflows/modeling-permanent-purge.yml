@@ -166,6 +166,7 @@ jobs:
           ssh_base="${ECS_USER}@${ECS_HOST}"
           remote_stage="/tmp/openvac-modeling-purge-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           result="$RUNNER_TEMP/modeling-${OPERATION}-result.json"
+          digest_argument="${DEPLOYMENT_IMAGE_DIGEST:--}"
           cleanup() {
             ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
               "case '$remote_stage' in /tmp/openvac-modeling-purge-*) rm -rf -- '$remote_stage' ;; esac" \
@@ -191,7 +192,7 @@ jobs:
           if [ "$OPERATION" = inventory ]; then
             ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
               sh -s -- "$remote_stage" "$INVENTORY_PHASE" "$R1_COMMIT_SHA" \
-              "$R2_COMMIT_SHA" "$DEPLOYMENT_IMAGE_DIGEST" \
+              "$R2_COMMIT_SHA" "$digest_argument" \
               >"$result" <<'REMOTE_INVENTORY'
           set -eu
           remote_stage="$1"
@@ -199,6 +200,7 @@ jobs:
           r1_sha="$3"
           r2_sha="$4"
           deployment_image_digest="$5"
+          [ "$deployment_image_digest" != "-" ] || deployment_image_digest=""
           case "$remote_stage" in /tmp/openvac-modeling-purge-*) ;; *) exit 64 ;; esac
           if [ "$(id -u)" -eq 0 ]; then
             exec bash "$remote_stage/modeling-purge-inventory.sh" production "" \

@@ -26,6 +26,15 @@ describe("legacy modeling permanent purge operations", () => {
     expect(workflow).not.toContain("workflow_run:");
   });
 
+  it("preserves the intentionally empty pre-migration digest across SSH", () => {
+    expect(workflow).toContain(
+      'digest_argument="${DEPLOYMENT_IMAGE_DIGEST:--}"'
+    );
+    expect(workflow).toContain(
+      '[ "$deployment_image_digest" != "-" ] || deployment_image_digest=""'
+    );
+  });
+
   it("uses one exact bucket and prefix without deleting the bucket", () => {
     for (const script of [inventory, purge]) {
       expect(script).toContain("openvac-modeling-hz-20260802");
