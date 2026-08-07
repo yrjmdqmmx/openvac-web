@@ -16,6 +16,7 @@ on:
         type: choice
         options:
           - inventory
+          - prepare-ossutil
           - purge
       inventory_phase:
         description: Inventory evidence phase; purge requires post-migration
@@ -87,16 +88,19 @@ jobs:
         run: |
           set -Eeuo pipefail
           case "$TARGET" in production|staging) ;; *) exit 64 ;; esac
-          case "$OPERATION" in inventory|purge) ;; *) exit 64 ;; esac
+          case "$OPERATION" in inventory|prepare-ossutil|purge) ;; *) exit 64 ;; esac
           case "$INVENTORY_PHASE" in pre-migration|post-migration) ;; *) exit 64 ;; esac
           [[ "$R1_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$R2_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$R1_COMMIT_SHA" != "$R2_COMMIT_SHA"
-          if [ "$OPERATION" = inventory ]; then
+          if [ "$OPERATION" = inventory ] || [ "$OPERATION" = prepare-ossutil ]; then
             test -z "$EXPECTED_INVENTORY_SHA256"
             test -z "$PRE_MIGRATION_INVENTORY_RUN_ID"
             test -z "$PRE_MIGRATION_INVENTORY_RUN_ATTEMPT"
-            if [ "$INVENTORY_PHASE" = pre-migration ]; then
+            if [ "$OPERATION" = prepare-ossutil ]; then
+              test "$INVENTORY_PHASE" = pre-migration
+              test -z "$DEPLOYMENT_IMAGE_DIGEST"
+            elif [ "$INVENTORY_PHASE" = pre-migration ]; then
               test -z "$DEPLOYMENT_IMAGE_DIGEST"
             else
               [[ "$DEPLOYMENT_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
@@ -196,6 +200,7 @@ jobs:
           scp -i "$HOME/.ssh/openvac" -o BatchMode=yes \
             deploy/modeling-purge-inventory.sh \
             deploy/modeling-purge-execute.sh \
+            deploy/install-pinned-ossutil.sh \
             deploy/backup.sh \
             deploy/upload-backup-oss.sh \
             deploy/restore-drill.sh \
@@ -228,6 +233,18 @@ jobs:
           exec sudo -n bash "$remote_stage/modeling-purge-inventory.sh" "$target" "" \
             "$inventory_phase" "$r1_sha" "$r2_sha" "$deployment_image_digest"
           REMOTE_INVENTORY
+          elif [ "$OPERATION" = prepare-ossutil ]; then
+            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
+              sh -s -- "$remote_stage" "$TARGET" >"$result" <<'REMOTE_PREPARE'
+          set -eu
+          remote_stage="$1"
+          target="$2"
+          case "$remote_stage" in /tmp/openvac-modeling-purge-*) ;; *) exit 64 ;; esac
+          if [ "$(id -u)" -eq 0 ]; then
+            exec bash "$remote_stage/install-pinned-ossutil.sh" "$target"
+          fi
+          exec sudo -n bash "$remote_stage/install-pinned-ossutil.sh" "$target"
+          REMOTE_PREPARE
           else
             ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
               sh -s -- "$remote_stage" "$TARGET" "$EXPECTED_INVENTORY_SHA256" \

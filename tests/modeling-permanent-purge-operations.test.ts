@@ -9,6 +9,7 @@ describe("legacy modeling permanent purge operations", () => {
   const workflow = source(".github/workflows/modeling-permanent-purge.yml");
   const inventory = source("deploy/modeling-purge-inventory.sh");
   const purge = source("deploy/modeling-purge-execute.sh");
+  const ossutilInstaller = source("deploy/install-pinned-ossutil.sh");
   const restore = source("deploy/verify-clean-restore.sh");
 
   it("exposes only an approved environment inventory or purge operation", () => {
@@ -18,6 +19,7 @@ describe("legacy modeling permanent purge operations", () => {
     expect(workflow).toContain("operation:");
     expect(workflow).toContain("- inventory");
     expect(workflow).toContain("- purge");
+    expect(workflow).toContain("- prepare-ossutil");
     expect(workflow).toContain(
       "environment:\n      name: ${{ inputs.target }}"
     );
@@ -29,6 +31,25 @@ describe("legacy modeling permanent purge operations", () => {
     expect(workflow).toContain("r2_commit_sha:");
     expect(workflow).toContain("deployment_image_digest:");
     expect(workflow).not.toContain("workflow_run:");
+  });
+
+  it("bootstraps ossutil only through a pinned official checksum", () => {
+    expect(ossutilInstaller).toContain("2.3.0");
+    expect(ossutilInstaller).toContain(
+      "3ae4d9fc85a7a6e9f5654d1599766f1a3a42a3692870887b5ae9338d582ef65a"
+    );
+    expect(ossutilInstaller).toContain(
+      "f6c95ba0c2d2ef30290af686ce4d706c701f4734ce8090bee4288a77e3f1d764"
+    );
+    expect(ossutilInstaller).toContain(
+      "https://gosspublic.alicdn.com/ossutil/v2/"
+    );
+    expect(ossutilInstaller).toContain('sha256sum --check "$checksum_file"');
+    expect(ossutilInstaller).toContain(
+      'install -m 0755 -- "$binary" /usr/local/bin/ossutil'
+    );
+    expect(ossutilInstaller).not.toContain("OSS_ACCESS_KEY");
+    expect(workflow).toContain("deploy/install-pinned-ossutil.sh");
   });
 
   it("preserves the intentionally empty pre-migration digest across SSH", () => {
