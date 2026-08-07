@@ -483,7 +483,10 @@ jobs:
       - if: inputs.target == 'staging' && inputs.reuse_run_id != ''
         name: Verify and normalize the reused deployment archive
         env:
+          RELEASE_SHA: ${{ inputs.commit_sha }}
           WEB_IMAGE_DIGEST: ${{ steps.select_image.outputs.digest }}
+          REUSE_RUN_ID: ${{ inputs.reuse_run_id }}
+          REUSE_RUN_ATTEMPT: ${{ inputs.reuse_run_attempt }}
         run: |
           set -Eeuo pipefail
           source_dir="$RUNNER_TEMP/openvac-web-release-reused"
@@ -501,8 +504,32 @@ jobs:
             echo "Reused deployment archive digest does not match staging_web_digest." >&2
             exit 1
           fi
-          cp "$source_dir/openvac-web-release.tar.zst" "$RUNNER_TEMP/openvac-web-release.tar.zst"
-          cp "$source_dir/openvac-web-release.tar.zst.sha256" "$RUNNER_TEMP/openvac-web-release.tar.zst.sha256"
+
+          image_repository="ghcr.io/${GITHUB_REPOSITORY,,}"
+          source_archive_tag="$image_repository:archive-$REUSE_RUN_ID-$REUSE_RUN_ATTEMPT"
+          current_archive_tag="$image_repository:archive-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          zstd --decompress --stdout "$source_dir/openvac-web-release.tar.zst" |
+            docker load >/dev/null
+          loaded_id="$(docker image inspect --format '{{.Id}}' "$source_archive_tag")"
+          revision="$(
+            docker image inspect \
+              --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+              "$source_archive_tag"
+          )"
+          architecture="$(docker image inspect --format '{{.Architecture}}' "$source_archive_tag")"
+          if [ "$revision" != "$RELEASE_SHA" ] || [ "$architecture" != amd64 ]; then
+            echo "Reused deployment archive image identity does not match commit_sha and linux/amd64." >&2
+            exit 1
+          fi
+          case "$loaded_id" in sha256:*) ;; *) exit 1 ;; esac
+          docker image tag "$source_archive_tag" "$current_archive_tag"
+          docker image save --output "$RUNNER_TEMP/openvac-web-release.tar" \
+            "$current_archive_tag"
+          zstd --threads=0 --rm "$RUNNER_TEMP/openvac-web-release.tar"
+          (
+            cd "$RUNNER_TEMP"
+            sha256sum openvac-web-release.tar.zst >openvac-web-release.tar.zst.sha256
+          )
           cp "$source_dir/openvac-web-release.digest" "$RUNNER_TEMP/openvac-web-release.digest"
           cp "$source_dir/openvac-web-release.digest.sha256" "$RUNNER_TEMP/openvac-web-release.digest.sha256"
       - name: Upload the same-run web deployment archive
