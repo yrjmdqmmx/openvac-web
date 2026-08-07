@@ -98,6 +98,18 @@ describe("web-only deployment and R0 rollback compatibility", () => {
       'if [ "$reused_digest" != "$WEB_IMAGE_DIGEST" ]; then'
     );
     expect(release).toContain(
+      'source_archive_tag="$image_repository:archive-$REUSE_RUN_ID-$REUSE_RUN_ATTEMPT"'
+    );
+    expect(release).toContain(
+      'current_archive_tag="$image_repository:archive-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"'
+    );
+    expect(release).toContain(
+      'docker image tag "$source_archive_tag" "$current_archive_tag"'
+    );
+    expect(release).toContain(
+      'docker image save --output "$RUNNER_TEMP/openvac-web-release.tar"'
+    );
+    expect(release).toContain(
       "if: inputs.target == 'staging' && inputs.reuse_run_id == ''"
     );
     expect(release).toContain(
