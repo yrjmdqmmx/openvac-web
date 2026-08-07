@@ -135,9 +135,12 @@ describe("SemaCAD product page", () => {
 
     render(await SemacadPage());
 
-    expect(screen.getAllByRole("link", { name: /下载 Mac 版/ })).toHaveLength(
-      2
-    );
+    const downloadLinks = screen.getAllByRole("link", {
+      name: /下载 Mac 版/
+    });
+    expect(downloadLinks).toHaveLength(2);
+    expect(downloadLinks[0]).toHaveClass("!text-white");
+    expect(downloadLinks[1]).toHaveClass("!text-[var(--ink)]");
     expect(screen.getByAltText(/SemaCAD 公开 Beta 主窗口/)).toHaveAttribute(
       "src",
       "/semacad/semacad-main-window.png"

@@ -104,6 +104,7 @@ test("renders the verified SemaCAD public Beta release", async ({ page }) => {
     "href",
     "https://github.com/zdywrnm/SemaCAD/releases/download/v0.2.0-beta.1/semaCAD-0.2.0-beta.1-macOS26-arm64.dmg"
   );
+  await expect(downloads.first()).toHaveCSS("color", "rgb(255, 255, 255)");
   await expect(page.getByRole("link", { name: /查看源代码/ })).toHaveAttribute(
     "href",
     "https://github.com/zdywrnm/SemaCAD"
