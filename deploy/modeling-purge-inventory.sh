@@ -25,8 +25,16 @@ case "$target" in
     ;;
   *) fail "target must be production or staging" ;;
 esac
-[[ ! -e "$other_deploy_dir/current-release" && ! -L "$other_deploy_dir/current-release" ]] ||
-  fail "target-specific purge requires a dedicated environment host"
+other_release_path="$other_deploy_dir/current-release"
+if [[ -L "$other_release_path" ]]; then
+  fail "the other environment current-release marker must not be a symbolic link"
+elif [[ -e "$other_release_path" ]]; then
+  [[ -f "$other_release_path" ]] ||
+    fail "the other environment current-release marker must be a regular file"
+  host_scope="shared"
+else
+  host_scope="dedicated"
+fi
 requested_state_dir="$2"
 inventory_phase="$3"
 r1_sha="$4"
@@ -220,14 +228,19 @@ while IFS= read -r container_id; do
   printf '%s\n' "$image_id" >>"$images_file"
 done < <(docker container ls --all --quiet --no-trunc)
 
-while IFS=$'\t' read -r repository image_id; do
-  case "$repository" in
-    openvac-modeling-service | */openvac-modeling-service)
-      [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "invalid modeling image ID"
-      printf '%s\n' "$image_id" >>"$images_file"
-      ;;
-  esac
-done < <(docker image ls --no-trunc --format '{{.Repository}}\t{{.ID}}')
+# On a shared host staging owns only images referenced by its approved legacy
+# containers. Production is the final owner for unreferenced legacy modeling
+# images. On a dedicated host either target can clean its daemon completely.
+if [[ "$target" == production || "$host_scope" == dedicated ]]; then
+  while IFS=$'\t' read -r repository image_id; do
+    case "$repository" in
+      openvac-modeling-service | */openvac-modeling-service)
+        [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "invalid modeling image ID"
+        printf '%s\n' "$image_id" >>"$images_file"
+        ;;
+    esac
+  done < <(docker image ls --no-trunc --format '{{.Repository}}\t{{.ID}}')
+fi
 
 sort -u -o "$containers_file" "$containers_file"
 sort -u -o "$images_file" "$images_file"
@@ -385,6 +398,7 @@ canonical="$state_dir/canonical-inventory.txt"
 {
   echo 'schema=modeling-purge-inventory-v1'
   printf 'target=%s\n' "$target"
+  printf 'host_scope=%s\n' "$host_scope"
   printf 'phase=%s\n' "$inventory_phase"
   printf 'r1_sha=%s\n' "$r1_sha"
   printf 'r2_sha=%s\n' "$r2_sha"
@@ -405,8 +419,8 @@ canonical="$state_dir/canonical-inventory.txt"
 } >"$canonical"
 inventory_sha256="$(hash_file "$canonical")"
 
-printf '{"schema":"modeling-purge-inventory-v1","target":"%s","phase":"%s","inventory_sha256":"%s",' \
-  "$target" "$inventory_phase" "$inventory_sha256"
+printf '{"schema":"modeling-purge-inventory-v1","target":"%s","host_scope":"%s","phase":"%s","inventory_sha256":"%s",' \
+  "$target" "$host_scope" "$inventory_phase" "$inventory_sha256"
 printf '"release_evidence":{"r1_sha":"%s","r2_sha":"%s","deployment_image_digest":"%s","rollback_rehearsal":"%s"},' \
   "$r1_sha" "$r2_sha" "$deployment_image_digest" "$rollback_rehearsal"
 printf '"oss_bucket_versioning":"%s",' "$bucket_versioning"

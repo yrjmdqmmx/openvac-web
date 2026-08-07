@@ -16,21 +16,17 @@ case "$target" in
   production)
     deploy_dir=/opt/openvac
     compose_project=openvac-production
-    other_deploy_dir=/opt/openvac-staging
     health_url=https://openvac.cn/api/health
     product_url=https://openvac.cn/semacad
     ;;
   staging)
     deploy_dir=/opt/openvac-staging
     compose_project=openvac-staging
-    other_deploy_dir=/opt/openvac
     health_url=https://staging-openvac.openvac.cn/api/health
     product_url=https://staging-openvac.openvac.cn/semacad
     ;;
   *) fail "target must be production or staging" ;;
 esac
-[[ ! -e "$other_deploy_dir/current-release" && ! -L "$other_deploy_dir/current-release" ]] ||
-  fail "target-specific purge requires a dedicated environment host"
 expected_inventory_sha256="$2"
 pre_migration_inventory_json="$3"
 r1_sha="$4"
@@ -58,6 +54,8 @@ pre_json_number() {
 }
 [[ "$(pre_json_text phase)" == "pre-migration" ]] || fail "artifact is not a pre-migration inventory"
 [[ "$(pre_json_text target)" == "$target" ]] || fail "pre-migration inventory target mismatch"
+pre_migration_host_scope="$(pre_json_text host_scope)"
+case "$pre_migration_host_scope" in shared | dedicated) ;; *) fail "invalid pre-migration host scope" ;; esac
 pre_migration_inventory_sha256="$(pre_json_text inventory_sha256)"
 [[ "$pre_migration_inventory_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "pre-migration inventory SHA-256 is invalid"
 [[ "$(pre_json_text r1_sha)" == "$r1_sha" ]] || fail "pre-migration inventory R1 SHA mismatch"
@@ -144,11 +142,19 @@ json_number() {
   [[ "$value" =~ ^[0-9]+$ ]] || fail "inventory JSON is missing numeric field: $key"
   printf '%s\n' "$value"
 }
+json_text() {
+  local key="$1"
+  printf '%s\n' "$inventory_json" | sed -n "s/^.*\"$key\":\"\([^\"]*\)\".*$/\1/p"
+}
 actual_inventory_sha256="$(printf '%s\n' "$inventory_json" | sed -n 's/^.*"inventory_sha256":"\([0-9a-f]\{64\}\)".*$/\1/p')"
 [[ "$actual_inventory_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "inventory JSON is malformed"
 if [[ "$actual_inventory_sha256" != "$expected_inventory_sha256" ]]; then
   fail "inventory changed after approval; run a new read-only inventory and review it"
 fi
+current_host_scope="$(json_text host_scope)"
+case "$current_host_scope" in shared | dedicated) ;; *) fail "inventory JSON has an invalid host scope" ;; esac
+[[ "$current_host_scope" == "$pre_migration_host_scope" ]] ||
+  fail "host scope changed after the pre-migration inventory"
 
 database_modeling_tables="$(json_number modeling_tables)"
 database_modeling_enums="$(json_number modeling_enums)"
@@ -351,8 +357,14 @@ else
   before_oss_modeling_json=null
   after_oss_modeling_json=null
 fi
+if [[ "$target" == staging && "$current_host_scope" == shared ]]; then
+  image_scope="target-containers-only"
+else
+  image_scope="host-wide-unreferenced-legacy-images"
+fi
 printf '{"schema":"modeling-permanent-purge-receipt-v1",' >"$temporary_receipt"
-printf '"target":"%s",' "$target" >>"$temporary_receipt"
+printf '"target":"%s","host_scope":"%s","image_scope":"%s",' \
+  "$target" "$current_host_scope" "$image_scope" >>"$temporary_receipt"
 printf '"target_categories":%s,"oss_modeling_scope":"%s",' \
   "$target_categories_json" "$oss_modeling_scope" >>"$temporary_receipt"
 printf '"before_counts":{"database_tables":%s,"database_enums":%s,"message_cards":%s,"containers":%s,"images":%s,"environment_keys":%s,"filesystem_paths":%s,"oss_modeling_objects":%s,"local_backup_files":%s,"oss_backup_objects":%s},' \

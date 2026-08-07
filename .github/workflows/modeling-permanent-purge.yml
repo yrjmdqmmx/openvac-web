@@ -133,6 +133,7 @@ jobs:
           jq -e --arg r1 "$R1_COMMIT_SHA" --arg r2 "$R2_COMMIT_SHA" --arg target "$TARGET" '
             .schema == "modeling-purge-inventory-v1" and
             .target == $target and
+            (.host_scope == "shared" or .host_scope == "dedicated") and
             .phase == "pre-migration" and
             .release_evidence.r1_sha == $r1 and
             .release_evidence.r2_sha == $r2 and

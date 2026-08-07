@@ -172,14 +172,28 @@ describe("legacy modeling permanent purge operations", () => {
     expect(purge).not.toContain(
       "for release_target in /opt/openvac /opt/openvac-staging"
     );
+    expect(inventory).toContain('host_scope="shared"');
+    expect(inventory).toContain('host_scope="dedicated"');
     expect(inventory).toContain(
-      "target-specific purge requires a dedicated environment host"
+      'if [[ "$target" == production || "$host_scope" == dedicated ]]'
+    );
+    expect(inventory).toContain("printf 'host_scope=%s\\n'");
+    expect(workflow).toContain(
+      '(.host_scope == "shared" or .host_scope == "dedicated")'
     );
     expect(purge).toContain(
+      'pre_migration_host_scope="$(pre_json_text host_scope)"'
+    );
+    expect(purge).toContain(
+      '[[ "$current_host_scope" == "$pre_migration_host_scope" ]]'
+    );
+    expect(purge).toContain('"host_scope":"%s","image_scope":"%s"');
+    expect(inventory).not.toContain(
       "target-specific purge requires a dedicated environment host"
     );
-    expect(inventory).toContain('"$other_deploy_dir/current-release"');
-    expect(purge).toContain('"$other_deploy_dir/current-release"');
+    expect(purge).not.toContain(
+      "target-specific purge requires a dedicated environment host"
+    );
   });
 
   it("does not overstate the shared OSS prefix in staging receipts", () => {
