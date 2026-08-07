@@ -24,7 +24,7 @@ async function applyMigration(database: Sql, path: string) {
 }
 
 describeDatabase("migration upgrade compatibility", () => {
-  it("upgrades a pre-0002 database through expand-only Agent V2 migration 0008", async () => {
+  it("upgrades a pre-0002 database through permanent modeling purge 0009", async () => {
     const configuredUrl = new URL(
       process.env.DATABASE_URL ??
         "postgres://openvac:openvac@127.0.0.1:5432/openvac"
@@ -59,6 +59,97 @@ describeDatabase("migration upgrade compatibility", () => {
       await applyMigration(target, "0006_sour_roulette.sql");
       await applyMigration(target, "0007_consultation_rollback_compat.sql");
       await applyMigration(target, "0008_agent_v2_responses.sql");
+      const legacyOwnerId = `migration-user-${randomUUID()}`;
+      const legacyProjectId = randomUUID();
+      const legacyRevisionId = randomUUID();
+      const legacyPlanId = randomUUID();
+      const legacyJobId = randomUUID();
+      await target`insert into "user" (id) values (${legacyOwnerId})`;
+      await target`
+        insert into modeling_project (
+          id, owner_id, create_idempotency_key, name
+        ) values (
+          ${legacyProjectId}, ${legacyOwnerId}, 'legacy-project-create', 'Legacy project'
+        )
+      `;
+      await target`
+        insert into modeling_revision (
+          id, project_id, revision_number, source, idempotency_key,
+          document, content_hash
+        ) values (
+          ${legacyRevisionId}, ${legacyProjectId}, 1, 'initial',
+          'legacy-revision', ${target.json({ shape: "legacy" })}, ${"a".repeat(64)}
+        )
+      `;
+      await target`
+        update modeling_project
+        set current_revision_id = ${legacyRevisionId}
+        where id = ${legacyProjectId}
+      `;
+      await target`
+        insert into modeling_plan (
+          id, project_id, base_revision_id, base_revision_hash, plan_hash,
+          prompt, draft, status, idempotency_key
+        ) values (
+          ${legacyPlanId}, ${legacyProjectId}, ${legacyRevisionId},
+          ${"a".repeat(64)}, ${"b".repeat(64)}, 'legacy prompt',
+          ${target.json({ operations: [] })}, 'validated', 'legacy-plan'
+        )
+      `;
+      await target`
+        insert into modeling_job (
+          id, project_id, plan_id, revision_id, kind, idempotency_key
+        ) values (
+          ${legacyJobId}, ${legacyProjectId}, ${legacyPlanId},
+          ${legacyRevisionId}, 'build', 'legacy-job'
+        )
+      `;
+      await target`
+        insert into modeling_job_event (job_id, sequence, type)
+        values (${legacyJobId}, 1, 'queued')
+      `;
+      await target`
+        insert into modeling_artifact (
+          project_id, job_id, revision_id, kind, filename, mime_type,
+          object_key, checksum_sha256, size_bytes
+        ) values (
+          ${legacyProjectId}, ${legacyJobId}, ${legacyRevisionId}, 'source',
+          'legacy.fcstd', 'application/octet-stream', 'modeling/legacy/source.fcstd',
+          ${"c".repeat(64)}, 1
+        )
+      `;
+      await target`
+        insert into modeling_import_intent (
+          owner_id, project_id, idempotency_key, request_hash, object_key,
+          source_name, mime_type, size_bytes, checksum_sha256, expires_at
+        ) values (
+          ${legacyOwnerId}, ${legacyProjectId}, 'legacy-import', ${"d".repeat(64)},
+          'modeling/legacy/import.fcstd', 'legacy.fcstd', 'application/octet-stream',
+          1, ${"e".repeat(64)}, now() + interval '1 day'
+        )
+      `;
+      await target`
+        insert into modeling_validation_attempt (
+          owner_id, project_id, scope_key, kind, idempotency_key, request_hash,
+          reserved_compute_ms, lease_token, reservation_expires_at
+        ) values (
+          ${legacyOwnerId}, ${legacyProjectId}, 'project:legacy', 'operation_batch',
+          'legacy-validation', ${"f".repeat(64)}, 1, 'legacy-lease',
+          now() + interval '1 hour'
+        )
+      `;
+      const legacyMessageId = randomUUID();
+      await target`
+        insert into message (id, metadata)
+        values (
+          ${legacyMessageId},
+          ${target.json({
+            modelingCards: [{ projectId: "legacy-project" }],
+            retained: "keep-me"
+          })}
+        )
+      `;
+      await applyMigration(target, "0009_modeling_permanent_purge.sql");
 
       const agentV2Tables = await target<Array<{ table_name: string }>>`
         select table_name
@@ -128,16 +219,26 @@ describeDatabase("migration upgrade compatibility", () => {
           and table_name like 'modeling_%'
         order by table_name
       `;
-      expect(modelingTables.map((row) => row.table_name)).toEqual([
-        "modeling_artifact",
-        "modeling_import_intent",
-        "modeling_job",
-        "modeling_job_event",
-        "modeling_plan",
-        "modeling_project",
-        "modeling_revision",
-        "modeling_validation_attempt"
-      ]);
+      expect(modelingTables).toEqual([]);
+
+      const modelingEnums = await target<Array<{ type_name: string }>>`
+        select pg_type.typname as type_name
+        from pg_type
+        join pg_namespace on pg_namespace.oid = pg_type.typnamespace
+        where pg_namespace.nspname = 'public'
+          and pg_type.typname like 'modeling_%'
+        order by pg_type.typname
+      `;
+      expect(modelingEnums).toEqual([]);
+
+      const [cleanedMessage] = await target<
+        Array<{ metadata: Record<string, unknown> }>
+      >`
+        select metadata
+        from message
+        where id = ${legacyMessageId}
+      `;
+      expect(cleanedMessage?.metadata).toEqual({ retained: "keep-me" });
 
       const upgradedRows = await target<
         Array<{ id: string; client_request_id: string }>
@@ -752,7 +853,8 @@ async function createPre0002Schema(database: Sql) {
 
     CREATE TABLE message (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      status message_status DEFAULT 'pending' NOT NULL
+      status message_status DEFAULT 'pending' NOT NULL,
+      metadata jsonb DEFAULT '{}'::jsonb NOT NULL
     );
 
     CREATE TABLE citation (
