@@ -12,7 +12,9 @@ if (process.argv.includes("--production")) {
 
   const requiredAssets = ["public/semacad/semacad-app-icon.png"];
   if (isSemacadDownloadReady(verifiedRelease)) {
-    requiredAssets.push("public/semacad/semacad-main-window.png");
+    requiredAssets.push(
+      "public/semacad/semacad-public-beta-main-window-r1.png"
+    );
   }
 
   for (const relativePath of requiredAssets) {

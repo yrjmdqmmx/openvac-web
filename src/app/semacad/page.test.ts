@@ -29,8 +29,8 @@ vi.mock("next/headers", () => ({
   headers: vi.fn(async () => new Headers())
 }));
 vi.mock("next/image", () => ({
-  default: (props: { priority?: boolean }) =>
-    createElement("img", { ...props, priority: undefined })
+  default: (props: { priority?: boolean; fill?: boolean }) =>
+    createElement("img", { ...props, priority: undefined, fill: undefined })
 }));
 vi.mock("@/server/auth", () => ({
   auth: { api: { getSession: mocks.getSession } }
@@ -104,10 +104,15 @@ describe("SemaCAD product page", () => {
       "aria-disabled",
       "true"
     );
-    expect(screen.getByRole("link", { name: /查看源代码/ })).toHaveAttribute(
-      "href",
-      "https://github.com/zdywrnm/SemaCAD"
-    );
+    expect(screen.getAllByRole("link", { name: /查看源代码/ })).toHaveLength(2);
+    for (const sourceLink of screen.getAllByRole("link", {
+      name: /查看源代码/
+    })) {
+      expect(sourceLink).toHaveAttribute(
+        "href",
+        "https://github.com/zdywrnm/SemaCAD"
+      );
+    }
     expect(
       screen.queryByAltText(/SemaCAD 公开 Beta 主窗口/)
     ).not.toBeInTheDocument();
@@ -133,7 +138,7 @@ describe("SemaCAD product page", () => {
       publishedAt: "2026-08-06T16:10:24Z"
     });
 
-    render(await SemacadPage());
+    const { container } = render(await SemacadPage());
 
     const downloadLinks = screen.getAllByRole("link", {
       name: /下载 Mac 版/
@@ -141,15 +146,33 @@ describe("SemaCAD product page", () => {
     expect(downloadLinks).toHaveLength(2);
     expect(downloadLinks[0]).toHaveClass("!text-white");
     expect(downloadLinks[1]).toHaveClass("!text-[var(--ink)]");
-    expect(screen.getByAltText(/SemaCAD 公开 Beta 主窗口/)).toHaveAttribute(
-      "src",
-      "/semacad/semacad-main-window.png"
-    );
+    expect(
+      screen.getByAltText("六孔真空盲板法兰示意件与 OpenVac 计划面板")
+    ).toHaveAttribute("src", "/semacad/semacad-public-beta-main-window-r1.png");
     expect(
       screen.getByText(
         "ab4fb2e669422a2fc9407fac1340c01e3a2cc02ae16e08ff7cb89936408fadfb"
       )
     ).toBeInTheDocument();
-    expect(screen.getByText("已公证")).toBeInTheDocument();
+    expect(screen.getAllByText("已公证")).toHaveLength(2);
+    expect(screen.getByAltText("SemaCAD 应用图标")).toHaveClass(
+      "size-[112px]",
+      "md:size-[152px]",
+      "lg:size-[168px]"
+    );
+    expect(
+      screen.getByRole("region", { name: "SemaCAD 产品亮点" })
+    ).toHaveTextContent("FreeCAD本地优先BYOKApple Silicon已公证开源");
+    expect(
+      screen.getByRole("heading", {
+        name: "让专业建模与智能辅助发生在同一个工作区。"
+      })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByAltText("六孔真空盲板法兰示意件与 OpenVac 计划面板")
+    ).toHaveAttribute("src", "/semacad/semacad-public-beta-main-window-r1.png");
+    expect(
+      container.querySelector('[data-testid="semacad-hero-backdrop"]')
+    ).not.toBeNull();
   });
 });

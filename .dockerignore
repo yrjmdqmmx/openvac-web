@@ -12,7 +12,8 @@ test-results
 concepts
 *.png
 !public/semacad/semacad-app-icon.png
-!public/semacad/semacad-main-window.png
+!public/semacad/semacad-public-beta-main-window-r1.png
+!public/semacad/semacad-liquid-metal-poster.avif
 .env*
 !.env.example
 storage

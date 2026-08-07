@@ -2,6 +2,7 @@
 
 FROM scratch AS semacad-context-check
 COPY public/semacad/semacad-app-icon.png /semacad-app-icon.png
+COPY public/semacad/semacad-liquid-metal-poster.avif /semacad-liquid-metal-poster.avif
 COPY scripts/verify-semacad-release.ts /verify-semacad-release.ts
 COPY src/lib/semacad-release.ts /semacad-release.ts
 
