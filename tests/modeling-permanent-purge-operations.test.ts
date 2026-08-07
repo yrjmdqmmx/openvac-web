@@ -11,11 +11,16 @@ describe("legacy modeling permanent purge operations", () => {
   const purge = source("deploy/modeling-purge-execute.sh");
   const restore = source("deploy/verify-clean-restore.sh");
 
-  it("exposes only an approved production inventory or purge operation", () => {
+  it("exposes only an approved environment inventory or purge operation", () => {
+    expect(workflow).toContain("target:");
+    expect(workflow).toContain("- staging");
+    expect(workflow).toContain("- production");
     expect(workflow).toContain("operation:");
     expect(workflow).toContain("- inventory");
     expect(workflow).toContain("- purge");
-    expect(workflow).toContain("environment:\n      name: production");
+    expect(workflow).toContain(
+      "environment:\n      name: ${{ inputs.target }}"
+    );
     expect(workflow).toContain("expected_inventory_sha256:");
     expect(workflow).toContain("inventory_phase:");
     expect(workflow).toContain("pre_migration_inventory_run_id:");
@@ -91,10 +96,8 @@ describe("legacy modeling permanent purge operations", () => {
   });
 
   it("preserves the new clean backup and emits only aggregate deletion evidence", () => {
-    expect(purge).toContain('preserved_archive="$clean_production_archive"');
-    expect(purge).toContain(
-      'preserved_checksum="$clean_production_archive.sha256"'
-    );
+    expect(purge).toContain('preserved_archive="$clean_archive"');
+    expect(purge).toContain('preserved_checksum="$clean_archive.sha256"');
     expect(purge).toContain('"target_categories"');
     expect(purge).toContain('"before_counts"');
     expect(purge).toContain('"after_counts"');
@@ -127,9 +130,7 @@ describe("legacy modeling permanent purge operations", () => {
     ]) {
       expect(() => execFileSync("bash", ["-n", path])).not.toThrow();
     }
-    expect(purge).toContain(
-      'activation_lock="$release_target/.activation-lock"'
-    );
+    expect(purge).toContain('activation_lock="$deploy_dir/.activation-lock"');
     expect(purge).toContain('owned_activation_locks+=("$activation_lock")');
   });
 
@@ -156,5 +157,36 @@ describe("legacy modeling permanent purge operations", () => {
     expect(inventory).toContain(
       "production R1 deployment receipt does not prove the rollback rehearsal passed"
     );
+  });
+
+  it("keeps staging and production host inventories and receipts independent", () => {
+    expect(workflow).toContain(
+      "modeling-${{ inputs.target }}-inventory-pre-migration-"
+    );
+    expect(inventory).toContain("printf 'target=%s\\n' \"$target\"");
+    expect(purge).toContain('[[ "$(pre_json_text target)" == "$target" ]]');
+    expect(purge).toContain('bash "$script_dir/backup.sh" "$target"');
+    expect(purge).toContain(
+      'receipt="$deploy_dir/modeling-purge-receipt.json"'
+    );
+    expect(purge).not.toContain(
+      "for release_target in /opt/openvac /opt/openvac-staging"
+    );
+    expect(inventory).toContain(
+      "target-specific purge requires a dedicated environment host"
+    );
+    expect(purge).toContain(
+      "target-specific purge requires a dedicated environment host"
+    );
+  });
+
+  it("does not overstate the shared OSS prefix in staging receipts", () => {
+    expect(purge).toContain('oss_modeling_scope="not-applicable"');
+    expect(purge).toContain("before_oss_modeling_json=null");
+    expect(purge).toContain("after_oss_modeling_json=null");
+    expect(purge).toContain(
+      'target_categories_json=\'["database","containers","images","environment_keys","filesystem_paths","legacy_backups"]\''
+    );
+    expect(purge).toContain('"oss_modeling_scope":"%s"');
   });
 });

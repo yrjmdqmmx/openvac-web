@@ -3,6 +3,13 @@ name: Legacy modeling permanent purge
 on:
   workflow_dispatch:
     inputs:
+      target:
+        description: Deployment environment and host to inventory or purge
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
       operation:
         description: Read-only inventory or irreversible purge
         required: true
@@ -59,8 +66,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment:
-      name: production
-      url: https://openvac.cn/semacad
+      name: ${{ inputs.target }}
+      url: ${{ inputs.target == 'production' && 'https://openvac.cn/semacad' || 'https://staging-openvac.openvac.cn/semacad' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -69,6 +76,7 @@ jobs:
       - name: Validate immutable operation inputs
         env:
           OPERATION: ${{ inputs.operation }}
+          TARGET: ${{ inputs.target }}
           INVENTORY_PHASE: ${{ inputs.inventory_phase }}
           EXPECTED_INVENTORY_SHA256: ${{ inputs.expected_inventory_sha256 }}
           PRE_MIGRATION_INVENTORY_RUN_ID: ${{ inputs.pre_migration_inventory_run_id }}
@@ -78,6 +86,7 @@ jobs:
           DEPLOYMENT_IMAGE_DIGEST: ${{ inputs.deployment_image_digest }}
         run: |
           set -Eeuo pipefail
+          case "$TARGET" in production|staging) ;; *) exit 64 ;; esac
           case "$OPERATION" in inventory|purge) ;; *) exit 64 ;; esac
           case "$INVENTORY_PHASE" in pre-migration|post-migration) ;; *) exit 64 ;; esac
           [[ "$R1_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -103,7 +112,7 @@ jobs:
         name: Download the reviewed pre-migration inventory artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: modeling-inventory-pre-migration-${{ inputs.pre_migration_inventory_run_id }}-${{ inputs.pre_migration_inventory_run_attempt }}
+          name: modeling-${{ inputs.target }}-inventory-pre-migration-${{ inputs.pre_migration_inventory_run_id }}-${{ inputs.pre_migration_inventory_run_attempt }}
           path: ${{ runner.temp }}/pre-migration-inventory
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ inputs.pre_migration_inventory_run_id }}
@@ -115,18 +124,25 @@ jobs:
           PRE_RUN_ATTEMPT: ${{ inputs.pre_migration_inventory_run_attempt }}
           R1_COMMIT_SHA: ${{ inputs.r1_commit_sha }}
           R2_COMMIT_SHA: ${{ inputs.r2_commit_sha }}
+          TARGET: ${{ inputs.target }}
         run: |
           set -Eeuo pipefail
           artifact="$RUNNER_TEMP/pre-migration-inventory/modeling-operation-result.json"
           test -f "$artifact" && test ! -L "$artifact"
           python3 -m json.tool "$artifact" >/dev/null
-          jq -e --arg r1 "$R1_COMMIT_SHA" --arg r2 "$R2_COMMIT_SHA" '
+          jq -e --arg r1 "$R1_COMMIT_SHA" --arg r2 "$R2_COMMIT_SHA" --arg target "$TARGET" '
             .schema == "modeling-purge-inventory-v1" and
+            .target == $target and
             .phase == "pre-migration" and
             .release_evidence.r1_sha == $r1 and
             .release_evidence.r2_sha == $r2 and
             .release_evidence.deployment_image_digest == "" and
-            .release_evidence.rollback_rehearsal == "passed" and
+            (if $target == "production" then
+              .release_evidence.rollback_rehearsal == "passed"
+            else
+              (.release_evidence.rollback_rehearsal == "passed" or
+               .release_evidence.rollback_rehearsal == "not-required")
+            end) and
             .oss_bucket_versioning == "unversioned" and
             (.inventory_sha256 | test("^[0-9a-f]{64}$")) and
             (.database.modeling_tables | type == "number") and
@@ -151,9 +167,10 @@ jobs:
           chmod 600 "$HOME/.ssh/openvac"
           printf '%s\n' "$ECS_KNOWN_HOSTS" >"$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/known_hosts"
-      - name: Run approved operation on the exact production host
+      - name: Run approved operation on the exact environment host
         env:
           OPERATION: ${{ inputs.operation }}
+          TARGET: ${{ inputs.target }}
           INVENTORY_PHASE: ${{ inputs.inventory_phase }}
           EXPECTED_INVENTORY_SHA256: ${{ inputs.expected_inventory_sha256 }}
           R1_COMMIT_SHA: ${{ inputs.r1_commit_sha }}
@@ -165,7 +182,7 @@ jobs:
           set -Eeuo pipefail
           ssh_base="${ECS_USER}@${ECS_HOST}"
           remote_stage="/tmp/openvac-modeling-purge-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          result="$RUNNER_TEMP/modeling-${OPERATION}-result.json"
+          result="$RUNNER_TEMP/modeling-${TARGET}-${OPERATION}-result.json"
           digest_argument="${DEPLOYMENT_IMAGE_DIGEST:--}"
           cleanup() {
             ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
@@ -191,42 +208,44 @@ jobs:
 
           if [ "$OPERATION" = inventory ]; then
             ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
-              sh -s -- "$remote_stage" "$INVENTORY_PHASE" "$R1_COMMIT_SHA" \
+              sh -s -- "$remote_stage" "$TARGET" "$INVENTORY_PHASE" "$R1_COMMIT_SHA" \
               "$R2_COMMIT_SHA" "$digest_argument" \
               >"$result" <<'REMOTE_INVENTORY'
           set -eu
           remote_stage="$1"
-          inventory_phase="$2"
-          r1_sha="$3"
-          r2_sha="$4"
-          deployment_image_digest="$5"
+          target="$2"
+          inventory_phase="$3"
+          r1_sha="$4"
+          r2_sha="$5"
+          deployment_image_digest="$6"
           [ "$deployment_image_digest" != "-" ] || deployment_image_digest=""
           case "$remote_stage" in /tmp/openvac-modeling-purge-*) ;; *) exit 64 ;; esac
           if [ "$(id -u)" -eq 0 ]; then
-            exec bash "$remote_stage/modeling-purge-inventory.sh" production "" \
+            exec bash "$remote_stage/modeling-purge-inventory.sh" "$target" "" \
               "$inventory_phase" "$r1_sha" "$r2_sha" "$deployment_image_digest"
           fi
-          exec sudo -n bash "$remote_stage/modeling-purge-inventory.sh" production "" \
+          exec sudo -n bash "$remote_stage/modeling-purge-inventory.sh" "$target" "" \
             "$inventory_phase" "$r1_sha" "$r2_sha" "$deployment_image_digest"
           REMOTE_INVENTORY
           else
             ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
-              sh -s -- "$remote_stage" "$EXPECTED_INVENTORY_SHA256" \
+              sh -s -- "$remote_stage" "$TARGET" "$EXPECTED_INVENTORY_SHA256" \
               "$R1_COMMIT_SHA" "$R2_COMMIT_SHA" "$DEPLOYMENT_IMAGE_DIGEST" \
               >"$result" <<'REMOTE_PURGE'
           set -eu
           remote_stage="$1"
-          expected_inventory_sha256="$2"
-          r1_sha="$3"
-          r2_sha="$4"
-          deployment_image_digest="$5"
+          target="$2"
+          expected_inventory_sha256="$3"
+          r1_sha="$4"
+          r2_sha="$5"
+          deployment_image_digest="$6"
           case "$remote_stage" in /tmp/openvac-modeling-purge-*) ;; *) exit 64 ;; esac
           if [ "$(id -u)" -eq 0 ]; then
-            exec bash "$remote_stage/modeling-purge-execute.sh" production \
+            exec bash "$remote_stage/modeling-purge-execute.sh" "$target" \
               "$expected_inventory_sha256" "$remote_stage/pre-migration-inventory.json" \
               "$r1_sha" "$r2_sha" "$deployment_image_digest"
           fi
-          exec sudo -n bash "$remote_stage/modeling-purge-execute.sh" production \
+          exec sudo -n bash "$remote_stage/modeling-purge-execute.sh" "$target" \
             "$expected_inventory_sha256" "$remote_stage/pre-migration-inventory.json" \
             "$r1_sha" "$r2_sha" "$deployment_image_digest"
           REMOTE_PURGE
@@ -245,7 +264,7 @@ jobs:
       - name: Save deletion-safe inventory or receipt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: modeling-${{ inputs.operation }}-${{ inputs.inventory_phase }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: modeling-${{ inputs.target }}-${{ inputs.operation }}-${{ inputs.inventory_phase }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/modeling-operation-result.json
           if-no-files-found: error
           retention-days: 30
