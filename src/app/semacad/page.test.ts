@@ -155,11 +155,13 @@ describe("SemaCAD product page", () => {
       )
     ).toBeInTheDocument();
     expect(screen.getAllByText("已公证")).toHaveLength(2);
-    expect(screen.getByAltText("SemaCAD 应用图标")).toHaveClass(
-      "size-[112px]",
-      "md:size-[152px]",
-      "lg:size-[168px]"
+    expect(screen.getByTestId("semacad-app-icon-frame")).toHaveClass(
+      "size-[76px]",
+      "md:size-[96px]",
+      "lg:size-[112px]",
+      "overflow-hidden"
     );
+    expect(screen.getByAltText("SemaCAD 应用图标")).toHaveClass("scale-[1.43]");
     expect(
       screen.getByRole("region", { name: "SemaCAD 产品亮点" })
     ).toHaveTextContent("FreeCAD本地优先BYOKApple Silicon已公证开源");

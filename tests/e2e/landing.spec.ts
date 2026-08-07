@@ -117,9 +117,9 @@ test("renders the verified SemaCAD public Beta release", async ({ page }) => {
   await expect(
     page.getByRole("region", { name: "SemaCAD 产品亮点" })
   ).toContainText("FreeCAD本地优先BYOKApple Silicon已公证开源");
-  const icon = page.getByAltText("SemaCAD 应用图标").first();
+  const icon = page.getByTestId("semacad-app-icon-frame").first();
   const iconBox = await icon.boundingBox();
-  const minimumIconWidth = (page.viewportSize()?.width ?? 0) >= 1024 ? 128 : 92;
+  const minimumIconWidth = (page.viewportSize()?.width ?? 0) >= 1024 ? 112 : 76;
   expect(iconBox?.width).toBeGreaterThanOrEqual(minimumIconWidth);
   await expect(
     page.getByText(
