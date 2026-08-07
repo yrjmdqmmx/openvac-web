@@ -50,6 +50,9 @@ describe("legacy modeling permanent purge operations", () => {
     );
     expect(ossutilInstaller).toContain('verified_binary_sha256="$(sha256sum');
     expect(ossutilInstaller).toContain('installed_binary_sha256="$(sha256sum');
+    expect(ossutilInstaller).toContain('"$binary" --version');
+    expect(ossutilInstaller).toContain("/usr/local/bin/ossutil --version");
+    expect(ossutilInstaller).not.toContain('"$binary" version');
     expect(ossutilInstaller).not.toContain('status":"already-present"');
     expect(ossutilInstaller).not.toContain("OSS_ACCESS_KEY");
     expect(workflow).toContain("deploy/install-pinned-ossutil.sh");
