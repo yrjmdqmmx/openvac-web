@@ -178,6 +178,16 @@ describe("legacy modeling permanent purge operations", () => {
       'if [[ "$target" == production || "$host_scope" == dedicated ]]'
     );
     expect(inventory).toContain("printf 'host_scope=%s\\n'");
+    expect(workflow).toContain(
+      '(.host_scope == "shared" or .host_scope == "dedicated")'
+    );
+    expect(purge).toContain(
+      'pre_migration_host_scope="$(pre_json_text host_scope)"'
+    );
+    expect(purge).toContain(
+      '[[ "$current_host_scope" == "$pre_migration_host_scope" ]]'
+    );
+    expect(purge).toContain('"host_scope":"%s","image_scope":"%s"');
     expect(inventory).not.toContain(
       "target-specific purge requires a dedicated environment host"
     );
