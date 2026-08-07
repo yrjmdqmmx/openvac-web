@@ -58,7 +58,7 @@ install -d -m 0700 "$extract_dir"
 python3 -m zipfile -e "$archive" "$extract_dir"
 binary="$extract_dir/ossutil-$version-linux-$package_arch/ossutil"
 [[ -f "$binary" && ! -L "$binary" ]] || fail "verified archive has an unexpected layout"
-"$binary" version 2>&1 | grep -F "$version" >/dev/null ||
+"$binary" --version 2>&1 | grep -F "$version" >/dev/null ||
   fail "verified binary did not report the pinned version"
 verified_binary_sha256="$(sha256sum "$binary" | awk '{print $1}')"
 [[ "$verified_binary_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "verified binary hash is malformed"
@@ -69,7 +69,7 @@ install -m 0755 -- "$binary" /usr/local/bin/ossutil
   fail "installed ossutil path is not a regular file"
 [[ "$(stat -c '%a' /usr/local/bin/ossutil)" == 755 ]] ||
   fail "installed ossutil mode is not 0755"
-/usr/local/bin/ossutil version 2>&1 | grep -F "$version" >/dev/null ||
+/usr/local/bin/ossutil --version 2>&1 | grep -F "$version" >/dev/null ||
   fail "installed ossutil version verification failed"
 installed_binary_sha256="$(sha256sum /usr/local/bin/ossutil | awk '{print $1}')"
 [[ "$installed_binary_sha256" == "$verified_binary_sha256" ]] ||
