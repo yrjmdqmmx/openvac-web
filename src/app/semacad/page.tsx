@@ -143,7 +143,7 @@ export default async function SemacadPage() {
               {readyRelease ? (
                 <a
                   href={readyRelease.downloadUrl}
-                  className="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg bg-[var(--ink)] px-5 text-sm font-medium text-white transition-colors hover:bg-[#292b2d]"
+                  className="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg bg-[var(--ink)] px-5 text-sm font-medium !text-white transition-colors hover:bg-[#292b2d]"
                 >
                   <Download aria-hidden="true" className="size-4" />
                   下载 Mac 版
