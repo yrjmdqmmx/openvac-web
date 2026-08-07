@@ -83,6 +83,28 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     expect(release).toContain("Save accepted staging digest provenance");
   });
 
+  it("can redeploy an exact successful staging archive without rebuilding it", () => {
+    expect(release).toContain("reuse_run_id:");
+    expect(release).toContain("reuse_run_attempt:");
+    expect(release).toContain(
+      '"$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$REUSE_RUN_ID/attempts/$REUSE_RUN_ATTEMPT"'
+    );
+    expect(release).toContain(
+      "name: openvac-web-release-${{ inputs.reuse_run_id }}-${{ inputs.reuse_run_attempt }}"
+    );
+    expect(release).toContain("run-id: ${{ inputs.reuse_run_id }}");
+    expect(release).toContain("github-token: ${{ secrets.GITHUB_TOKEN }}");
+    expect(release).toContain(
+      'if [ "$reused_digest" != "$WEB_IMAGE_DIGEST" ]; then'
+    );
+    expect(release).toContain(
+      "if: inputs.target == 'staging' && inputs.reuse_run_id == ''"
+    );
+    expect(release).toContain(
+      "if: inputs.target == 'staging' && inputs.reuse_run_id != ''"
+    );
+  });
+
   it("checks Docker context inputs required by the SemaCAD production gate", () => {
     expect(dockerfile).toContain("FROM scratch AS semacad-context-check");
     expect(dockerfile).toContain(
