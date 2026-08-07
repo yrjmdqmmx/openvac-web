@@ -95,18 +95,25 @@ test("links the homepage to the SemaCAD product page", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "SemaCAD" })).toBeVisible();
 });
 
-test("renders a truthful SemaCAD preparing state", async ({ page }) => {
+test("renders the verified SemaCAD public Beta release", async ({ page }) => {
   await page.goto("/semacad");
 
-  await expect(page.getByText("下载准备中")).toHaveAttribute(
-    "aria-disabled",
-    "true"
+  const downloads = page.getByRole("link", { name: /下载 Mac 版/ });
+  await expect(downloads).toHaveCount(2);
+  await expect(downloads.first()).toHaveAttribute(
+    "href",
+    "https://github.com/zdywrnm/SemaCAD/releases/download/v0.2.0-beta.1/semaCAD-0.2.0-beta.1-macOS26-arm64.dmg"
   );
   await expect(page.getByRole("link", { name: /查看源代码/ })).toHaveAttribute(
     "href",
     "https://github.com/zdywrnm/SemaCAD"
   );
-  await expect(page.getByAltText(/SemaCAD 公开 Beta 主窗口/)).toHaveCount(0);
+  await expect(page.getByAltText(/SemaCAD 公开 Beta 主窗口/)).toBeVisible();
+  await expect(
+    page.getByText(
+      "ab4fb2e669422a2fc9407fac1340c01e3a2cc02ae16e08ff7cb89936408fadfb"
+    )
+  ).toBeVisible();
   await expect(page.locator('link[rel~="icon"]')).toHaveCount(0);
 });
 

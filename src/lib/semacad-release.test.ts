@@ -10,23 +10,23 @@ import {
 const verifiedPublicBeta = {
   status: "public-beta" as const,
   version: "0.2.0",
-  build: "2026080501",
-  assetName: "SemaCAD-0.2.0-public-beta-macOS26-arm64.dmg",
+  build: "2026080605",
+  assetName: "semaCAD-0.2.0-beta.1-macOS26-arm64.dmg",
   downloadUrl:
-    "https://github.com/zdywrnm/SemaCAD/releases/download/v0.2.0-beta.1/SemaCAD-0.2.0-public-beta-macOS26-arm64.dmg",
+    "https://github.com/zdywrnm/SemaCAD/releases/download/v0.2.0-beta.1/semaCAD-0.2.0-beta.1-macOS26-arm64.dmg",
   releaseUrl: "https://github.com/zdywrnm/SemaCAD/releases/tag/v0.2.0-beta.1",
-  sizeBytes: 1_741_668_864,
-  sha256: "a".repeat(64),
+  sizeBytes: 1_742_524_586,
+  sha256: "ab4fb2e669422a2fc9407fac1340c01e3a2cc02ae16e08ff7cb89936408fadfb",
   architecture: "arm64" as const,
   minimumMacOS: "26.0",
   notarized: true as const,
-  publishedAt: "2026-08-05T12:00:00+08:00"
+  publishedAt: "2026-08-06T16:10:24Z"
 };
 
 describe("SemaCAD release manifest", () => {
-  it("allows the non-downloadable preparing page in production", () => {
-    expect(semacadRelease.status).toBe("preparing");
-    expect(isSemacadDownloadReady()).toBe(false);
+  it("publishes the verified public Beta manifest", () => {
+    expect(semacadRelease).toEqual(verifiedPublicBeta);
+    expect(isSemacadDownloadReady()).toBe(true);
     expect(assertSemacadProductionManifest()).toEqual(semacadRelease);
   });
 
@@ -49,9 +49,9 @@ describe("SemaCAD release manifest", () => {
 
   it.each([
     {
-      assetName: "semaCAD-0.2.0-beta.1-macOS26-arm64.dmg",
+      assetName: "SemaCAD-0.2.0-beta.1-macOS26-arm64.dmg",
       downloadUrl:
-        "https://github.com/zdywrnm/SemaCAD/releases/download/v0.2.0-beta.1/semaCAD-0.2.0-beta.1-macOS26-arm64.dmg"
+        "https://github.com/zdywrnm/SemaCAD/releases/download/v0.2.0-beta.1/SemaCAD-0.2.0-beta.1-macOS26-arm64.dmg"
     },
     {
       releaseUrl: "https://github.com/zdywrnm/SemaCAD/releases/tag/v0.2.0",
