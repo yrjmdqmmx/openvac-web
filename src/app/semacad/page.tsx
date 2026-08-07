@@ -225,14 +225,19 @@ export default async function SemacadPage() {
         <section className="relative isolate min-h-[820px] overflow-hidden bg-[#dbe4eb] sm:min-h-[900px]">
           <SemacadHeroBackdrop />
           <div className="shell flex flex-col items-center pt-16 text-center sm:pt-20 lg:pt-24">
-            <Image
-              src="/semacad/semacad-app-icon.png"
-              alt="SemaCAD 应用图标"
-              width={168}
-              height={168}
-              priority
-              className="size-[112px] rounded-[30px] shadow-[0_20px_52px_rgba(17,19,21,0.2)] md:size-[152px] md:rounded-[40px] lg:size-[168px] lg:rounded-[44px]"
-            />
+            <div
+              data-testid="semacad-app-icon-frame"
+              className="size-[76px] overflow-hidden rounded-[20px] bg-[#202326] shadow-[0_16px_40px_rgba(17,19,21,0.2)] md:size-[96px] md:rounded-[26px] lg:size-[112px] lg:rounded-[30px]"
+            >
+              <Image
+                src="/semacad/semacad-app-icon.png"
+                alt="SemaCAD 应用图标"
+                width={168}
+                height={168}
+                priority
+                className="size-full scale-[1.43] object-cover"
+              />
+            </div>
             <h1 className="mt-2 text-[clamp(3.7rem,8vw,7.5rem)] leading-[0.92] font-semibold tracking-[-0.075em]">
               SemaCAD
             </h1>
