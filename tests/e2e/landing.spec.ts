@@ -105,17 +105,47 @@ test("renders the verified SemaCAD public Beta release", async ({ page }) => {
     "https://github.com/zdywrnm/SemaCAD/releases/download/v0.2.0-beta.1/semaCAD-0.2.0-beta.1-macOS26-arm64.dmg"
   );
   await expect(downloads.first()).toHaveCSS("color", "rgb(255, 255, 255)");
-  await expect(page.getByRole("link", { name: /查看源代码/ })).toHaveAttribute(
+  const sourceLinks = page.getByRole("link", { name: /查看源代码/ });
+  await expect(sourceLinks).toHaveCount(2);
+  await expect(sourceLinks.first()).toHaveAttribute(
     "href",
     "https://github.com/zdywrnm/SemaCAD"
   );
-  await expect(page.getByAltText(/SemaCAD 公开 Beta 主窗口/)).toBeVisible();
+  await expect(
+    page.getByAltText(/六孔真空盲板法兰示意件与 OpenVac 计划面板/)
+  ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "SemaCAD 产品亮点" })
+  ).toContainText("FreeCAD本地优先BYOKApple Silicon已公证开源");
+  const icon = page.getByAltText("SemaCAD 应用图标").first();
+  const iconBox = await icon.boundingBox();
+  const minimumIconWidth = (page.viewportSize()?.width ?? 0) >= 1024 ? 128 : 92;
+  expect(iconBox?.width).toBeGreaterThanOrEqual(minimumIconWidth);
   await expect(
     page.getByText(
       "ab4fb2e669422a2fc9407fac1340c01e3a2cc02ae16e08ff7cb89936408fadfb"
     )
   ).toBeVisible();
   await expect(page.locator('link[rel~="icon"]')).toHaveCount(0);
+});
+
+test("uses the static liquid-metal poster and has no overflow on mobile", async ({
+  page
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/semacad");
+
+  const backdrop = page.getByTestId("semacad-hero-backdrop");
+  await expect(backdrop).toHaveAttribute("data-renderer", "poster");
+  await expect(backdrop).toHaveCSS(
+    "background-image",
+    /semacad-liquid-metal-poster\.avif/
+  );
+  const dimensions = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth
+  }));
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
 });
 
 test("redirects both legacy modeling URLs directly to SemaCAD", async ({

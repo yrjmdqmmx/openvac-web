@@ -88,8 +88,16 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     expect(dockerfile).toContain(
       "COPY public/semacad/semacad-app-icon.png /semacad-app-icon.png"
     );
+    expect(dockerfile).toContain(
+      "COPY public/semacad/semacad-liquid-metal-poster.avif /semacad-liquid-metal-poster.avif"
+    );
     expect(dockerignore).toContain("!public/semacad/semacad-app-icon.png");
-    expect(dockerignore).toContain("!public/semacad/semacad-main-window.png");
+    expect(dockerignore).toContain(
+      "!public/semacad/semacad-public-beta-main-window-r1.png"
+    );
+    expect(dockerignore).toContain(
+      "!public/semacad/semacad-liquid-metal-poster.avif"
+    );
     expect(ci).toContain("--target semacad-context-check");
   });
 
