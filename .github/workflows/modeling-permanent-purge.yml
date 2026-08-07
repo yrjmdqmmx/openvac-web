@@ -85,6 +85,7 @@ jobs:
           R1_COMMIT_SHA: ${{ inputs.r1_commit_sha }}
           R2_COMMIT_SHA: ${{ inputs.r2_commit_sha }}
           DEPLOYMENT_IMAGE_DIGEST: ${{ inputs.deployment_image_digest }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -Eeuo pipefail
           case "$TARGET" in production|staging) ;; *) exit 64 ;; esac
@@ -100,6 +101,8 @@ jobs:
             if [ "$OPERATION" = prepare-ossutil ]; then
               test "$INVENTORY_PHASE" = pre-migration
               test -z "$DEPLOYMENT_IMAGE_DIGEST"
+              test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+              test "$R2_COMMIT_SHA" = "$GITHUB_SHA"
             elif [ "$INVENTORY_PHASE" = pre-migration ]; then
               test -z "$DEPLOYMENT_IMAGE_DIGEST"
             else

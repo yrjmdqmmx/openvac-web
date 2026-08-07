@@ -16,15 +16,6 @@ case "$target" in production | staging) ;; *) fail "target must be production or
 [[ "$(id -u)" -eq 0 ]] || fail "ossutil bootstrap must run as root"
 
 version=2.3.0
-if command -v ossutil >/dev/null 2>&1; then
-  installed_version="$(ossutil version 2>&1)"
-  [[ "$installed_version" == *"$version"* ]] ||
-    fail "an unapproved ossutil version is already installed"
-  printf '{"schema":"openvac-ossutil-bootstrap-v1","target":"%s","version":"%s","status":"already-present"}\n' \
-    "$target" "$version"
-  exit 0
-fi
-
 case "$(uname -m)" in
   x86_64 | amd64)
     package_arch=amd64
@@ -37,7 +28,7 @@ case "$(uname -m)" in
   *) fail "unsupported Linux architecture" ;;
 esac
 
-for command_name in curl sha256sum python3 install uname; do
+for command_name in awk curl grep install mktemp python3 sha256sum stat uname; do
   command -v "$command_name" >/dev/null 2>&1 ||
     fail "required bootstrap command is unavailable: $command_name"
 done
@@ -69,7 +60,10 @@ binary="$extract_dir/ossutil-$version-linux-$package_arch/ossutil"
 [[ -f "$binary" && ! -L "$binary" ]] || fail "verified archive has an unexpected layout"
 "$binary" version 2>&1 | grep -F "$version" >/dev/null ||
   fail "verified binary did not report the pinned version"
+verified_binary_sha256="$(sha256sum "$binary" | awk '{print $1}')"
+[[ "$verified_binary_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "verified binary hash is malformed"
 
+[[ ! -L /usr/local/bin/ossutil ]] || fail "refusing to overwrite a symbolic-link destination"
 install -m 0755 -- "$binary" /usr/local/bin/ossutil
 [[ -f /usr/local/bin/ossutil && ! -L /usr/local/bin/ossutil ]] ||
   fail "installed ossutil path is not a regular file"
@@ -77,6 +71,11 @@ install -m 0755 -- "$binary" /usr/local/bin/ossutil
   fail "installed ossutil mode is not 0755"
 /usr/local/bin/ossutil version 2>&1 | grep -F "$version" >/dev/null ||
   fail "installed ossutil version verification failed"
+installed_binary_sha256="$(sha256sum /usr/local/bin/ossutil | awk '{print $1}')"
+[[ "$installed_binary_sha256" == "$verified_binary_sha256" ]] ||
+  fail "installed ossutil binary differs from the verified binary"
+[[ "$(command -v ossutil)" == /usr/local/bin/ossutil ]] ||
+  fail "the verified ossutil binary is not first on PATH"
 
 printf '{"schema":"openvac-ossutil-bootstrap-v1","target":"%s","version":"%s","status":"installed"}\n' \
   "$target" "$version"

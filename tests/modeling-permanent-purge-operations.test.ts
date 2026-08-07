@@ -48,8 +48,15 @@ describe("legacy modeling permanent purge operations", () => {
     expect(ossutilInstaller).toContain(
       'install -m 0755 -- "$binary" /usr/local/bin/ossutil'
     );
+    expect(ossutilInstaller).toContain('verified_binary_sha256="$(sha256sum');
+    expect(ossutilInstaller).toContain('installed_binary_sha256="$(sha256sum');
+    expect(ossutilInstaller).not.toContain('status":"already-present"');
     expect(ossutilInstaller).not.toContain("OSS_ACCESS_KEY");
     expect(workflow).toContain("deploy/install-pinned-ossutil.sh");
+    expect(workflow).toContain('test "$R2_COMMIT_SHA" = "$GITHUB_SHA"');
+    expect(workflow).toContain(
+      'test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"'
+    );
   });
 
   it("preserves the intentionally empty pre-migration digest across SSH", () => {
