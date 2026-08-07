@@ -9,10 +9,20 @@ fail() {
 }
 
 if [[ "$#" -ne 6 ]]; then
-  fail "usage: modeling-purge-inventory.sh production PRIVATE_STATE_DIR pre-migration|post-migration R1_SHA R2_SHA DEPLOYMENT_IMAGE_DIGEST_OR_EMPTY"
+  fail "usage: modeling-purge-inventory.sh production|staging PRIVATE_STATE_DIR pre-migration|post-migration R1_SHA R2_SHA DEPLOYMENT_IMAGE_DIGEST_OR_EMPTY"
 fi
-[[ "$1" == "production" ]] || fail "only the production purge scope is supported"
-
+target="$1"
+case "$target" in
+  production)
+    deploy_dir=/opt/openvac
+    compose_project=openvac-production
+    ;;
+  staging)
+    deploy_dir=/opt/openvac-staging
+    compose_project=openvac-staging
+    ;;
+  *) fail "target must be production or staging" ;;
+esac
 requested_state_dir="$2"
 inventory_phase="$3"
 r1_sha="$4"
@@ -86,15 +96,19 @@ verify_active_release() {
 
 rollback_rehearsal=not-applicable
 if [[ "$inventory_phase" == "pre-migration" ]]; then
-  verify_active_release /opt/openvac "$r1_sha" ""
-  verify_active_release /opt/openvac-staging "$r1_sha" ""
-  production_rehearsal="$(awk -F '\t' '$1 == "/opt/openvac" { print $3 }' "$release_evidence_file")"
-  [[ "$production_rehearsal" == "rollback_rehearsal=passed" ]] ||
-    fail "production R1 deployment receipt does not prove the rollback rehearsal passed"
-  rollback_rehearsal=passed
+  verify_active_release "$deploy_dir" "$r1_sha" ""
+  receipt_rehearsal="$(awk -F '\t' -v path="$deploy_dir" '$1 == path { print $3 }' "$release_evidence_file")"
+  case "$receipt_rehearsal" in
+    rollback_rehearsal=passed) rollback_rehearsal=passed ;;
+    rollback_rehearsal=not-required)
+      [[ "$target" == "staging" ]] ||
+        fail "production R1 deployment receipt does not prove the rollback rehearsal passed"
+      rollback_rehearsal=not-required
+      ;;
+    *) fail "R1 deployment receipt has an invalid rollback rehearsal status" ;;
+  esac
 else
-  verify_active_release /opt/openvac "$r2_sha" "$deployment_image_digest"
-  verify_active_release /opt/openvac-staging "$r2_sha" "$deployment_image_digest"
+  verify_active_release "$deploy_dir" "$r2_sha" "$deployment_image_digest"
 fi
 sort -u -o "$release_evidence_file" "$release_evidence_file"
 
@@ -185,9 +199,9 @@ while IFS= read -r container_id; do
     *) continue ;;
   esac
   project_name="$(docker container inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container_id")"
-  case "$project_name" in
-    openvac | openvac-production | openvac-staging) ;;
-    *) fail "a modeling service container belongs to an unapproved Compose project" ;;
+  case "$target:$project_name" in
+    production:openvac | production:openvac-production | staging:openvac-staging) ;;
+    *) continue ;;
   esac
   container_name="$(docker container inspect --format '{{.Name}}' "$container_id")"
   container_name="${container_name#/}"
@@ -241,29 +255,37 @@ while IFS= read -r image_id; do
 done <"$images_file"
 mv -- "$safe_images_file" "$images_file"
 
-for env_file in /opt/openvac/.env /opt/openvac-staging/.env; do
-  [[ -f "$env_file" && ! -L "$env_file" ]] || fail "$env_file must be a regular file"
-  [[ "$(stat -c '%a' "$env_file")" == "600" ]] || fail "$env_file must have mode 0600"
-  awk -F= -v file="$env_file" \
-    '$1 ~ /^MODELING_[A-Z0-9_]*$/ { print file "\t" $1 }' "$env_file" \
-    >>"$env_keys_file"
-done
+env_file="$deploy_dir/.env"
+[[ -f "$env_file" && ! -L "$env_file" ]] || fail "$env_file must be a regular file"
+[[ "$(stat -c '%a' "$env_file")" == "600" ]] || fail "$env_file must have mode 0600"
+awk -F= -v file="$env_file" \
+  '$1 ~ /^MODELING_[A-Z0-9_]*$/ { print file "\t" $1 }' "$env_file" \
+  >>"$env_keys_file"
 sort -u -o "$env_keys_file" "$env_keys_file"
 
-approved_paths=(
-  /opt/openvac-modeling
-  /opt/openvac-staging-modeling
-  /opt/openvac/modeling
-  /opt/openvac/modeling-service
-  /opt/openvac/modeling-worker
-  /opt/openvac-staging/modeling
-  /opt/openvac-staging/modeling-service
-  /opt/openvac-staging/modeling-worker
-  /var/lib/openvac-modeling
-  /var/cache/openvac-modeling
-  /var/log/openvac-modeling
-  /tmp/openvac-modeling
-)
+if [[ "$target" == production ]]; then
+  approved_paths=(
+    /opt/openvac-modeling
+    /opt/openvac/modeling
+    /opt/openvac/modeling-service
+    /opt/openvac/modeling-worker
+    /var/lib/openvac-modeling
+    /var/cache/openvac-modeling
+    /var/log/openvac-modeling
+    /tmp/openvac-modeling
+  )
+else
+  approved_paths=(
+    /opt/openvac-staging-modeling
+    /opt/openvac-staging/modeling
+    /opt/openvac-staging/modeling-service
+    /opt/openvac-staging/modeling-worker
+    /var/lib/openvac-staging-modeling
+    /var/cache/openvac-staging-modeling
+    /var/log/openvac-staging-modeling
+    /tmp/openvac-staging-modeling
+  )
+fi
 for approved_path in "${approved_paths[@]}"; do
   if [[ -L "$approved_path" ]]; then
     fail "approved purge path must not be a symbolic link: $approved_path"
@@ -298,18 +320,19 @@ list_oss_prefix() {
   rm -f -- "$listing"
 }
 
-list_oss_prefix "$modeling_prefix" "$oss_modeling_file"
-list_oss_prefix "$backup_prefix/" "$oss_backups_file"
+if [[ "$target" == production ]]; then
+  list_oss_prefix "$modeling_prefix" "$oss_modeling_file"
+fi
+list_oss_prefix "$backup_prefix/$target/" "$oss_backups_file"
 
-for backup_dir in /opt/openvac/backups /opt/openvac-staging/backups; do
-  [[ -d "$backup_dir" && ! -L "$backup_dir" ]] || fail "$backup_dir must be a real directory"
-  if find "$backup_dir" -mindepth 1 -maxdepth 1 -type l -print -quit | grep -q .; then
-    fail "$backup_dir contains a symbolic link"
-  fi
-  find "$backup_dir" -mindepth 1 -maxdepth 1 -type f \
-    \( -name 'openvac-*.sql.gz' -o -name 'openvac-*.sql.gz.sha256' \) \
-    -print >>"$local_backups_file"
-done
+backup_dir="$deploy_dir/backups"
+[[ -d "$backup_dir" && ! -L "$backup_dir" ]] || fail "$backup_dir must be a real directory"
+if find "$backup_dir" -mindepth 1 -maxdepth 1 -type l -print -quit | grep -q .; then
+  fail "$backup_dir contains a symbolic link"
+fi
+find "$backup_dir" -mindepth 1 -maxdepth 1 -type f \
+  \( -name 'openvac-*.sql.gz' -o -name 'openvac-*.sql.gz.sha256' \) \
+  -print >>"$local_backups_file"
 sort -u -o "$local_backups_file" "$local_backups_file"
 
 psql_scalar() {
@@ -332,24 +355,12 @@ psql_scalar() {
   printf '%s\n' "$result"
 }
 
-database_modeling_tables=0
-database_modeling_enums=0
-database_modeling_cards=0
-for database_target in \
-  '/opt/openvac:openvac-production' \
-  '/opt/openvac-staging:openvac-staging'; do
-  deploy_dir="${database_target%%:*}"
-  compose_project="${database_target#*:}"
-  table_count="$(psql_scalar "$deploy_dir" "$compose_project" \
-    "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'modeling\\_%' ESCAPE '\\';")"
-  enum_count="$(psql_scalar "$deploy_dir" "$compose_project" \
-    "SELECT count(*) FROM pg_type JOIN pg_namespace ON pg_namespace.oid = pg_type.typnamespace WHERE pg_namespace.nspname = 'public' AND pg_type.typtype = 'e' AND pg_type.typname LIKE 'modeling\\_%' ESCAPE '\\';")"
-  card_count="$(psql_scalar "$deploy_dir" "$compose_project" \
-    "SELECT count(*) FROM message WHERE jsonb_typeof(metadata) = 'object' AND metadata ? 'modelingCards';")"
-  database_modeling_tables=$((database_modeling_tables + table_count))
-  database_modeling_enums=$((database_modeling_enums + enum_count))
-  database_modeling_cards=$((database_modeling_cards + card_count))
-done
+database_modeling_tables="$(psql_scalar "$deploy_dir" "$compose_project" \
+  "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'modeling\\_%' ESCAPE '\\';")"
+database_modeling_enums="$(psql_scalar "$deploy_dir" "$compose_project" \
+  "SELECT count(*) FROM pg_type JOIN pg_namespace ON pg_namespace.oid = pg_type.typnamespace WHERE pg_namespace.nspname = 'public' AND pg_type.typtype = 'e' AND pg_type.typname LIKE 'modeling\\_%' ESCAPE '\\';")"
+database_modeling_cards="$(psql_scalar "$deploy_dir" "$compose_project" \
+  "SELECT count(*) FROM message WHERE jsonb_typeof(metadata) = 'object' AND metadata ? 'modelingCards';")"
 
 count_lines() {
   wc -l <"$1" | tr -d '[:space:]'
@@ -369,6 +380,7 @@ oss_backup_object_count="$(count_lines "$oss_backups_file")"
 canonical="$state_dir/canonical-inventory.txt"
 {
   echo 'schema=modeling-purge-inventory-v1'
+  printf 'target=%s\n' "$target"
   printf 'phase=%s\n' "$inventory_phase"
   printf 'r1_sha=%s\n' "$r1_sha"
   printf 'r2_sha=%s\n' "$r2_sha"
@@ -389,8 +401,8 @@ canonical="$state_dir/canonical-inventory.txt"
 } >"$canonical"
 inventory_sha256="$(hash_file "$canonical")"
 
-printf '{"schema":"modeling-purge-inventory-v1","phase":"%s","inventory_sha256":"%s",' \
-  "$inventory_phase" "$inventory_sha256"
+printf '{"schema":"modeling-purge-inventory-v1","target":"%s","phase":"%s","inventory_sha256":"%s",' \
+  "$target" "$inventory_phase" "$inventory_sha256"
 printf '"release_evidence":{"r1_sha":"%s","r2_sha":"%s","deployment_image_digest":"%s","rollback_rehearsal":"%s"},' \
   "$r1_sha" "$r2_sha" "$deployment_image_digest" "$rollback_rehearsal"
 printf '"oss_bucket_versioning":"%s",' "$bucket_versioning"
