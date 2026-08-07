@@ -216,14 +216,14 @@ export default async function SemacadPage() {
   ] as const;
 
   return (
-    <main className="min-h-screen overflow-x-hidden bg-white">
-      <div className="border-b border-[var(--border)]">
-        <SiteHeader authenticated={Boolean(session)} />
+    <main className="relative isolate min-h-screen overflow-x-hidden">
+      <SemacadHeroBackdrop />
+      <div className="relative z-20 border-b border-[var(--border)]">
+        <SiteHeader authenticated={Boolean(session)} appearance="glass" />
       </div>
 
-      <article>
-        <section className="relative isolate min-h-[820px] overflow-hidden bg-[#dbe4eb] sm:min-h-[900px]">
-          <SemacadHeroBackdrop />
+      <article className="relative z-10">
+        <section className="relative min-h-[820px] overflow-hidden sm:min-h-[900px]">
           <div className="shell flex flex-col items-center pt-16 text-center sm:pt-20 lg:pt-24">
             <div
               data-testid="semacad-app-icon-frame"
@@ -313,7 +313,7 @@ export default async function SemacadPage() {
 
         <section
           aria-label="SemaCAD 产品亮点"
-          className="border-y border-[var(--border)]"
+          className="border-y border-[var(--border)] bg-[rgba(255,255,255,0.62)] backdrop-blur-xl"
         >
           <div className="shell grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
             {[
@@ -334,13 +334,15 @@ export default async function SemacadPage() {
           </div>
         </section>
 
-        <section className="shell py-20 sm:py-32">
-          <h2 className="max-w-5xl text-4xl leading-[1.08] font-semibold tracking-[-0.05em] sm:text-6xl">
-            让专业建模与智能辅助发生在同一个工作区。
-          </h2>
+        <section className="bg-[rgba(255,255,255,0.60)] backdrop-blur-lg">
+          <div className="shell py-20 sm:py-32">
+            <h2 className="max-w-5xl text-4xl leading-[1.08] font-semibold tracking-[-0.05em] sm:text-6xl">
+              让专业建模与智能辅助发生在同一个工作区。
+            </h2>
+          </div>
         </section>
 
-        <div className="border-t border-[var(--border)]">
+        <div className="border-t border-[var(--border)] bg-[rgba(255,255,255,0.64)] backdrop-blur-xl">
           {capabilitySections.map((section, index) => (
             <section
               key={section.number}
@@ -353,7 +355,7 @@ export default async function SemacadPage() {
                 <h2 className="mt-5 max-w-[560px] text-3xl leading-[1.12] font-semibold tracking-[-0.045em] sm:text-5xl">
                   {section.title}
                 </h2>
-                <p className="mt-7 max-w-[620px] text-lg leading-9 text-[var(--muted)]">
+                <p className="mt-7 max-w-[620px] text-lg leading-9 text-[#38434a]">
                   {section.body}
                 </p>
               </div>
@@ -364,48 +366,55 @@ export default async function SemacadPage() {
           ))}
         </div>
 
-        <section className="shell py-20 sm:py-28" aria-label="SemaCAD 发布详情">
-          <div className="mb-10 flex items-end justify-between gap-8">
-            <div>
-              <p className="text-sm font-medium text-[var(--muted)]">RELEASE</p>
-              <h2 className="mt-4 text-3xl font-semibold tracking-[-0.045em] sm:text-5xl">
-                Public Beta
-              </h2>
+        <section
+          className="bg-[rgba(255,255,255,0.68)] backdrop-blur-xl"
+          aria-label="SemaCAD 发布详情"
+        >
+          <div className="shell py-20 sm:py-28">
+            <div className="mb-10 flex items-end justify-between gap-8">
+              <div>
+                <p className="text-sm font-medium text-[var(--muted)]">
+                  RELEASE
+                </p>
+                <h2 className="mt-4 text-3xl font-semibold tracking-[-0.045em] sm:text-5xl">
+                  Public Beta
+                </h2>
+              </div>
+              {readyRelease ? (
+                <a
+                  href={readyRelease.releaseUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="hidden items-center gap-2 text-sm font-medium sm:inline-flex"
+                >
+                  查看发布说明
+                  <ArrowUpRight aria-hidden="true" className="size-4" />
+                </a>
+              ) : null}
             </div>
-            {readyRelease ? (
-              <a
-                href={readyRelease.releaseUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="hidden items-center gap-2 text-sm font-medium sm:inline-flex"
-              >
-                查看发布说明
-                <ArrowUpRight aria-hidden="true" className="size-4" />
-              </a>
-            ) : null}
+            <dl className="grid border-t border-l border-[var(--border)] text-sm sm:grid-cols-2 lg:grid-cols-4">
+              {releaseFacts.map(([label, value]) => (
+                <div
+                  key={label}
+                  className="border-r border-b border-[var(--border)] p-5 sm:p-6"
+                >
+                  <dt className="text-[var(--muted)]">{label}</dt>
+                  <dd className="mt-3 font-medium">{value}</dd>
+                </div>
+              ))}
+              {readyRelease ? (
+                <div className="border-r border-b border-[var(--border)] p-5 sm:col-span-2 sm:p-6 lg:col-span-4">
+                  <dt className="text-[var(--muted)]">SHA-256</dt>
+                  <dd className="mt-3 font-mono text-xs leading-5 break-all">
+                    {readyRelease.sha256}
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
           </div>
-          <dl className="grid border-t border-l border-[var(--border)] text-sm sm:grid-cols-2 lg:grid-cols-4">
-            {releaseFacts.map(([label, value]) => (
-              <div
-                key={label}
-                className="border-r border-b border-[var(--border)] p-5 sm:p-6"
-              >
-                <dt className="text-[var(--muted)]">{label}</dt>
-                <dd className="mt-3 font-medium">{value}</dd>
-              </div>
-            ))}
-            {readyRelease ? (
-              <div className="border-r border-b border-[var(--border)] p-5 sm:col-span-2 sm:p-6 lg:col-span-4">
-                <dt className="text-[var(--muted)]">SHA-256</dt>
-                <dd className="mt-3 font-mono text-xs leading-5 break-all">
-                  {readyRelease.sha256}
-                </dd>
-              </div>
-            ) : null}
-          </dl>
         </section>
 
-        <section className="bg-[var(--ink)] text-white">
+        <section className="bg-[#111412]/90 text-white backdrop-blur-xl">
           <div className="shell flex min-h-[470px] flex-col items-start justify-center py-20 sm:py-28">
             <h2 className="max-w-4xl text-4xl leading-[1.05] font-semibold tracking-[-0.05em] sm:text-6xl">
               让 CAD 操作保持清楚，

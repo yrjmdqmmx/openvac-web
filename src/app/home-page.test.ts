@@ -24,11 +24,22 @@ vi.mock("@/components/home-prompt", () => ({
     })
 }));
 vi.mock("@/components/site-header", () => ({
-  SiteHeader: ({ authenticated }: { authenticated: boolean }) =>
+  SiteHeader: ({
+    authenticated,
+    appearance
+  }: {
+    authenticated: boolean;
+    appearance?: string;
+  }) =>
     createElement("div", {
       "data-testid": "site-header",
-      "data-authenticated": String(authenticated)
+      "data-authenticated": String(authenticated),
+      "data-appearance": appearance ?? "default"
     })
+}));
+vi.mock("@/components/semacad/semacad-hero-backdrop", () => ({
+  SemacadHeroBackdrop: () =>
+    createElement("div", { "data-testid": "semacad-hero-backdrop" })
 }));
 
 import HomePage, { dynamic } from "./page";
@@ -64,7 +75,11 @@ describe("home page", () => {
       screen.getByText(
         "描述泵型、工况或故障现象，OpenVac 会结合资料给出可核查的回答。"
       )
-    ).toBeInTheDocument();
+    ).toHaveClass("bg-[rgba(255,255,255,0.72)]", "text-[#344048]");
+    expect(screen.getByText(/AI\s*生成内容仅供排查参考/)).toHaveClass(
+      "bg-[rgba(255,255,255,0.76)]",
+      "text-[#3f494f]"
+    );
     expect(screen.queryByText("答案有来源")).not.toBeInTheDocument();
     expect(screen.queryByText("安全有边界")).not.toBeInTheDocument();
     expect(screen.queryByText("源码可审计")).not.toBeInTheDocument();
@@ -75,12 +90,28 @@ describe("home page", () => {
       "href",
       "/semacad"
     );
+    expect(screen.getByRole("link", { name: /SemaCAD/ })).toHaveClass(
+      "bg-[rgba(255,255,255,0.68)]"
+    );
     expect(
       screen.getByText(/基于 FreeCAD 的本地优先 CAD，让手动建模与 OpenVac/)
     ).toBeInTheDocument();
     expect(screen.getByTestId("site-header")).toHaveAttribute(
       "data-authenticated",
       "false"
+    );
+    expect(screen.getByTestId("site-header")).toHaveAttribute(
+      "data-appearance",
+      "glass"
+    );
+    expect(screen.getByTestId("site-header").parentElement).toHaveClass("z-20");
+    expect(screen.getByTestId("semacad-hero-backdrop").parentElement).toBe(
+      container.querySelector("main")
+    );
+    expect(container.querySelector("main")).not.toHaveClass("bg-white");
+    expect(container.querySelector("footer")).toHaveClass(
+      "bg-[rgba(255,255,255,0.68)]",
+      "text-[#465057]"
     );
     expect(screen.getByTestId("home-prompt")).toHaveAttribute(
       "data-user-id",

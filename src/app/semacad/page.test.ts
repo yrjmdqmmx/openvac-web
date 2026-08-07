@@ -36,10 +36,17 @@ vi.mock("@/server/auth", () => ({
   auth: { api: { getSession: mocks.getSession } }
 }));
 vi.mock("@/components/site-header", () => ({
-  SiteHeader: ({ authenticated }: { authenticated: boolean }) =>
+  SiteHeader: ({
+    authenticated,
+    appearance
+  }: {
+    authenticated: boolean;
+    appearance?: string;
+  }) =>
     createElement("div", {
       "data-testid": "site-header",
-      "data-authenticated": String(authenticated)
+      "data-authenticated": String(authenticated),
+      "data-appearance": appearance ?? "default"
     })
 }));
 vi.mock("@/lib/semacad-release", () => ({
@@ -171,10 +178,34 @@ describe("SemaCAD product page", () => {
       })
     ).toBeInTheDocument();
     expect(
+      screen
+        .getByRole("heading", {
+          name: "让专业建模与智能辅助发生在同一个工作区。"
+        })
+        .closest("section")
+    ).toHaveClass("bg-[rgba(255,255,255,0.60)]");
+    expect(
+      screen
+        .getByText(/熟悉的工作台、参数和工程文件继续存在/)
+        .closest("div.border-t")
+    ).toHaveClass("bg-[rgba(255,255,255,0.64)]");
+    expect(
+      screen.getByRole("region", { name: "SemaCAD 发布详情" })
+    ).toHaveClass("bg-[rgba(255,255,255,0.68)]");
+    expect(
       screen.getByAltText("六孔真空盲板法兰示意件与 OpenVac 计划面板")
     ).toHaveAttribute("src", "/semacad/semacad-public-beta-main-window-r1.png");
     expect(
       container.querySelector('[data-testid="semacad-hero-backdrop"]')
     ).not.toBeNull();
+    expect(screen.getByTestId("site-header")).toHaveAttribute(
+      "data-appearance",
+      "glass"
+    );
+    expect(screen.getByTestId("site-header").parentElement).toHaveClass("z-20");
+    expect(screen.getByTestId("semacad-hero-backdrop").parentElement).toBe(
+      container.querySelector("main")
+    );
+    expect(container.querySelector("main")).not.toHaveClass("bg-white");
   });
 });

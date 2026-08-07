@@ -129,14 +129,15 @@ test("renders the verified SemaCAD public Beta release", async ({ page }) => {
   await expect(page.locator('link[rel~="icon"]')).toHaveCount(0);
 });
 
-test("uses the static liquid-metal poster and has no overflow on mobile", async ({
+test("uses the dynamic liquid-metal background and has no overflow on mobile", async ({
   page
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/semacad");
 
   const backdrop = page.getByTestId("semacad-hero-backdrop");
-  await expect(backdrop).toHaveAttribute("data-renderer", "poster");
+  await expect(backdrop).toHaveAttribute("data-renderer", "webgl");
+  await expect(backdrop.locator("canvas")).toHaveCount(1);
   await expect(backdrop).toHaveCSS(
     "background-image",
     /semacad-liquid-metal-poster\.avif/
@@ -146,6 +147,27 @@ test("uses the static liquid-metal poster and has no overflow on mobile", async 
     clientWidth: document.documentElement.clientWidth
   }));
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
+});
+
+test("uses one liquid-metal backdrop across the complete homepage", async ({
+  page
+}) => {
+  await page.goto("/");
+
+  await expect(page.getByTestId("semacad-hero-backdrop")).toHaveCount(1);
+  await expect(page.getByTestId("semacad-hero-backdrop")).toHaveCSS(
+    "position",
+    "fixed"
+  );
+  await expect(page.getByRole("link", { name: "知识来源" })).toHaveCount(0);
+  if ((page.viewportSize()?.width ?? 0) < 640) {
+    await page.getByRole("button", { name: "打开导航菜单" }).click();
+  }
+  const sourceLink = page.getByRole("link", { name: "开源项目" });
+  await expect(sourceLink).toBeVisible();
+  await expect(sourceLink.locator('[data-testid="github-mark"]')).toHaveCount(
+    1
+  );
 });
 
 test("redirects both legacy modeling URLs directly to SemaCAD", async ({
