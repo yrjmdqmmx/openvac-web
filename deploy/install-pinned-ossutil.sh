@@ -51,7 +51,7 @@ curl --fail --silent --show-error --location \
 printf '%s  %s\n' "$expected_sha256" "$package_name" >"$checksum_file"
 (
   cd "$temporary_dir"
-  sha256sum --check "$checksum_file"
+  sha256sum --check "$checksum_file" >/dev/null
 )
 
 install -d -m 0700 "$extract_dir"
