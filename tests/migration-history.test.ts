@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -172,7 +172,7 @@ describe("append-only migration history", () => {
     const journal = JSON.parse(source("drizzle/meta/_journal.json")) as Journal;
 
     expect(agentV2.prevId).toBe(compatibility.id);
-    expect(journal.entries.at(-1)).toMatchObject({
+    expect(journal.entries.find((entry) => entry.idx === 8)).toMatchObject({
       idx: 8,
       tag: "0008_agent_v2_responses"
     });
@@ -190,5 +190,78 @@ describe("append-only migration history", () => {
       );
     }
     expect(migration).not.toMatch(/\bDROP\s+(?:TABLE|COLUMN|TYPE)\b/iu);
+  });
+
+  it("permanently purges legacy modeling data without CASCADE", () => {
+    const agentV2 = snapshot(8);
+    const purged = snapshot(9);
+    const migration = source("drizzle/0009_modeling_permanent_purge.sql");
+    const journal = JSON.parse(source("drizzle/meta/_journal.json")) as Journal;
+    const tableNames = [
+      "modeling_artifact",
+      "modeling_import_intent",
+      "modeling_job_event",
+      "modeling_validation_attempt",
+      "modeling_job",
+      "modeling_plan",
+      "modeling_revision",
+      "modeling_project"
+    ];
+    const enumNames = [
+      "modeling_artifact_kind",
+      "modeling_job_kind",
+      "modeling_job_status",
+      "modeling_plan_status",
+      "modeling_revision_source",
+      "modeling_validation_kind",
+      "modeling_validation_status"
+    ];
+
+    expect(purged.prevId).toBe(agentV2.id);
+    expect(journal.entries.at(-1)).toMatchObject({
+      idx: 9,
+      tag: "0009_modeling_permanent_purge"
+    });
+    expect(
+      Object.keys(purged.tables).filter((name) =>
+        name.startsWith("public.modeling_")
+      )
+    ).toEqual([]);
+    expect(
+      Object.keys(purged.enums).filter((name) =>
+        name.startsWith("public.modeling_")
+      )
+    ).toEqual([]);
+
+    const metadataCleanup = migration.indexOf(
+      `SET "metadata" = "metadata" - 'modelingCards'`
+    );
+    const breakCycle = migration.indexOf(
+      'ALTER TABLE "modeling_project" DROP CONSTRAINT "modeling_project_current_revision_id_modeling_revision_id_fk";'
+    );
+    expect(metadataCleanup).toBeGreaterThanOrEqual(0);
+    expect(migration).toContain(
+      `WHERE jsonb_typeof("metadata") = 'object' AND "metadata" ? 'modelingCards';`
+    );
+    expect(
+      migration.indexOf('SET "current_revision_id" = NULL;')
+    ).toBeGreaterThan(metadataCleanup);
+    expect(breakCycle).toBeGreaterThan(metadataCleanup);
+
+    let previousDrop = breakCycle;
+    for (const tableName of tableNames) {
+      const currentDrop = migration.indexOf(`DROP TABLE "${tableName}";`);
+      expect(currentDrop).toBeGreaterThan(previousDrop);
+      previousDrop = currentDrop;
+    }
+    for (const enumName of enumNames) {
+      expect(migration).toContain(`DROP TYPE "public"."${enumName}";`);
+    }
+    expect(migration).not.toMatch(/\bCASCADE\b/iu);
+    expect(source("src/server/db/schema/index.ts")).not.toContain(
+      'export * from "./modeling"'
+    );
+    expect(existsSync("src/server/db/schema/modeling.ts")).toBe(false);
+    expect(existsSync("src/server/db/schema/modeling.test.ts")).toBe(false);
   });
 });
