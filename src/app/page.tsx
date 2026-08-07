@@ -3,6 +3,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 import { HomePrompt } from "@/components/home-prompt";
+import { SemacadHeroBackdrop } from "@/components/semacad/semacad-hero-backdrop";
 import { SiteHeader } from "@/components/site-header";
 import { auth } from "@/server/auth";
 
@@ -14,35 +15,36 @@ export default async function HomePage() {
   });
 
   return (
-    <main className="flex min-h-screen flex-col bg-white">
-      <div className="border-b border-[var(--border)]">
-        <SiteHeader authenticated={Boolean(session)} />
+    <main className="relative isolate flex min-h-screen flex-col overflow-x-hidden">
+      <SemacadHeroBackdrop />
+      <div className="relative z-20 border-b border-[var(--border)]">
+        <SiteHeader authenticated={Boolean(session)} appearance="glass" />
       </div>
 
-      <section className="shell flex flex-1 items-center py-16 sm:py-20">
+      <section className="shell relative z-10 flex flex-1 items-center py-16 sm:py-20">
         <div className="mx-auto w-full max-w-[884px]">
           <h1
             aria-label="今天想解决什么真空问题？"
-            className="text-center text-[clamp(2.35rem,4.2vw,3.75rem)] leading-[1.08] font-semibold tracking-[-0.06em] text-balance"
+            className="text-center text-[clamp(2.35rem,4.2vw,3.75rem)] leading-[1.08] font-semibold tracking-[-0.06em] text-balance drop-shadow-[0_2px_14px_rgba(255,255,255,0.78)]"
           >
             <span className="block sm:inline">今天想解决</span>
             <span className="block whitespace-nowrap sm:inline">
               什么真空问题？
             </span>
           </h1>
-          <p className="mx-auto mt-5 max-w-[720px] text-center text-base leading-7 text-[var(--muted)] sm:text-[17px]">
+          <p className="mx-auto mt-5 w-fit max-w-[720px] rounded-2xl bg-[rgba(255,255,255,0.72)] px-4 py-2 text-center text-base leading-7 text-[#344048] shadow-[0_10px_30px_rgba(20,30,36,0.06)] backdrop-blur-xl sm:px-5 sm:text-[17px]">
             描述泵型、工况或故障现象，OpenVac 会结合资料给出可核查的回答。
           </p>
           <div className="mt-10 sm:mt-11">
             <HomePrompt currentUserId={session?.user.id} />
           </div>
-          <p className="mt-8 text-center text-xs leading-6 text-[var(--muted)]">
+          <p className="mx-auto mt-8 w-fit max-w-full rounded-full bg-[rgba(255,255,255,0.76)] px-4 py-1.5 text-center text-xs leading-6 text-[#3f494f] backdrop-blur-xl">
             AI
             生成内容仅供排查参考；涉及拆机、电气或危险介质时，请由合格人员操作。
           </p>
           <Link
             href="/semacad"
-            className="group mt-10 flex items-center gap-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-5 py-4 transition-colors hover:border-[var(--border-strong)] sm:gap-5 sm:px-6"
+            className="group mt-10 flex items-center gap-4 rounded-2xl border border-white/70 bg-[rgba(255,255,255,0.68)] px-5 py-4 shadow-[0_18px_45px_rgba(17,25,30,0.10)] backdrop-blur-xl transition-colors hover:border-white/90 sm:gap-5 sm:px-6"
           >
             <Image
               src="/semacad/semacad-app-icon.png"
@@ -55,7 +57,7 @@ export default async function HomePage() {
               <span className="block text-base font-semibold tracking-[-0.02em]">
                 SemaCAD
               </span>
-              <span className="mt-1 block text-sm leading-6 text-[var(--muted)]">
+              <span className="mt-1 block text-sm leading-6 text-[#38434a]">
                 基于 FreeCAD 的本地优先 CAD，让手动建模与 OpenVac
                 辅助建模在同一工作区完成。
               </span>
@@ -72,8 +74,8 @@ export default async function HomePage() {
         </div>
       </section>
 
-      <footer className="border-t border-[var(--border)]">
-        <div className="footer-shell flex flex-col gap-5 py-8 text-xs text-[var(--muted)] sm:min-h-[135px] sm:flex-row sm:items-center sm:justify-between sm:py-0">
+      <footer className="relative z-10 border-t border-[var(--border)] bg-[rgba(255,255,255,0.68)] text-[#465057] backdrop-blur-xl">
+        <div className="footer-shell flex flex-col gap-5 py-8 text-xs sm:min-h-[135px] sm:flex-row sm:items-center sm:justify-between sm:py-0">
           <span>© 2026 OpenVac · 真空泵专家 Agent</span>
           <nav className="flex flex-wrap gap-5" aria-label="页脚导航">
             <Link href="/product">产品说明</Link>

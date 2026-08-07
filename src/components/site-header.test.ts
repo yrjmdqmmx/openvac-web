@@ -11,6 +11,44 @@ import { SiteHeader } from "./site-header";
 afterEach(cleanup);
 
 describe("SiteHeader", () => {
+  it("removes knowledge sources and shows the GitHub mark with the open-source link", () => {
+    const { container } = render(
+      createElement(SiteHeader, { authenticated: false })
+    );
+
+    expect(
+      screen.queryByRole("link", { name: "知识来源" })
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "打开导航菜单" }));
+    const sourceLinks = screen.getAllByRole("link", { name: "开源项目" });
+    expect(sourceLinks).toHaveLength(2);
+    for (const sourceLink of sourceLinks) {
+      expect(sourceLink).toHaveAttribute(
+        "href",
+        "https://github.com/zdywrnm/openvac-web"
+      );
+    }
+    expect(
+      container.querySelectorAll('[data-testid="github-mark"]')
+    ).toHaveLength(2);
+  });
+
+  it("supports a glass surface without changing the default opaque header", () => {
+    const { container, rerender } = render(
+      createElement(SiteHeader, { authenticated: false })
+    );
+
+    expect(container.querySelector("header")).toHaveClass("bg-white");
+
+    rerender(
+      createElement(SiteHeader, {
+        authenticated: false,
+        appearance: "glass"
+      })
+    );
+    expect(container.querySelector("header")).toHaveClass("backdrop-blur-xl");
+  });
+
   it("renders a text-only brand and a login link for signed-out visitors", () => {
     const { container } = render(
       createElement(SiteHeader, { authenticated: false })

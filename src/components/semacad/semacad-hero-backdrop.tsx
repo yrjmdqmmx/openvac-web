@@ -10,7 +10,8 @@ export type SemacadBackdropRenderer = {
 
 type Props = {
   createRenderer?: (
-    canvas: HTMLCanvasElement
+    canvas: HTMLCanvasElement,
+    onFirstFrame?: () => void
   ) => SemacadBackdropRenderer | null;
 };
 
@@ -103,7 +104,8 @@ function createShader(
 }
 
 export function createSemacadWebGLRenderer(
-  canvas: HTMLCanvasElement
+  canvas: HTMLCanvasElement,
+  onFirstFrame?: () => void
 ): SemacadBackdropRenderer | null {
   const context = canvas.getContext("webgl", {
     alpha: false,
@@ -161,6 +163,8 @@ export function createSemacadWebGLRenderer(
   let running = false;
   let destroyed = false;
   let resizePending = true;
+  let lastRenderedAt = 0;
+  let firstFramePresented = false;
 
   const resizeObserver =
     typeof ResizeObserver === "undefined"
@@ -172,7 +176,8 @@ export function createSemacadWebGLRenderer(
 
   function resize() {
     if (!resizePending) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.35);
+    const dprLimit = window.innerWidth < 768 ? 1 : 1.35;
+    const dpr = Math.min(window.devicePixelRatio || 1, dprLimit);
     const width = Math.max(1, Math.round(canvas.clientWidth * dpr));
     const height = Math.max(1, Math.round(canvas.clientHeight * dpr));
     if (canvas.width !== width || canvas.height !== height) {
@@ -185,10 +190,23 @@ export function createSemacadWebGLRenderer(
 
   function draw(now: number) {
     if (!running || destroyed) return;
+    const minimumFrameDuration = window.innerWidth < 768 ? 1000 / 30 : 0;
+    if (
+      minimumFrameDuration > 0 &&
+      now - lastRenderedAt < minimumFrameDuration
+    ) {
+      frame = requestAnimationFrame(draw);
+      return;
+    }
+    lastRenderedAt = now;
     resize();
     gl.uniform2f(resolution, canvas.width, canvas.height);
     gl.uniform1f(time, (elapsedBeforePause + now - startedAt) / 1000);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (!firstFramePresented) {
+      firstFramePresented = true;
+      onFirstFrame?.();
+    }
     frame = requestAnimationFrame(draw);
   }
 
@@ -231,20 +249,16 @@ export function SemacadHeroBackdrop({
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
-    const desktop = window.matchMedia("(min-width: 768px)");
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const coarsePointer = window.matchMedia("(any-pointer: coarse)");
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     let instance: SemacadBackdropRenderer | null = null;
     let intersecting = true;
     let contextHealthy = true;
-    const isEligible = () =>
-      desktop.matches &&
-      !reducedMotion.matches &&
-      !coarsePointer.matches &&
-      (navigator.maxTouchPoints ?? 0) === 0;
+    let firstFrameReady = false;
+    let active = true;
+    const isEligible = () => !reducedMotion.matches;
     const syncPlayback = () => {
       if (!isEligible() || !contextHealthy) {
         instance?.stop();
@@ -252,14 +266,18 @@ export function SemacadHeroBackdrop({
         return;
       }
       if (!instance) {
-        instance = createRenderer(canvas);
+        instance = createRenderer(canvas, () => {
+          if (!active || !contextHealthy || !isEligible()) return;
+          firstFrameReady = true;
+          setRenderer("webgl");
+        });
         if (!instance) {
           contextHealthy = false;
           setRenderer("poster");
           return;
         }
       }
-      setRenderer("webgl");
+      if (firstFrameReady) setRenderer("webgl");
       if (intersecting && !document.hidden) instance.start();
       else instance.stop();
     };
@@ -279,7 +297,7 @@ export function SemacadHeroBackdrop({
       instance?.stop();
       setRenderer("poster");
     };
-    const mediaQueries = [desktop, reducedMotion, coarsePointer];
+    const mediaQueries = [reducedMotion];
     document.addEventListener("visibilitychange", onVisibilityChange);
     canvas.addEventListener("webglcontextlost", onContextLost);
     for (const query of mediaQueries) {
@@ -288,6 +306,7 @@ export function SemacadHeroBackdrop({
     syncPlayback();
 
     return () => {
+      active = false;
       observer?.disconnect();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       canvas.removeEventListener("webglcontextlost", onContextLost);
@@ -304,7 +323,7 @@ export function SemacadHeroBackdrop({
       data-testid="semacad-hero-backdrop"
       data-renderer={renderer}
       aria-hidden="true"
-      className="absolute inset-0 -z-10 overflow-hidden bg-[#dbe4eb] bg-[url('/semacad/semacad-liquid-metal-poster.avif')] bg-cover bg-center"
+      className="pointer-events-none fixed inset-0 z-0 overflow-hidden bg-[#dbe4eb] bg-[url('/semacad/semacad-liquid-metal-poster.avif')] bg-cover bg-center"
     >
       <canvas
         ref={canvasRef}

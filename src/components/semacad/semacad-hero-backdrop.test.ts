@@ -85,31 +85,70 @@ afterEach(() => {
 });
 
 describe("SemacadHeroBackdrop", () => {
-  it("keeps the static poster and never requests WebGL on mobile", () => {
+  it("runs WebGL on mobile when reduced motion is not requested", () => {
     setMedia({ desktop: false });
-    const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext");
-
-    render(createElement(SemacadHeroBackdrop));
-
-    expect(screen.getByTestId("semacad-hero-backdrop")).toHaveAttribute(
-      "data-renderer",
-      "poster"
+    let presentFirstFrame: (() => void) | undefined;
+    const rendererFactory = vi.fn(
+      (_canvas: HTMLCanvasElement, onFirstFrame?: () => void) => {
+        presentFirstFrame = onFirstFrame;
+        return {
+          start: vi.fn(),
+          stop: vi.fn(),
+          destroy: vi.fn()
+        };
+      }
     );
-    expect(getContext).not.toHaveBeenCalled();
-  });
-
-  it("keeps the static poster on a landscape touch device", () => {
-    setMedia({ desktop: true, coarse: true });
-    const rendererFactory = vi.fn();
 
     render(
       createElement(SemacadHeroBackdrop, { createRenderer: rendererFactory })
     );
 
-    expect(rendererFactory).not.toHaveBeenCalled();
+    expect(rendererFactory).toHaveBeenCalledOnce();
     expect(screen.getByTestId("semacad-hero-backdrop")).toHaveAttribute(
       "data-renderer",
       "poster"
+    );
+    act(() => presentFirstFrame?.());
+    expect(screen.getByTestId("semacad-hero-backdrop")).toHaveAttribute(
+      "data-renderer",
+      "webgl"
+    );
+  });
+
+  it("runs WebGL on a landscape touch device", () => {
+    setMedia({ desktop: true, coarse: true });
+    const rendererFactory = vi.fn(
+      (_canvas: HTMLCanvasElement, onFirstFrame?: () => void) => {
+        onFirstFrame?.();
+        return {
+          start: vi.fn(),
+          stop: vi.fn(),
+          destroy: vi.fn()
+        };
+      }
+    );
+
+    render(
+      createElement(SemacadHeroBackdrop, { createRenderer: rendererFactory })
+    );
+
+    expect(rendererFactory).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("semacad-hero-backdrop")).toHaveAttribute(
+      "data-renderer",
+      "webgl"
+    );
+  });
+
+  it("fills the viewport as a single page-level backdrop", () => {
+    render(
+      createElement(SemacadHeroBackdrop, {
+        createRenderer: () => null
+      })
+    );
+
+    expect(screen.getByTestId("semacad-hero-backdrop")).toHaveClass(
+      "fixed",
+      "inset-0"
     );
   });
 
@@ -143,7 +182,12 @@ describe("SemacadHeroBackdrop", () => {
     const destroy = vi.fn();
     const { observe, disconnect, getCallback } = stubIntersectionObserver();
 
-    const rendererFactory = vi.fn(() => ({ start, stop, destroy }));
+    const rendererFactory = vi.fn(
+      (_canvas: HTMLCanvasElement, onFirstFrame?: () => void) => {
+        onFirstFrame?.();
+        return { start, stop, destroy };
+      }
+    );
     const { unmount } = render(
       createElement(SemacadHeroBackdrop, { createRenderer: rendererFactory })
     );
@@ -173,11 +217,16 @@ describe("SemacadHeroBackdrop", () => {
     stubIntersectionObserver();
     const stop = vi.fn();
     const start = vi.fn();
-    const rendererFactory = vi.fn(() => ({
-      start,
-      stop,
-      destroy: vi.fn()
-    }));
+    const rendererFactory = vi.fn(
+      (_canvas: HTMLCanvasElement, onFirstFrame?: () => void) => {
+        onFirstFrame?.();
+        return {
+          start,
+          stop,
+          destroy: vi.fn()
+        };
+      }
+    );
     render(
       createElement(SemacadHeroBackdrop, { createRenderer: rendererFactory })
     );
