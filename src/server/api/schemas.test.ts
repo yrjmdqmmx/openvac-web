@@ -5,7 +5,10 @@ import {
   budgetsSchema,
   knowledgeDraftSchema,
   knowledgeDraftUpdateSchema,
+  knowledgeSectionDecisionSchema,
+  knowledgeSectionReviewCompleteSchema,
   problemReportSchema,
+  promptUpdateSchema,
   knowledgeReviewSchema,
   sourceSchema,
   sourceUpdateSchema,
@@ -124,6 +127,24 @@ describe("API validation schemas", () => {
     });
   });
 
+  it("allows only explicit prompt lifecycle transitions on an existing version", () => {
+    expect(promptUpdateSchema.parse({ status: "active" })).toEqual({
+      status: "active"
+    });
+    expect(promptUpdateSchema.parse({ status: "archived" })).toEqual({
+      status: "archived"
+    });
+    expect(
+      promptUpdateSchema.safeParse({ content: "覆盖已有版本" }).success
+    ).toBe(false);
+    expect(
+      promptUpdateSchema.safeParse({ notes: "原地修改备注" }).success
+    ).toBe(false);
+    expect(promptUpdateSchema.safeParse({ status: "draft" }).success).toBe(
+      false
+    );
+  });
+
   it("requires a review note when knowledge is rejected", () => {
     const base = {
       versionId: "cb71f682-9bdc-4899-b7b3-c459402b192c",
@@ -141,6 +162,45 @@ describe("API validation schemas", () => {
         note: "缺少来源页码，退回补充。"
       }).success
     ).toBe(true);
+  });
+
+  it("requires notes for rejected or change-requested sections", () => {
+    const base = {
+      expectedSectionHash: "a".repeat(64),
+      expectedRevision: 0
+    };
+
+    expect(
+      knowledgeSectionDecisionSchema.safeParse({
+        ...base,
+        decision: "approved"
+      }).success
+    ).toBe(true);
+    expect(
+      knowledgeSectionDecisionSchema.safeParse({
+        ...base,
+        decision: "rejected"
+      }).success
+    ).toBe(false);
+    expect(
+      knowledgeSectionDecisionSchema.safeParse({
+        ...base,
+        decision: "changes_requested",
+        note: "中文段落与原文含义不一致。"
+      }).success
+    ).toBe(true);
+  });
+
+  it("pins complete-review to the exact version and content hash", () => {
+    expect(
+      knowledgeSectionReviewCompleteSchema.parse({
+        versionId: "cb71f682-9bdc-4899-b7b3-c459402b192c",
+        expectedContentHash: "b".repeat(64)
+      })
+    ).toEqual({
+      versionId: "cb71f682-9bdc-4899-b7b3-c459402b192c",
+      expectedContentHash: "b".repeat(64)
+    });
   });
 
   it("rejects duplicate model budget entries", () => {

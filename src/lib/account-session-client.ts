@@ -3,7 +3,9 @@ export type AccountSessionSummary = {
   userAgent?: string | null;
   ipAddress?: string | null;
   createdAt: string | Date;
+  updatedAt: string | Date;
   expiresAt: string | Date;
+  isCurrent: boolean;
 };
 
 type FetchLike = (
@@ -44,8 +46,9 @@ export function parseAccountSessionSummaries(
 
     const id = candidate.id.trim();
     const createdAt = dateValue(candidate.createdAt);
+    const updatedAt = dateValue(candidate.updatedAt);
     const expiresAt = dateValue(candidate.expiresAt);
-    if (!id || !createdAt || !expiresAt) return [];
+    if (!id || !createdAt || !updatedAt || !expiresAt) return [];
 
     return [
       {
@@ -53,7 +56,9 @@ export function parseAccountSessionSummaries(
         userAgent: optionalString(candidate.userAgent),
         ipAddress: optionalString(candidate.ipAddress),
         createdAt,
-        expiresAt
+        updatedAt,
+        expiresAt,
+        isCurrent: candidate.isCurrent === true
       }
     ];
   });

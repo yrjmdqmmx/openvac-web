@@ -5,6 +5,7 @@ import {
   assertKnowledgeSourceAuthorized,
   isKnowledgeSourceTier
 } from "@/server/knowledge/source-policy";
+import { buildPageAwareKnowledgeReviewSections } from "@/server/knowledge/review-sections";
 import { ProviderError, type ParsedDocument } from "@/server/providers";
 
 import type {
@@ -122,6 +123,90 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
     const contentHash = sha256(renderedContent);
     await this.sql.begin(async (transaction) => {
       await assertCurrentLease(transaction, job, true);
+      const [reviewTarget] = await transaction.unsafe(
+        `
+          SELECT
+            kv.citation_metadata,
+            ks.id AS source_id,
+            ks.source_tier,
+            ks.enabled AS source_enabled,
+            ks.deleted_at AS source_deleted_at,
+            ks.canonical_url,
+            ks.publisher,
+            ks.metadata AS source_metadata
+          FROM knowledge_version kv
+          JOIN knowledge_document kd ON kd.id = kv.document_id
+          JOIN knowledge_source ks ON ks.id = kd.source_id
+          WHERE kv.id = $1
+            AND kv.document_id = $2
+            AND kd.current_version_id = kv.id
+          FOR UPDATE OF kv, kd
+        `,
+        [job.payload.versionId, job.payload.documentId]
+      );
+      if (
+        !reviewTarget ||
+        typeof reviewTarget.source_id !== "string" ||
+        !isKnowledgeSourceTier(reviewTarget.source_tier)
+      ) {
+        throw new Error("OCR target has no governed knowledge source.");
+      }
+      const citationMetadata = recordValue(reviewTarget.citation_metadata);
+      const sourceMetadata = recordValue(reviewTarget.source_metadata);
+      assertKnowledgeSourceAuthorized(
+        {
+          sourceTier: reviewTarget.source_tier,
+          enabled: reviewTarget.source_enabled === true,
+          deletedAt:
+            reviewTarget.source_deleted_at instanceof Date ||
+            typeof reviewTarget.source_deleted_at === "string"
+              ? reviewTarget.source_deleted_at
+              : null,
+          canonicalUrl:
+            typeof reviewTarget.canonical_url === "string"
+              ? reviewTarget.canonical_url
+              : null,
+          publisher:
+            typeof reviewTarget.publisher === "string"
+              ? reviewTarget.publisher
+              : null,
+          metadata: sourceMetadata
+        },
+        citationMetadata
+      );
+      const rightsSnapshot = {
+        ...recordValue(sourceMetadata.rightsDecision),
+        status: "approved",
+        sourceId: reviewTarget.source_id,
+        canonicalUrl: reviewTarget.canonical_url,
+        sourceTier: reviewTarget.source_tier,
+        publisher: reviewTarget.publisher
+      };
+      const sections = buildPageAwareKnowledgeReviewSections({
+        versionId: job.payload.versionId,
+        versionContentHash: contentHash,
+        contentZh: renderedContent,
+        officialText:
+          typeof citationMetadata.officialText === "string"
+            ? citationMetadata.officialText
+            : renderedContent,
+        rightsSnapshot,
+        pages: parsed.pages.flatMap((page, pageIndex) =>
+          typeof page.markdown === "string"
+            ? page.markdown
+                .split(/\n\s*\n/gu)
+                .map((paragraph) => paragraph.trim())
+                .filter(Boolean)
+                .map(() => ({
+                  pageStart: page.pageNumber ?? pageIndex + 1,
+                  pageEnd: page.pageNumber ?? pageIndex + 1
+                }))
+            : []
+        )
+      });
+      if (sections.length === 0) {
+        throw new Error("OCR output contains no reviewable paragraphs.");
+      }
       const versions = await transaction.unsafe(
         `
           UPDATE knowledge_version
@@ -163,6 +248,40 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
       if (documents.length !== 1) {
         throw new Error("OCR target is no longer the current draft.");
       }
+      await transaction.unsafe(
+        "DELETE FROM knowledge_review_section WHERE version_id = $1",
+        [job.payload.versionId]
+      );
+      for (const section of sections) {
+        await transaction.unsafe(
+          `
+            INSERT INTO knowledge_review_section (
+              version_id,
+              section_index,
+              content_zh,
+              official_text,
+              page_start,
+              page_end,
+              rights_snapshot,
+              rights_snapshot_hash,
+              version_content_hash,
+              section_hash
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+          `,
+          [
+            section.versionId,
+            section.sectionIndex,
+            section.contentZh,
+            section.officialText,
+            section.pageStart,
+            section.pageEnd,
+            JSON.stringify(section.rightsSnapshot),
+            section.rightsSnapshotHash,
+            section.versionContentHash,
+            section.sectionHash
+          ]
+        );
+      }
       const taskRows = await transaction.unsafe(
         `
           UPDATE background_task
@@ -188,6 +307,7 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
             versionId: job.payload.versionId,
             parserJobId: parsed.jobId,
             contentHash,
+            reviewSectionCount: sections.length,
             manualReviewRequired: true
           }),
           job.workerId,

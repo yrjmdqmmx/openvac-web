@@ -5,6 +5,7 @@ import { ArrowUpRight } from "lucide-react";
 import { HomePrompt } from "@/components/home-prompt";
 import { SemacadHeroBackdrop } from "@/components/semacad/semacad-hero-backdrop";
 import { SiteHeader } from "@/components/site-header";
+import { apiStore } from "@/server/api/store";
 import { auth } from "@/server/auth";
 
 export const dynamic = "force-dynamic";
@@ -13,12 +14,30 @@ export default async function HomePage() {
   const session = await auth.api.getSession({
     headers: await headers()
   });
+  let hasAdminRole = false;
+  if (session) {
+    try {
+      hasAdminRole = Boolean(await apiStore.getAdminRole(session.user.id));
+    } catch {
+      // Public pages remain available when RBAC storage is unavailable or
+      // the account is intentionally fail-closed due to a role conflict.
+    }
+  }
 
   return (
     <main className="relative isolate flex min-h-screen flex-col overflow-x-hidden">
       <SemacadHeroBackdrop />
       <div className="relative z-20 border-b border-[var(--border)]">
-        <SiteHeader authenticated={Boolean(session)} appearance="glass" />
+        <SiteHeader
+          authenticated={Boolean(session)}
+          user={
+            session
+              ? { name: session.user.name, image: session.user.image }
+              : undefined
+          }
+          hasAdminRole={hasAdminRole}
+          appearance="glass"
+        />
       </div>
 
       <section className="shell relative z-10 flex flex-1 items-center py-16 sm:py-20">

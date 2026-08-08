@@ -13,6 +13,7 @@ import {
   type OrchestratorEvent
 } from "@/server/agent";
 import { auth } from "@/server/auth";
+import { isEffectiveBan } from "@/server/auth/ban-policy";
 import { db } from "@/server/db";
 import { systemSettings, user } from "@/server/db/schema";
 import { ModelRuntimeError } from "@/server/operations/model-runtime";
@@ -684,10 +685,7 @@ async function checkAccount(userId: string): Promise<Response | undefined> {
     .from(user)
     .where(eq(user.id, userId))
     .limit(1);
-  if (
-    account?.banned &&
-    (!account.banExpires || account.banExpires > new Date())
-  ) {
+  if (account && isEffectiveBan(account)) {
     return jsonError(
       403,
       "ACCOUNT_SUSPENDED",

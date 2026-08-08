@@ -1,6 +1,8 @@
 import { and, eq, or, sql } from "drizzle-orm";
 
+import { accountAvatarObjectKey } from "@/server/account/avatar-key";
 import { db } from "@/server/db";
+import { getObjectStorage } from "@/server/providers";
 import {
   adminRoles,
   auditLogs,
@@ -185,6 +187,13 @@ export async function cleanupDeletedUser(userId: string): Promise<void> {
         and(eq(quotaBucket.scopeType, "user"), eq(quotaBucket.scopeKey, userId))
       );
   });
+
+  // The private avatar key is derived from the deleted account identifier, so
+  // it remains recoverable after the user row has cascaded away. Missing
+  // objects are success; cleanup failures must not resurrect a deleted user.
+  await getObjectStorage()
+    .deletePrivate(accountAvatarObjectKey(userId))
+    .catch(() => undefined);
 }
 
 export async function isUserDeletionInProgress(

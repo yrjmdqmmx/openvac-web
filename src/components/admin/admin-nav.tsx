@@ -16,33 +16,95 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import type { AdminCapability, AdminContext } from "@/server/api/types";
 import { cn } from "@/lib/utils";
 
 const items = [
-  { href: "/admin", label: "概览", icon: BarChart3 },
-  { href: "/admin/users", label: "用户", icon: Users },
+  {
+    href: "/admin",
+    label: "概览",
+    icon: BarChart3,
+    capabilities: ["metrics:read"] as AdminCapability[]
+  },
+  {
+    href: "/admin/users",
+    label: "用户",
+    icon: Users,
+    capabilities: ["users:read"] as AdminCapability[]
+  },
   {
     href: "/admin/conversations",
-    label: "对话与反馈",
-    icon: MessagesSquare
+    label: "对话",
+    icon: MessagesSquare,
+    capabilities: ["conversations:read"] as AdminCapability[]
   },
-  { href: "/admin/problem-reports", label: "问题反馈", icon: ClipboardList },
-  { href: "/admin/knowledge", label: "知识库", icon: BookOpen },
-  { href: "/admin/sources", label: "来源白名单", icon: ShieldCheck },
-  { href: "/admin/prompts", label: "提示词与评测", icon: FileCheck2 },
-  { href: "/admin/models", label: "模型与预算", icon: Bot },
-  { href: "/admin/admins", label: "管理员", icon: Database },
-  { href: "/admin/audit", label: "审计日志", icon: ScrollText }
+  {
+    href: "/admin/feedback",
+    label: "用户反馈",
+    icon: MessagesSquare,
+    capabilities: ["feedback:read"] as AdminCapability[]
+  },
+  {
+    href: "/admin/problem-reports",
+    label: "问题反馈",
+    icon: ClipboardList,
+    capabilities: ["problem_reports:read"] as AdminCapability[]
+  },
+  {
+    href: "/admin/knowledge",
+    label: "知识库",
+    icon: BookOpen,
+    capabilities: ["knowledge:read"] as AdminCapability[]
+  },
+  {
+    href: "/admin/sources",
+    label: "来源白名单",
+    icon: ShieldCheck,
+    capabilities: ["sources:read"] as AdminCapability[]
+  },
+  {
+    href: "/admin/prompts",
+    label: "提示词与评测",
+    icon: FileCheck2,
+    capabilities: ["prompts:read"] as AdminCapability[]
+  },
+  {
+    href: "/admin/models",
+    label: "模型与预算",
+    icon: Bot,
+    capabilities: ["models:execute", "budgets:read"] as AdminCapability[]
+  },
+  {
+    href: "/admin/admins",
+    label: "管理员",
+    icon: Database,
+    capabilities: ["admins:read"] as AdminCapability[]
+  },
+  {
+    href: "/admin/audit",
+    label: "审计日志",
+    icon: ScrollText,
+    capabilities: ["audit:read"] as AdminCapability[]
+  }
 ];
 
 export function AdminNav({
   open,
-  onClose
+  onClose,
+  context
 }: {
   open: boolean;
   onClose: () => void;
+  context?: AdminContext;
 }) {
   const pathname = usePathname();
+  const visibleItems = context
+    ? items.filter((item) =>
+        item.capabilities.some((capability) =>
+          context.capabilities.includes(capability)
+        )
+      )
+    : items;
   return (
     <>
       {open && (
@@ -68,7 +130,7 @@ export function AdminNav({
           <X className="h-5 w-5" />
         </button>
         <nav className="space-y-1 px-3" aria-label="运营后台">
-          {items.map(({ href, label, icon: Icon }) => {
+          {visibleItems.map(({ href, label, icon: Icon }) => {
             const active =
               href === "/admin"
                 ? pathname === href
@@ -93,7 +155,7 @@ export function AdminNav({
         </nav>
         <div className="mt-8 px-6 text-xs leading-6 text-[var(--muted)]">
           <Gauge className="mb-2 h-4 w-4" />
-          所有配置变更都会写入不可变审计日志。
+          完整审计留痕。
         </div>
       </aside>
     </>

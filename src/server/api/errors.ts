@@ -73,27 +73,43 @@ export function withApiErrors<TArgs extends unknown[]>(
   handler: (...args: TArgs) => Promise<Response>
 ): (...args: TArgs) => Promise<Response> {
   return async (...args: TArgs) => {
+    const request = args[0] instanceof Request ? args[0] : null;
+    const requestId =
+      request?.headers.get("x-request-id")?.trim() || crypto.randomUUID();
+    const withRequestId = (response: Response) => {
+      const headers = new Headers(response.headers);
+      headers.set("x-request-id", requestId);
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers
+      });
+    };
     try {
-      return await handler(...args);
+      return withRequestId(await handler(...args));
     } catch (error) {
       if (error instanceof ApiError) {
-        return jsonError(error);
+        return withRequestId(jsonError(error));
       }
 
       if (error instanceof ZodError) {
-        return jsonError(
-          new ApiError(
-            422,
-            "VALIDATION_ERROR",
-            "请求参数不符合要求。",
-            error.issues
+        return withRequestId(
+          jsonError(
+            new ApiError(
+              422,
+              "VALIDATION_ERROR",
+              "请求参数不符合要求。",
+              error.issues
+            )
           )
         );
       }
 
       console.error("Unhandled API error", error);
-      return jsonError(
-        new ApiError(500, "INTERNAL_ERROR", "服务暂时不可用，请稍后重试。")
+      return withRequestId(
+        jsonError(
+          new ApiError(500, "INTERNAL_ERROR", "服务暂时不可用，请稍后重试。")
+        )
       );
     }
   };

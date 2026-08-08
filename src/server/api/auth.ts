@@ -1,9 +1,11 @@
 import { auth } from "@/server/auth";
 import { isUserDeletionInProgress } from "@/server/auth/account-cleanup";
+import { isEffectiveBan } from "@/server/auth/ban-policy";
 
 import { ApiError } from "./errors";
 import {
   ADMIN_ROLES,
+  type AdminContext,
   type Actor,
   type AdminActor,
   type AdminCapability,
@@ -16,6 +18,8 @@ import {
 const ROLE_CAPABILITIES: Record<AdminRole, ReadonlySet<AdminCapability>> = {
   owner: new Set([
     "conversations:read",
+    "tasks:read",
+    "tasks:write",
     "admins:read",
     "admins:write",
     "users:read",
@@ -24,8 +28,12 @@ const ROLE_CAPABILITIES: Record<AdminRole, ReadonlySet<AdminCapability>> = {
     "feedback:write",
     "problem_reports:read",
     "problem_reports:write",
+    "models:execute",
     "knowledge:read",
-    "knowledge:write",
+    "knowledge:draft",
+    "knowledge:review",
+    "knowledge:publish",
+    "knowledge:rollback",
     "sources:read",
     "sources:write",
     "prompts:read",
@@ -39,15 +47,22 @@ const ROLE_CAPABILITIES: Record<AdminRole, ReadonlySet<AdminCapability>> = {
   ]),
   admin: new Set([
     "conversations:read",
+    "tasks:read",
+    "tasks:write",
     "admins:read",
+    "admins:write",
     "users:read",
     "users:write",
     "feedback:read",
     "feedback:write",
     "problem_reports:read",
     "problem_reports:write",
+    "models:execute",
     "knowledge:read",
-    "knowledge:write",
+    "knowledge:draft",
+    "knowledge:review",
+    "knowledge:publish",
+    "knowledge:rollback",
     "sources:read",
     "sources:write",
     "prompts:read",
@@ -61,7 +76,8 @@ const ROLE_CAPABILITIES: Record<AdminRole, ReadonlySet<AdminCapability>> = {
   ]),
   knowledge_editor: new Set([
     "knowledge:read",
-    "knowledge:write",
+    "knowledge:draft",
+    "knowledge:review",
     "sources:read",
     "sources:write",
     "prompts:read",
@@ -86,6 +102,10 @@ const ROLE_CAPABILITIES: Record<AdminRole, ReadonlySet<AdminCapability>> = {
   ])
 };
 
+export function capabilitiesForRole(role: AdminRole): AdminCapability[] {
+  return [...ROLE_CAPABILITIES[role]];
+}
+
 function normalizeRole(value: unknown): AdminRole | null {
   return typeof value === "string" && ADMIN_ROLES.includes(value as AdminRole)
     ? (value as AdminRole)
@@ -103,10 +123,11 @@ export async function authenticate(
 
   const sessionUser = session.user as typeof session.user & {
     banned?: boolean | null;
+    banExpires?: Date | string | null;
     role?: string | null;
   };
 
-  if (sessionUser.banned) {
+  if (isEffectiveBan(sessionUser)) {
     throw new ApiError(403, "ACCOUNT_BANNED", "当前账号已被暂停使用。");
   }
 
@@ -120,9 +141,12 @@ export async function authenticate(
 
   return {
     id: sessionUser.id,
+    sessionId: session.session?.id,
     email: sessionUser.email ?? null,
+    emailVerified: Boolean(sessionUser.emailVerified),
     name: sessionUser.name ?? null,
-    banned: Boolean(sessionUser.banned),
+    image: sessionUser.image ?? null,
+    banned: isEffectiveBan(sessionUser),
     roleHint: normalizeRole(sessionUser.role)
   };
 }
@@ -161,4 +185,17 @@ export function hasCapability(
   capability: AdminCapability
 ): boolean {
   return ROLE_CAPABILITIES[role].has(capability);
+}
+
+export function buildAdminContext(actor: AdminActor): AdminContext {
+  return {
+    user: {
+      id: actor.id,
+      name: actor.name,
+      email: actor.email,
+      image: actor.image ?? null
+    },
+    role: actor.role,
+    capabilities: capabilitiesForRole(actor.role)
+  };
 }

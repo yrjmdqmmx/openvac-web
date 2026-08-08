@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { AdminTaskCenter } from "@/components/admin/task-center";
 
 type Metrics = {
   answersToday: number;
@@ -26,18 +27,24 @@ type AgentStatus = {
   };
 };
 
-const initial: Metrics = {
-  answersToday: 0,
-  activeUsersToday: 0,
-  errorRate: 0,
-  p95LatencyMs: 0,
-  searchCallsToday: 0,
-  openProblemReports: 0
-};
+function isMetrics(value: unknown): value is Metrics {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return [
+    "answersToday",
+    "activeUsersToday",
+    "errorRate",
+    "p95LatencyMs",
+    "searchCallsToday",
+    "openProblemReports"
+  ].every((key) => typeof record[key] === "number");
+}
 
 export function AdminOverview() {
-  const [metrics, setMetrics] = useState(initial);
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [metricsUnavailable, setMetricsUnavailable] = useState(false);
   const [agent, setAgent] = useState<AgentStatus | null>(null);
+  const [canExecuteModels, setCanExecuteModels] = useState(false);
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentNotice, setAgentNotice] = useState("");
   const [forbidden, setForbidden] = useState(false);
@@ -49,12 +56,28 @@ export function AdminOverview() {
           setForbidden(true);
           return;
         }
-        if (!response.ok) return;
+        if (!response.ok) {
+          setMetricsUnavailable(true);
+          return;
+        }
         const payload = (await response.json()) as {
           metrics?: Partial<Metrics>;
           data?: Partial<Metrics>;
         };
-        setMetrics({ ...initial, ...(payload.metrics ?? payload.data) });
+        const value = payload.metrics ?? payload.data;
+        if (isMetrics(value)) setMetrics(value);
+        else setMetricsUnavailable(true);
+      }
+    );
+    void fetch("/api/admin/context", { cache: "no-store" }).then(
+      async (response) => {
+        if (!response.ok) return;
+        const payload = (await response.json()) as {
+          data?: { capabilities?: string[] };
+        };
+        setCanExecuteModels(
+          payload.data?.capabilities?.includes("models:execute") ?? false
+        );
       }
     );
     void fetch("/api/admin/agent/status", { cache: "no-store" }).then(
@@ -108,13 +131,17 @@ export function AdminOverview() {
 
   async function runAgentCheck(check: "balance" | "responses") {
     if (agentBusy) return;
+    if (!window.confirm("这会主动调用外部模型或余额接口，确认继续？")) return;
     setAgentBusy(true);
     setAgentNotice("");
     try {
       const response = await fetch("/api/admin/agent/status", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ check })
+        body: JSON.stringify({
+          check,
+          confirmation: "EXECUTE_EXTERNAL_MODEL_CHECK"
+        })
       });
       const payload = (await response.json()) as {
         data?: {
@@ -155,17 +182,28 @@ export function AdminOverview() {
     );
   }
 
-  const rows = [
-    ["今日成功回答", metrics.answersToday.toLocaleString("zh-CN")],
-    ["今日活跃用户", metrics.activeUsersToday.toLocaleString("zh-CN")],
-    ["错误率", `${(metrics.errorRate * 100).toFixed(2)}%`],
-    ["P95 延迟", `${metrics.p95LatencyMs.toLocaleString("zh-CN")} ms`],
-    ["今日联网调用", metrics.searchCallsToday.toLocaleString("zh-CN")],
-    ["待处理问题反馈", metrics.openProblemReports.toLocaleString("zh-CN")]
-  ];
+  const rows = metrics
+    ? [
+        ["今日成功回答", metrics.answersToday.toLocaleString("zh-CN")],
+        ["今日活跃用户", metrics.activeUsersToday.toLocaleString("zh-CN")],
+        ["错误率", `${(metrics.errorRate * 100).toFixed(2)}%`],
+        ["P95 延迟", `${metrics.p95LatencyMs.toLocaleString("zh-CN")} ms`],
+        ["今日联网调用", metrics.searchCallsToday.toLocaleString("zh-CN")],
+        ["待处理问题反馈", metrics.openProblemReports.toLocaleString("zh-CN")]
+      ]
+    : [];
 
   return (
     <div className="space-y-8">
+      <AdminTaskCenter />
+      {metricsUnavailable ? (
+        <div
+          role="alert"
+          className="rounded-xl border border-[#e2b8b3] bg-[#fff7f6] p-5 text-sm text-[var(--danger)]"
+        >
+          概览指标暂时不可用；为避免误判，本页不会用 0 代替缺失数据。
+        </div>
+      ) : null}
       <div className="grid border-t border-l border-[var(--border)] sm:grid-cols-2 xl:grid-cols-3">
         {rows.map(([label, value]) => (
           <div
@@ -197,32 +235,34 @@ export function AdminOverview() {
                 {agent.environmentMasterSwitch ? "" : "；环境总开关未开启"}
               </p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm"
-                disabled={agentBusy}
-                onClick={() => void runAgentCheck("balance")}
-              >
-                检查余额
-              </button>
-              <button
-                type="button"
-                className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm"
-                disabled={agentBusy}
-                onClick={() => void runAgentCheck("responses")}
-              >
-                检查 Responses
-              </button>
-              <button
-                type="button"
-                className="rounded-lg bg-[var(--foreground)] px-3 py-2 text-sm text-white disabled:opacity-50"
-                disabled={agentBusy || !agent.environmentMasterSwitch}
-                onClick={() => void toggleAgent()}
-              >
-                {agent.enabled ? "切回 Chat" : "启用 Agent V2"}
-              </button>
-            </div>
+            {canExecuteModels ? (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm"
+                  disabled={agentBusy}
+                  onClick={() => void runAgentCheck("balance")}
+                >
+                  检查余额
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm"
+                  disabled={agentBusy}
+                  onClick={() => void runAgentCheck("responses")}
+                >
+                  检查 Responses
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg bg-[var(--foreground)] px-3 py-2 text-sm text-white disabled:opacity-50"
+                  disabled={agentBusy || !agent.environmentMasterSwitch}
+                  onClick={() => void toggleAgent()}
+                >
+                  {agent.enabled ? "切回 Chat" : "启用 Agent V2"}
+                </button>
+              </div>
+            ) : null}
           </div>
           <div className="mt-5 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
             <AgentMetric label="活跃运行" value={agent.metrics24h.activeRuns} />

@@ -22,6 +22,9 @@ export const user = pgTable(
     email: text("email").notNull().unique(),
     emailVerified: boolean("email_verified").default(false).notNull(),
     image: text("image"),
+    avatarObjectKey: text("avatar_object_key"),
+    avatarRevision: integer("avatar_revision").default(0).notNull(),
+    twoFactorEnabled: boolean("two_factor_enabled").default(false).notNull(),
     banned: boolean("banned").default(false).notNull(),
     banReason: text("ban_reason"),
     banExpires: authTimestamp("ban_expires"),
@@ -37,6 +40,10 @@ export const user = pgTable(
     check(
       "user_daily_quota_bonus_non_negative",
       sql`${table.dailyQuotaBonus} >= 0`
+    ),
+    check(
+      "user_avatar_revision_non_negative",
+      sql`${table.avatarRevision} >= 0`
     )
   ]
 );
@@ -111,6 +118,31 @@ export const verification = pgTable(
   ]
 );
 
+export const twoFactor = pgTable(
+  "two_factor",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    secret: text("secret").notNull(),
+    backupCodes: text("backup_codes").notNull(),
+    verified: boolean("verified").default(true).notNull(),
+    failedVerificationCount: integer("failed_verification_count")
+      .default(0)
+      .notNull(),
+    lockedUntil: authTimestamp("locked_until")
+  },
+  (table) => [
+    uniqueIndex("two_factor_user_id_unique").on(table.userId),
+    index("two_factor_secret_idx").on(table.secret),
+    check(
+      "two_factor_failed_verification_count_non_negative",
+      sql`${table.failedVerificationCount} >= 0`
+    )
+  ]
+);
+
 export const rateLimit = pgTable(
   "rate_limit",
   {
@@ -128,7 +160,8 @@ export const rateLimit = pgTable(
 
 export const userRelations = relations(user, ({ many }) => ({
   sessions: many(session),
-  accounts: many(account)
+  accounts: many(account),
+  twoFactors: many(twoFactor)
 }));
 
 export const sessionRelations = relations(session, ({ one }) => ({
@@ -145,13 +178,22 @@ export const accountRelations = relations(account, ({ one }) => ({
   })
 }));
 
+export const twoFactorRelations = relations(twoFactor, ({ one }) => ({
+  user: one(user, {
+    fields: [twoFactor.userId],
+    references: [user.id]
+  })
+}));
+
 export const betterAuthSchema = {
   user,
   session,
   account,
   verification,
+  twoFactor,
   rateLimit,
   userRelations,
   sessionRelations,
-  accountRelations
+  accountRelations,
+  twoFactorRelations
 };

@@ -71,6 +71,27 @@
       "when": 1786084539823,
       "tag": "0009_modeling_permanent_purge",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1786164569887,
+      "tag": "0010_admin_invitations",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786165094321,
+      "tag": "0011_admin_task_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1786168423442,
+      "tag": "0012_account_mfa_knowledge_review_sections",
+      "breakpoints": true
     }
   ]
 }

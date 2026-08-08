@@ -12,6 +12,7 @@ import {
 import { SemacadHeroBackdrop } from "@/components/semacad/semacad-hero-backdrop";
 import { SiteHeader } from "@/components/site-header";
 import { isSemacadDownloadReady, semacadRelease } from "@/lib/semacad-release";
+import { apiStore } from "@/server/api/store";
 import { auth } from "@/server/auth";
 
 const description =
@@ -202,6 +203,14 @@ function CapabilityVisual({
 
 export default async function SemacadPage() {
   const session = await auth.api.getSession({ headers: await headers() });
+  let hasAdminRole = false;
+  if (session) {
+    try {
+      hasAdminRole = Boolean(await apiStore.getAdminRole(session.user.id));
+    } catch {
+      // Keep the public release page available while admin access fails closed.
+    }
+  }
   const readyRelease = isSemacadDownloadReady(semacadRelease)
     ? semacadRelease
     : null;
@@ -219,7 +228,16 @@ export default async function SemacadPage() {
     <main className="relative isolate min-h-screen overflow-x-hidden">
       <SemacadHeroBackdrop />
       <div className="relative z-20 border-b border-[var(--border)]">
-        <SiteHeader authenticated={Boolean(session)} appearance="glass" />
+        <SiteHeader
+          authenticated={Boolean(session)}
+          user={
+            session
+              ? { name: session.user.name, image: session.user.image }
+              : undefined
+          }
+          hasAdminRole={hasAdminRole}
+          appearance="glass"
+        />
       </div>
 
       <article className="relative z-10">
@@ -264,7 +282,7 @@ export default async function SemacadPage() {
                 </span>
               )}
               <a
-                href="https://github.com/zdywrnm/SemaCAD"
+                href="https://github.com/yrjmdqmmx/SemaCAD"
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex min-h-12 items-center justify-center gap-2 rounded-full border border-black/20 bg-white/60 px-6 text-sm font-medium backdrop-blur-md transition-transform hover:-translate-y-0.5"
@@ -437,7 +455,7 @@ export default async function SemacadPage() {
                 </a>
               ) : null}
               <a
-                href="https://github.com/zdywrnm/SemaCAD"
+                href="https://github.com/yrjmdqmmx/SemaCAD"
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex min-h-12 items-center justify-center gap-2 rounded-full border border-white/25 px-6 text-sm font-medium !text-white"

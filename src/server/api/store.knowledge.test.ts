@@ -44,6 +44,19 @@ describe("knowledge publication gate", () => {
     expectGateError(input, "KNOWLEDGE_HUMAN_REVIEW_REQUIRED");
   });
 
+  it("rejects legacy whole-document hash approval without section completion", () => {
+    const input = validPublication();
+    input.metadata = {
+      ...input.metadata,
+      review: {
+        ...(input.metadata.review as Record<string, unknown>),
+        mode: "document"
+      }
+    };
+
+    expectGateError(input, "KNOWLEDGE_SECTION_REVIEW_REQUIRED");
+  });
+
   it("rejects content changed after the approved SHA-256", () => {
     const input = validPublication();
     input.content = `${input.content}\nChanged after review.`;
@@ -342,6 +355,8 @@ function validPublication(): KnowledgePublicationGateInput {
       reviewStatus: "approved",
       embeddingStatus: "completed",
       review: {
+        mode: "section",
+        sectionCount: 1,
         reviewedBy: "knowledge-editor-1",
         reviewedAt: new Date(Date.now() - 1_000).toISOString(),
         contentHash

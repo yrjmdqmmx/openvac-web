@@ -102,14 +102,14 @@ test("renders the verified SemaCAD public Beta release", async ({ page }) => {
   await expect(downloads).toHaveCount(2);
   await expect(downloads.first()).toHaveAttribute(
     "href",
-    "https://github.com/zdywrnm/SemaCAD/releases/download/v0.2.0-beta.1/semaCAD-0.2.0-beta.1-macOS26-arm64.dmg"
+    "https://github.com/yrjmdqmmx/SemaCAD/releases/download/v0.2.0-beta.1/semaCAD-0.2.0-beta.1-macOS26-arm64.dmg"
   );
   await expect(downloads.first()).toHaveCSS("color", "rgb(255, 255, 255)");
   const sourceLinks = page.getByRole("link", { name: /查看源代码/ });
   await expect(sourceLinks).toHaveCount(2);
   await expect(sourceLinks.first()).toHaveAttribute(
     "href",
-    "https://github.com/zdywrnm/SemaCAD"
+    "https://github.com/yrjmdqmmx/SemaCAD"
   );
   await expect(
     page.getByAltText(/六孔真空盲板法兰示意件与 OpenVac 计划面板/)

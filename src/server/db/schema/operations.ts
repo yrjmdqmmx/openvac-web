@@ -404,7 +404,121 @@ export const adminRoles = pgTable(
       name: "admin_role_primary",
       columns: [table.userId, table.role]
     }),
+    uniqueIndex("admin_role_user_id_unique").on(table.userId),
     index("admin_role_role_idx").on(table.role)
+  ]
+);
+
+export const adminInvitations = pgTable(
+  "admin_invitation",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    email: text("email").notNull(),
+    role: adminRoleName("role").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "set null"
+    }),
+    acceptedBy: text("accepted_by").references(() => user.id, {
+      onDelete: "set null"
+    }),
+    acceptedAt: timestamp("accepted_at", {
+      mode: "date",
+      withTimezone: true
+    }),
+    revokedAt: timestamp("revoked_at", {
+      mode: "date",
+      withTimezone: true
+    }),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      withTimezone: true
+    })
+      .defaultNow()
+      .notNull(),
+    expiresAt: timestamp("expires_at", {
+      mode: "date",
+      withTimezone: true
+    }).notNull()
+  },
+  (table) => [
+    uniqueIndex("admin_invitation_token_hash_unique").on(table.tokenHash),
+    index("admin_invitation_email_idx").on(table.email),
+    index("admin_invitation_role_idx").on(table.role),
+    index("admin_invitation_created_by_idx").on(table.createdBy),
+    index("admin_invitation_pending_idx").on(
+      table.revokedAt,
+      table.acceptedAt,
+      table.expiresAt
+    ),
+    check(
+      "admin_invitation_email_normalized",
+      sql`${table.email} = lower(${table.email})`
+    ),
+    check(
+      "admin_invitation_token_hash_sha256",
+      sql`${table.tokenHash} ~ '^[a-f0-9]{64}$'`
+    ),
+    check(
+      "admin_invitation_state_shape_valid",
+      sql`(
+        ${table.acceptedAt} is null and ${table.acceptedBy} is null and ${table.revokedAt} is null
+      ) or (
+        ${table.acceptedAt} is not null and ${table.acceptedBy} is not null and ${table.revokedAt} is null
+      ) or (
+        ${table.revokedAt} is not null and ${table.acceptedAt} is null and ${table.acceptedBy} is null
+      )`
+    ),
+    check(
+      "admin_invitation_expires_after_created",
+      sql`${table.expiresAt} > ${table.createdAt}`
+    )
+  ]
+);
+
+export const adminTaskState = pgTable(
+  "admin_task_state",
+  {
+    taskKey: text("task_key").primaryKey(),
+    assigneeUserId: text("assignee_user_id").references(() => user.id, {
+      onDelete: "set null"
+    }),
+    status: text("status").default("open").notNull(),
+    dueAt: timestamp("due_at", { mode: "date", withTimezone: true }),
+    snoozedUntil: timestamp("snoozed_until", {
+      mode: "date",
+      withTimezone: true
+    }),
+    note: text("note"),
+    revision: integer("revision").default(0).notNull(),
+    updatedBy: text("updated_by").references(() => user.id, {
+      onDelete: "set null"
+    }),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      withTimezone: true
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      mode: "date",
+      withTimezone: true
+    })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull()
+  },
+  (table) => [
+    index("admin_task_state_assignee_status_idx").on(
+      table.assigneeUserId,
+      table.status
+    ),
+    index("admin_task_state_due_idx").on(table.dueAt),
+    check(
+      "admin_task_state_status_valid",
+      sql`${table.status} in ('open', 'in_progress', 'done')`
+    ),
+    check("admin_task_state_revision_non_negative", sql`${table.revision} >= 0`)
   ]
 );
 
@@ -594,4 +708,5 @@ export const roleRelations = relations(role, ({ many }) => ({
 export const auditLogs = auditLog;
 export const systemSettings = systemSetting;
 export const backgroundTasks = backgroundTask;
+export const adminTaskStates = adminTaskState;
 export const modelInvocations = modelInvocation;
