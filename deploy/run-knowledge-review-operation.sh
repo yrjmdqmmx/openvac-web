@@ -37,7 +37,7 @@ esac
 }
 
 case "$mode" in
-  preview|apply|diagnose-request|retry-verify-evidence) ;;
+  preview|apply|diagnose-request|retry-verify-evidence|diagnose-review-pair) ;;
   *)
     echo "unsupported knowledge review operation mode" >&2
     exit 64
@@ -55,7 +55,7 @@ if [ "$mode" = diagnose-request ]; then
     echo "retry target is only accepted in retry-verify-evidence mode" >&2
     exit 64
   }
-elif [ "$mode" = retry-verify-evidence ]; then
+elif [ "$mode" = retry-verify-evidence ] || [ "$mode" = diagnose-review-pair ]; then
   [ -z "$diagnostic_request_id" ] || {
     echo "diagnostic request id is only accepted in diagnose-request mode" >&2
     exit 64
@@ -185,8 +185,10 @@ if [ "$mode" = diagnose-request ]; then
   exit 0
 fi
 
-if [ "$mode" = retry-verify-evidence ]; then
-  retry_result="$(
+if [ "$mode" = retry-verify-evidence ] || [ "$mode" = diagnose-review-pair ]; then
+  retry_result=""
+  if [ "$mode" = retry-verify-evidence ]; then
+    retry_result="$(
     compose exec -T postgres sh -lc \
       'exec psql -X -v ON_ERROR_STOP=1 -tA -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"' \
       sh \
@@ -275,7 +277,8 @@ SELECT json_build_object(
 FROM reset_run r
 JOIN audit a ON a.target_id = r.id::text;
 SQL
-  )"
+    )"
+  fi
   [ -n "$retry_result" ] || {
     retry_diagnostics="$(
       compose exec -T postgres sh -lc \
@@ -350,10 +353,79 @@ SELECT json_build_object(
           OR initial.revised_version_id = :'retry_version_id'::uuid
         )
     )
+  ),
+  'pairRuns', COALESCE(
+    (
+      SELECT json_agg(
+        json_build_object(
+          'id', r.id,
+          'phase', r.phase,
+          'status', r.status,
+          'risk', r.risk,
+          'decision', r.decision,
+          'targetsCurrentInput',
+            r.input_version_id = :'retry_version_id'::uuid
+            AND r.input_content_hash = :'retry_content_hash',
+          'targetsRecordedRevision',
+            r.phase = 'initial'
+            AND r.revised_version_id = :'retry_version_id'::uuid,
+          'storedTargetMatches',
+            r.structured_report ->> 'outputContentHash' = :'retry_content_hash'
+            AND r.structured_report #>> '{automation,outputVersionId}' =
+              :'retry_version_id'
+            AND r.structured_report #>> '{automation,outputContentHash}' =
+              :'retry_content_hash'
+            AND r.structured_report #>> '{automation,sourceRightsValid}' =
+              'true',
+          'submittedSummaryMatches',
+            r.structured_report #>> '{automation,submittedReport,summary}' =
+              r.structured_report ->> 'summary',
+          'submittedRisk',
+            r.structured_report #>> '{automation,submittedReport,risk}',
+          'submittedDecision',
+            r.structured_report #>> '{automation,submittedReport,decision}',
+          'submittedArraysMatch',
+            r.structured_report #> '{automation,submittedReport,findings}' =
+              r.structured_report -> 'findings'
+            AND r.structured_report #> '{automation,submittedReport,blockers}' =
+              r.structured_report -> 'blockers'
+            AND r.structured_report #> '{automation,submittedReport,evidence}' =
+              r.structured_report -> 'evidence'
+            AND r.structured_report #> '{automation,submittedReport,numericClaims}' =
+              r.structured_report -> 'numericClaims',
+          'submittedRevisionHash',
+            r.structured_report #> '{automation,submittedRevisionHash}',
+          'blockersEmpty',
+            COALESCE(jsonb_array_length(r.structured_report -> 'blockers'), -1) = 0,
+          'numericEvidenceComplete', NOT EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(
+              COALESCE(r.structured_report -> 'numericClaims', '[]'::jsonb)
+            ) numeric_claim
+            WHERE COALESCE(numeric_claim ->> 'exactEvidence', '') = ''
+               OR COALESCE(numeric_claim ->> 'sourceLocator', '') = ''
+          )
+        ) ORDER BY r.created_at
+      )
+      FROM knowledge_review_run r
+      WHERE r.prompt_version = 'codex_automation_v1'
+        AND (
+          (
+            r.input_version_id = :'retry_version_id'::uuid
+            AND r.input_content_hash = :'retry_content_hash'
+          )
+          OR r.revised_version_id = :'retry_version_id'::uuid
+        )
+    ),
+    '[]'::json
   )
 )::text;
 SQL
     )"
+    if [ "$mode" = diagnose-review-pair ]; then
+      printf '%s\n' "$retry_diagnostics"
+      exit 0
+    fi
     printf '%s\n' "$retry_diagnostics" >&2
     echo "the exact verify run is not eligible for evidence-only retry" >&2
     exit 1
