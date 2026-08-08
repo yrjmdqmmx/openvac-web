@@ -4,6 +4,7 @@ set -eu
 deploy_dir="${1:-}"
 expected_release="${2:-}"
 mode="${3:-preview}"
+diagnostic_request_id="${4:-}"
 
 case "$deploy_dir" in
   /opt/openvac) ;;
@@ -28,12 +29,23 @@ esac
 }
 
 case "$mode" in
-  preview|apply) ;;
+  preview|apply|diagnose-request) ;;
   *)
     echo "mode must be preview or apply" >&2
     exit 64
     ;;
 esac
+
+if [ "$mode" = diagnose-request ]; then
+  printf '%s\n' "$diagnostic_request_id" |
+    grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || {
+    echo "diagnose-request requires a lowercase UUID request id" >&2
+    exit 64
+  }
+elif [ -n "$diagnostic_request_id" ]; then
+  echo "diagnostic request id is only accepted in diagnose-request mode" >&2
+  exit 64
+fi
 
 [ -d "$deploy_dir" ] && [ ! -L "$deploy_dir" ] || {
   echo "deployment directory must be a real directory" >&2
@@ -124,6 +136,25 @@ image_revision="$(docker image inspect --format '{{index .Config.Labels "org.ope
   echo "the running image revision does not match expected_release_sha" >&2
   exit 1
 }
+
+if [ "$mode" = diagnose-request ]; then
+  diagnostic_lines="$(
+    docker logs --since 30m "$web_container" 2>&1 |
+      awk -v request_id="$diagnostic_request_id" '
+        index($0, request_id) { capture = 1; remaining = 30 }
+        capture && remaining > 0 { print; remaining -= 1 }
+      '
+  )"
+  [ -n "$diagnostic_lines" ] || {
+    echo "no recent log entry matched the supplied request id" >&2
+    exit 1
+  }
+  printf '%s\n' "$diagnostic_lines" |
+    sed -n -E '/requestId|PostgresError|severity|code:|constraint|table:|column:|routine:|automation-review-(repository|service)|errors\.ts/p' |
+    sed -E 's/(detail|query|parameters|where):.*/\1: [DETAIL_REDACTED]/I' |
+    head -n 40
+  exit 0
+fi
 
 operation_args=""
 if [ "$mode" = apply ]; then

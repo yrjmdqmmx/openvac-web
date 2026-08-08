@@ -8,15 +8,20 @@ on:
         required: true
         type: string
       mode:
-        description: Preview is read-only; apply queues eligible pending knowledge
+        description: Preview/apply pending knowledge, or diagnose one API request
         required: true
         default: preview
         type: choice
         options:
           - preview
           - apply
+          - diagnose-request
       confirmation:
         description: Enter REQUEUE_PENDING when mode is apply
+        required: false
+        type: string
+      diagnostic_request_id:
+        description: Lowercase request UUID, required only for diagnose-request
         required: false
         type: string
 
@@ -28,7 +33,7 @@ concurrency:
 
 jobs:
   requeue:
-    name: Requeue pending production knowledge
+    name: Run protected production knowledge operation
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -47,6 +52,7 @@ jobs:
           EXPECTED_RELEASE_SHA: ${{ inputs.expected_release_sha }}
           MODE: ${{ inputs.mode }}
           CONFIRMATION: ${{ inputs.confirmation }}
+          DIAGNOSTIC_REQUEST_ID: ${{ inputs.diagnostic_request_id }}
         run: |
           set -Eeuo pipefail
           case "$EXPECTED_RELEASE_SHA" in
@@ -64,12 +70,22 @@ jobs:
                 echo "confirmation must be empty in preview mode" >&2
                 exit 64
               }
+              test -z "$DIAGNOSTIC_REQUEST_ID"
               ;;
             apply)
               test "$CONFIRMATION" = REQUEUE_PENDING || {
                 echo "apply mode requires the exact confirmation REQUEUE_PENDING" >&2
                 exit 64
               }
+              test -z "$DIAGNOSTIC_REQUEST_ID"
+              ;;
+            diagnose-request)
+              test -z "$CONFIRMATION" || {
+                echo "confirmation must be empty in diagnose-request mode" >&2
+                exit 64
+              }
+              printf '%s\n' "$DIAGNOSTIC_REQUEST_ID" |
+                grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
               ;;
             *) exit 64 ;;
           esac
@@ -89,13 +105,14 @@ jobs:
         env:
           EXPECTED_RELEASE_SHA: ${{ inputs.expected_release_sha }}
           MODE: ${{ inputs.mode }}
+          DIAGNOSTIC_REQUEST_ID: ${{ inputs.diagnostic_request_id }}
           ECS_HOST: ${{ secrets.ECS_HOST }}
           ECS_USER: ${{ secrets.ECS_USER }}
         run: |
           set -Eeuo pipefail
           ssh_base="${ECS_USER}@${ECS_HOST}"
           ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
-            sh -s -- /opt/openvac "$EXPECTED_RELEASE_SHA" "$MODE" \
+            sh -s -- /opt/openvac "$EXPECTED_RELEASE_SHA" "$MODE" "$DIAGNOSTIC_REQUEST_ID" \
             <deploy/run-knowledge-review-operation.sh \
             | tee "$RUNNER_TEMP/knowledge-review-operation.json"
           {
