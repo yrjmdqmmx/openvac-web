@@ -21,6 +21,8 @@ describe("knowledge review production operations", () => {
     expect(workflow).toContain("group: deploy-production");
     expect(workflow).toContain("expected_release_sha:");
     expect(workflow).toContain("confirmation:");
+    expect(workflow).toContain("diagnostic_request_id:");
+    expect(workflow).toContain("diagnose-request");
     expect(workflow).toContain("REQUEUE_PENDING");
     expect(workflow).toContain("secrets.ECS_SSH_KEY");
     expect(workflow).toContain("secrets.ECS_KNOWN_HOSTS");
@@ -38,6 +40,9 @@ describe("knowledge review production operations", () => {
     expect(script).toContain('mode="${3:-preview}"');
     expect(script).toContain("knowledge:requeue-pending");
     expect(script).toContain('operation_args="--apply"');
+    expect(script).toContain("diagnose-request");
+    expect(script).toContain("PostgresError");
+    expect(script).toContain("[DETAIL_REDACTED]");
     expect(script).toContain("--no-deps");
     expect(script).not.toMatch(/ossutil|r2|delete-object|rm\s+-rf/);
   });
