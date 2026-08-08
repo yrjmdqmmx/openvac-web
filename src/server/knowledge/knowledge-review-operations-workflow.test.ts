@@ -61,6 +61,7 @@ describe("knowledge review production operations", () => {
     expect(script).toContain("structured_report = '{}'::jsonb");
     expect(script).toContain("retryEligibility");
     expect(script).toContain("metadataReasonMatches");
+    expect(script).toContain("reasonCodes");
     expect(script).toContain("initialRunMatches");
     expect(script).toContain("PostgresError");
     expect(script).toContain("[DETAIL_REDACTED]");

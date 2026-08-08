@@ -314,6 +314,15 @@ SELECT json_build_object(
         AND kv.metadata -> 'automationReasons' ?
           'AUTOMATION_REVIEW_NUMERIC_EVIDENCE_MISSING'
     ),
+    'reasonCodes', COALESCE(
+      (
+        SELECT kv.metadata -> 'automationReasons'
+        FROM knowledge_version kv
+        WHERE kv.id = :'retry_version_id'::uuid
+          AND kv.content_hash = :'retry_content_hash'
+      ),
+      '[]'::jsonb
+    ),
     'initialRunMatches', EXISTS (
       SELECT 1
       FROM knowledge_review_run initial
