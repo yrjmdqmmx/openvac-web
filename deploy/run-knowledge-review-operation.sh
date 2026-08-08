@@ -37,7 +37,7 @@ esac
 }
 
 case "$mode" in
-  preview|apply|diagnose-request|retry-verify-evidence) ;;
+  preview|apply|diagnose-request|retry-verify-evidence|diagnose-review-pair) ;;
   *)
     echo "unsupported knowledge review operation mode" >&2
     exit 64
@@ -55,7 +55,7 @@ if [ "$mode" = diagnose-request ]; then
     echo "retry target is only accepted in retry-verify-evidence mode" >&2
     exit 64
   }
-elif [ "$mode" = retry-verify-evidence ]; then
+elif [ "$mode" = retry-verify-evidence ] || [ "$mode" = diagnose-review-pair ]; then
   [ -z "$diagnostic_request_id" ] || {
     echo "diagnostic request id is only accepted in diagnose-request mode" >&2
     exit 64
@@ -185,8 +185,10 @@ if [ "$mode" = diagnose-request ]; then
   exit 0
 fi
 
-if [ "$mode" = retry-verify-evidence ]; then
-  retry_result="$(
+if [ "$mode" = retry-verify-evidence ] || [ "$mode" = diagnose-review-pair ]; then
+  retry_result=""
+  if [ "$mode" = retry-verify-evidence ]; then
+    retry_result="$(
     compose exec -T postgres sh -lc \
       'exec psql -X -v ON_ERROR_STOP=1 -tA -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"' \
       sh \
@@ -275,7 +277,8 @@ SELECT json_build_object(
 FROM reset_run r
 JOIN audit a ON a.target_id = r.id::text;
 SQL
-  )"
+    )"
+  fi
   [ -n "$retry_result" ] || {
     retry_diagnostics="$(
       compose exec -T postgres sh -lc \
@@ -419,6 +422,10 @@ SELECT json_build_object(
 )::text;
 SQL
     )"
+    if [ "$mode" = diagnose-review-pair ]; then
+      printf '%s\n' "$retry_diagnostics"
+      exit 0
+    fi
     printf '%s\n' "$retry_diagnostics" >&2
     echo "the exact verify run is not eligible for evidence-only retry" >&2
     exit 1

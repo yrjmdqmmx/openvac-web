@@ -24,6 +24,7 @@ describe("knowledge review production operations", () => {
     expect(workflow).toContain("diagnostic_request_id:");
     expect(workflow).toContain("diagnose-request");
     expect(workflow).toContain("retry-verify-evidence");
+    expect(workflow).toContain("diagnose-review-pair");
     expect(workflow).toContain("RETRY_VERIFY_EVIDENCE");
     expect(workflow).toContain("retry_document_id:");
     expect(workflow).toContain("retry_version_id:");
@@ -51,6 +52,7 @@ describe("knowledge review production operations", () => {
     expect(script).toContain('operation_args="--apply"');
     expect(script).toContain("diagnose-request");
     expect(script).toContain("retry-verify-evidence");
+    expect(script).toContain("diagnose-review-pair");
     expect(script).toContain('[ "$diagnostic_request_id" = _ ]');
     expect(script).toContain("AUTOMATION_REVIEW_NUMERIC_EVIDENCE_MISSING");
     expect(script).toContain("AUTOMATION_REVIEW_PAIR_MISSING_OR_MISMATCHED");

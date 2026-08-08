@@ -16,6 +16,7 @@ on:
           - preview
           - apply
           - retry-verify-evidence
+          - diagnose-review-pair
           - diagnose-request
       confirmation:
         description: Enter REQUEUE_PENDING for apply or RETRY_VERIFY_EVIDENCE for an exact verify retry
@@ -106,6 +107,18 @@ jobs:
             retry-verify-evidence)
               test "$CONFIRMATION" = RETRY_VERIFY_EVIDENCE || {
                 echo "retry-verify-evidence requires the exact confirmation RETRY_VERIFY_EVIDENCE" >&2
+                exit 64
+              }
+              test -z "$DIAGNOSTIC_REQUEST_ID"
+              for retry_uuid in "$RETRY_DOCUMENT_ID" "$RETRY_VERSION_ID" "$RETRY_RUN_ID"; do
+                printf '%s\n' "$retry_uuid" |
+                  grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              done
+              printf '%s\n' "$RETRY_CONTENT_HASH" | grep -Eq '^[0-9a-f]{64}$'
+              ;;
+            diagnose-review-pair)
+              test -z "$CONFIRMATION" || {
+                echo "diagnose-review-pair requires empty confirmation" >&2
                 exit 64
               }
               test -z "$DIAGNOSTIC_REQUEST_ID"
