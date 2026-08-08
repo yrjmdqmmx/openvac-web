@@ -270,6 +270,71 @@ JOIN audit a ON a.target_id = r.id::text;
 SQL
   )"
   [ -n "$retry_result" ] || {
+    retry_diagnostics="$(
+      compose exec -T postgres sh -lc \
+        'exec psql -X -v ON_ERROR_STOP=1 -tA -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"' \
+        sh \
+        "--set=retry_document_id=$retry_document_id" \
+        "--set=retry_version_id=$retry_version_id" \
+        "--set=retry_run_id=$retry_run_id" \
+        "--set=retry_content_hash=$retry_content_hash" <<'SQL'
+SELECT json_build_object(
+  'retryEligibility', json_build_object(
+    'runExists', EXISTS (
+      SELECT 1 FROM knowledge_review_run r
+      WHERE r.id = :'retry_run_id'::uuid
+    ),
+    'runStateMatches', EXISTS (
+      SELECT 1 FROM knowledge_review_run r
+      WHERE r.id = :'retry_run_id'::uuid
+        AND r.phase = 'verify'
+        AND r.status = 'needs_human'
+        AND r.decision = 'needs_human'
+        AND r.prompt_version = 'codex_automation_v1'
+    ),
+    'runInputMatches', EXISTS (
+      SELECT 1 FROM knowledge_review_run r
+      WHERE r.id = :'retry_run_id'::uuid
+        AND r.input_version_id = :'retry_version_id'::uuid
+        AND r.input_content_hash = :'retry_content_hash'
+    ),
+    'currentDocumentMatches', EXISTS (
+      SELECT 1
+      FROM knowledge_document kd
+      JOIN knowledge_version kv ON kv.id = kd.current_version_id
+      WHERE kd.id = :'retry_document_id'::uuid
+        AND kd.current_version_id = :'retry_version_id'::uuid
+        AND kd.status = 'review'
+        AND kv.content_hash = :'retry_content_hash'
+    ),
+    'metadataReasonMatches', EXISTS (
+      SELECT 1 FROM knowledge_version kv
+      WHERE kv.id = :'retry_version_id'::uuid
+        AND kv.content_hash = :'retry_content_hash'
+        AND kv.metadata -> 'automationReasons' ?
+          'AUTOMATION_REVIEW_NUMERIC_EVIDENCE_MISSING'
+    ),
+    'initialRunMatches', EXISTS (
+      SELECT 1
+      FROM knowledge_review_run initial
+      WHERE initial.phase = 'initial'
+        AND initial.status = 'completed'
+        AND initial.decision = 'approved'
+        AND initial.risk = 'low'
+        AND initial.prompt_version = 'codex_automation_v1'
+        AND (
+          (
+            initial.input_version_id = :'retry_version_id'::uuid
+            AND initial.input_content_hash = :'retry_content_hash'
+          )
+          OR initial.revised_version_id = :'retry_version_id'::uuid
+        )
+    )
+  )
+)::text;
+SQL
+    )"
+    printf '%s\n' "$retry_diagnostics" >&2
     echo "the exact verify run is not eligible for evidence-only retry" >&2
     exit 1
   }
