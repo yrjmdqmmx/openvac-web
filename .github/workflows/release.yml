@@ -608,6 +608,7 @@ jobs:
           ECS_HOST: ${{ secrets.ECS_HOST }}
           ECS_USER: ${{ secrets.ECS_USER }}
           WEB_IMAGE_DIGEST: ${{ needs.image.outputs.web_digest }}
+          KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256: ${{ secrets.KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256 }}
         run: |
           set -Eeuo pipefail
           case "$TARGET" in
@@ -667,14 +668,29 @@ jobs:
             sha256sum "$(basename "$bundle_archive")" >"$(basename "$bundle_checksum")"
           )
 
-          remote_stage="/tmp/openvac-deploy-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           ssh_base="${ECS_USER}@${ECS_HOST}"
+          remote_stage="$(
+            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
+              'umask 077; mktemp -d /tmp/openvac-deploy.XXXXXX'
+          )"
+          case "$remote_stage" in /tmp/openvac-deploy.*) ;; *) exit 1 ;; esac
+          case "$remote_stage" in *[!A-Za-z0-9._/-]*|*/*/*/*) exit 1 ;; esac
+          token_hash="$KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256"
+          case "$token_hash" in ""|*[!0-9a-f]*) exit 64 ;; esac
+          test "${#token_hash}" -eq 64
+          token_hash_file="$RUNNER_TEMP/openvac-knowledge-review-token-hash"
+          (umask 077 && printf '%s\n' "$token_hash" >"$token_hash_file")
+          unset token_hash
           cleanup() {
-            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base"               "case '$remote_stage' in /tmp/openvac-deploy-*) rm -rf -- '$remote_stage' ;; esac"               >/dev/null 2>&1 || true
+            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base"               "case '$remote_stage' in /tmp/openvac-deploy.*) rm -rf -- '$remote_stage' ;; esac"               >/dev/null 2>&1 || true
+            rm -f -- "$token_hash_file"
           }
           trap cleanup EXIT HUP INT TERM
-          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base"             "install -d -m 700 '$remote_stage'"
           scp -i "$HOME/.ssh/openvac" -o BatchMode=yes             "$archive" "$archive_checksum" "$bundle_archive" "$bundle_checksum"             "$ssh_base:$remote_stage/"
+          scp -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+            "$token_hash_file" "$ssh_base:$remote_stage/knowledge-review-token-hash"
+          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
+            "chmod 600 '$remote_stage/knowledge-review-token-hash'"
 
           loaded_web_id="$(
             ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base"               sh -s -- "$remote_stage" "$RELEASE_SHA" "$image_repository:archive-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$WEB_IMAGE_DIGEST" <<'REMOTE_PREPARE'
@@ -683,7 +699,7 @@ jobs:
           release_id="$2"
           loaded_tag="$3"
           expected_registry_digest="$4"
-          case "$remote_stage" in /tmp/openvac-deploy-*) ;; *) exit 64 ;; esac
+          case "$remote_stage" in /tmp/openvac-deploy.*) ;; *) exit 64 ;; esac
           cd "$remote_stage"
           sha256sum --check openvac-web-release.tar.zst.sha256 >&2
           sha256sum --check openvac-deploy-bundle.tar.gz.sha256 >&2
@@ -727,8 +743,20 @@ jobs:
           loaded_web_id="$5"
           compose_project="$6"
           health_url="$7"
-          case "$remote_stage" in /tmp/openvac-deploy-*) ;; *) exit 64 ;; esac
-          OPENVAC_WEB_PRELOADED_ID="$loaded_web_id"             sh "$remote_stage/bundle/deploy/activate-bundle.sh"             "$deploy_dir" "$release_id" "$remote_stage/bundle"             "$release_image" "$compose_project" "$health_url"
+          case "$remote_stage" in /tmp/openvac-deploy.*) ;; *) exit 64 ;; esac
+          token_hash_file="$remote_stage/knowledge-review-token-hash"
+          [ -f "$token_hash_file" ] && [ ! -L "$token_hash_file" ] || exit 64
+          [ "$(stat -c '%a' "$token_hash_file")" = 600 ] || exit 64
+          IFS= read -r token_hash <"$token_hash_file"
+          rm -f -- "$token_hash_file"
+          case "$token_hash" in ""|*[!0-9a-f]*) exit 64 ;; esac
+          [ "${#token_hash}" -eq 64 ] || exit 64
+          KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256="$token_hash" \
+            OPENVAC_WEB_PRELOADED_ID="$loaded_web_id" \
+            sh "$remote_stage/bundle/deploy/activate-bundle.sh" \
+            "$deploy_dir" "$release_id" "$remote_stage/bundle" \
+            "$release_image" "$compose_project" "$health_url"
+          unset token_hash
           REMOTE_ACTIVATE
 
           {
