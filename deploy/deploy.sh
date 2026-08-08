@@ -168,6 +168,25 @@ IFS= read -r activation_lock_owner <"$activation_lock_owner_file"
   echo "deployment environment file must have mode 0600" >&2
   exit 64
 }
+desired_knowledge_review_token_hash="${KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256:-}"
+unset KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256
+if [ -n "$desired_knowledge_review_token_hash" ]; then
+  case "$desired_knowledge_review_token_hash" in
+    *[!0-9a-f]*)
+      echo "knowledge review automation token hash must be lowercase hexadecimal" >&2
+      exit 64
+      ;;
+  esac
+  [ "${#desired_knowledge_review_token_hash}" -eq 64 ] || {
+    echo "knowledge review automation token hash must contain 64 characters" >&2
+    exit 64
+  }
+  [ -f "$script_dir/configure-knowledge-review-token-hash.sh" ] &&
+    [ ! -L "$script_dir/configure-knowledge-review-token-hash.sh" ] || {
+    echo "release bundle is missing the knowledge review token configurator" >&2
+    exit 64
+  }
+fi
 [ -f "$compose_file" ] && [ ! -L "$compose_file" ] || {
   echo "Compose file must be a regular file, not a symlink" >&2
   exit 64
@@ -404,9 +423,81 @@ cleanup_new_release_containers() {
   OPENVAC_IMAGE="$release_image"     release_compose rm --stop --force worker web >/dev/null 2>&1 || true
 }
 
+env_backup_file=""
+env_mutated=false
+
+backup_runtime_env() {
+  [ -n "$desired_knowledge_review_token_hash" ] || return 0
+  [ -z "$env_backup_file" ] || return 0
+  env_backup_file="$deploy_dir/.env.rollback-$activation_id"
+  if [ -e "$env_backup_file" ] || [ -L "$env_backup_file" ]; then
+    echo "refusing an existing runtime environment rollback file" >&2
+    return 1
+  fi
+  (
+    set -C
+    umask 077
+    cat "$deploy_dir/.env" >"$env_backup_file"
+  ) || return 1
+  chmod 600 "$env_backup_file" || return 1
+  durable_sync "$env_backup_file" || return 1
+  durable_sync "$deploy_dir" || return 1
+}
+
+apply_runtime_env() {
+  [ -n "$desired_knowledge_review_token_hash" ] || return 0
+  backup_runtime_env || return 1
+  # From this point onward every exit path must restore from the backup,
+  # including failures before or during the atomic configurator rename.
+  env_mutated=true
+  if ! printf '%s\n' "$desired_knowledge_review_token_hash" |
+    OPENVAC_CONFIG_ROOT="$(dirname "$deploy_dir")" \
+      sh "$script_dir/configure-knowledge-review-token-hash.sh" "$deployment_target"; then
+    return 1
+  fi
+  durable_sync "$deploy_dir/.env" || return 1
+  durable_sync "$deploy_dir" || return 1
+}
+
+restore_runtime_env() {
+  if [ -z "$env_backup_file" ]; then
+    env_mutated=false
+    return 0
+  fi
+  [ -f "$env_backup_file" ] && [ ! -L "$env_backup_file" ] || return 1
+  env_restore_tmp="$(mktemp "$deploy_dir/.env.restore.XXXXXX")" || return 1
+  if ! cat "$env_backup_file" >"$env_restore_tmp" ||
+    ! chmod 600 "$env_restore_tmp" ||
+    ! mv "$env_restore_tmp" "$deploy_dir/.env"; then
+    rm -f -- "$env_restore_tmp"
+    return 1
+  fi
+  durable_sync "$deploy_dir/.env" || return 1
+  rm -f -- "$env_backup_file" || return 1
+  env_backup_file=""
+  env_mutated=false
+  durable_sync "$deploy_dir" || return 1
+}
+
+commit_runtime_env() {
+  if [ -z "$env_backup_file" ]; then
+    env_mutated=false
+    return 0
+  fi
+  [ -f "$env_backup_file" ] && [ ! -L "$env_backup_file" ] || return 1
+  rm -f -- "$env_backup_file" || return 1
+  env_backup_file=""
+  env_mutated=false
+  durable_sync "$deploy_dir" || return 1
+}
+
 rollback() {
   reason="$1"
   echo "$reason; rolling back the previous application release set" >&2
+  if ! restore_runtime_env; then
+    echo "Failed to restore the previous runtime environment" >&2
+    return 1
+  fi
   if [ -z "$old_image" ]; then
     cleanup_new_release_containers
     echo "No previous image was available; new web containers were removed" >&2
@@ -455,7 +546,9 @@ journal_tmp=""
 
 abort_uncommitted_deployment() {
   trap - HUP INT TERM
-  if [ "$runtime_mutated" = true ] && [ "$deployment_committed" = false ]; then
+  if { [ "$runtime_mutated" = true ] || [ "$env_mutated" = true ] ||
+    [ -n "$env_backup_file" ]; } &&
+    [ "$deployment_committed" = false ]; then
     if rollback "Deployment interrupted before release pointer publication"; then
       clear_transaction_journal || true
     fi
@@ -605,6 +698,16 @@ if ! begin_transaction_journal; then
   exit 1
 fi
 
+if ! apply_runtime_env; then
+  if restore_runtime_env; then
+    clear_transaction_journal || true
+  else
+    echo "Runtime environment recovery failed; retaining the deployment transaction journal" >&2
+  fi
+  echo "Could not transactionally configure the knowledge review token hash" >&2
+  exit 1
+fi
+
 echo "Running database migration"
 if ! OPENVAC_IMAGE="$release_image" release_compose run --rm migrate; then
   rollback_failed_deployment "Database migration failed" || true
@@ -657,6 +760,15 @@ if [ "$should_rehearse" = true ]; then
     exit 1
   fi
   runtime_mutated=false
+  if ! apply_runtime_env; then
+    if restore_runtime_env; then
+      clear_transaction_journal || true
+    else
+      echo "Runtime environment recovery failed; retaining the deployment transaction journal" >&2
+    fi
+    echo "Could not restore the target runtime environment after rollback rehearsal" >&2
+    exit 1
+  fi
   if ! start_new_release "post-rehearsal reactivation"; then
     rollback_failed_deployment "R1 reactivation after rollback rehearsal failed" || true
     exit 1
@@ -767,5 +879,8 @@ if ! publish_current_release; then
   [ -n "$receipt_tmp" ] && rm -f -- "$receipt_tmp"
   exit 1
 fi
+
+commit_runtime_env ||
+  echo "Release committed; warning: runtime environment rollback-copy cleanup was incomplete" >&2
 
 echo "Release healthy; web-only runtime active at $target_release_id"
