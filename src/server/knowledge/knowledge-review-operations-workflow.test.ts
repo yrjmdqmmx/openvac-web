@@ -75,6 +75,10 @@ describe("knowledge review production operations", () => {
     expect(script).toContain("embeddingStatus");
     expect(script).toContain("embeddedChunks");
     expect(script).toContain("pendingWorkerJobs");
+    expect(script).toContain("failedWorkerJobs");
+    expect(script).toContain("workerJobs");
+    expect(script).toContain("readyNow");
+    expect(script).toContain("hasLastError");
     expect(script).toContain("normalizeDatabaseTimestamp");
     expect(script).toContain("PostgresError");
     expect(script).toContain("[DETAIL_REDACTED]");
