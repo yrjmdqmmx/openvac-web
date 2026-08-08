@@ -5,6 +5,10 @@ deploy_dir="${1:-}"
 expected_release="${2:-}"
 mode="${3:-preview}"
 diagnostic_request_id="${4:-}"
+retry_document_id="${5:-}"
+retry_version_id="${6:-}"
+retry_run_id="${7:-}"
+retry_content_hash="${8:-}"
 
 case "$deploy_dir" in
   /opt/openvac) ;;
@@ -29,20 +33,41 @@ esac
 }
 
 case "$mode" in
-  preview|apply|diagnose-request) ;;
+  preview|apply|diagnose-request|retry-verify-evidence) ;;
   *)
-    echo "mode must be preview or apply" >&2
+    echo "unsupported knowledge review operation mode" >&2
     exit 64
     ;;
 esac
 
+retry_values="$retry_document_id$retry_version_id$retry_run_id$retry_content_hash"
 if [ "$mode" = diagnose-request ]; then
   printf '%s\n' "$diagnostic_request_id" |
     grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || {
     echo "diagnose-request requires a lowercase UUID request id" >&2
     exit 64
   }
-elif [ -n "$diagnostic_request_id" ]; then
+  [ -z "$retry_values" ] || {
+    echo "retry target is only accepted in retry-verify-evidence mode" >&2
+    exit 64
+  }
+elif [ "$mode" = retry-verify-evidence ]; then
+  [ -z "$diagnostic_request_id" ] || {
+    echo "diagnostic request id is only accepted in diagnose-request mode" >&2
+    exit 64
+  }
+  for retry_uuid in "$retry_document_id" "$retry_version_id" "$retry_run_id"; do
+    printf '%s\n' "$retry_uuid" |
+      grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || {
+      echo "retry target UUID is invalid" >&2
+      exit 64
+    }
+  done
+  printf '%s\n' "$retry_content_hash" | grep -Eq '^[0-9a-f]{64}$' || {
+    echo "retry content hash is invalid" >&2
+    exit 64
+  }
+elif [ -n "$diagnostic_request_id" ] || [ -n "$retry_values" ]; then
   echo "diagnostic request id is only accepted in diagnose-request mode" >&2
   exit 64
 fi
@@ -153,6 +178,98 @@ if [ "$mode" = diagnose-request ]; then
     sed -n -E '/requestId|PostgresError|severity|code:|constraint|table:|column:|routine:|automation-review-(repository|service)|errors\.ts/p' |
     sed -E 's/(detail|query|parameters|where):.*/\1: [DETAIL_REDACTED]/I' |
     head -n 40
+  exit 0
+fi
+
+if [ "$mode" = retry-verify-evidence ]; then
+  retry_result="$(
+    compose exec -T postgres sh -lc \
+      'exec psql -X -v ON_ERROR_STOP=1 -tA -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"' \
+      sh \
+      "--set=retry_document_id=$retry_document_id" \
+      "--set=retry_version_id=$retry_version_id" \
+      "--set=retry_run_id=$retry_run_id" \
+      "--set=retry_content_hash=$retry_content_hash" <<'SQL'
+WITH eligible AS (
+  SELECT r.id, kd.id AS document_id, kv.id AS version_id, kv.content_hash
+  FROM knowledge_review_run r
+  JOIN knowledge_version kv ON kv.id = r.input_version_id
+  JOIN knowledge_document kd ON kd.id = kv.document_id
+  WHERE r.id = :'retry_run_id'::uuid
+    AND r.phase = 'verify'
+    AND r.status = 'needs_human'
+    AND r.decision = 'needs_human'
+    AND r.prompt_version = 'codex_automation_v1'
+    AND r.input_version_id = :'retry_version_id'::uuid
+    AND r.input_content_hash = :'retry_content_hash'
+    AND kd.id = :'retry_document_id'::uuid
+    AND kd.current_version_id = kv.id
+    AND kd.status = 'review'
+    AND kv.content_hash = :'retry_content_hash'
+    AND kv.metadata -> 'automationReasons' ? 'AUTOMATION_REVIEW_NUMERIC_EVIDENCE_MISSING'
+    AND EXISTS (
+      SELECT 1
+      FROM knowledge_review_run initial
+      WHERE initial.phase = 'initial'
+        AND initial.status = 'completed'
+        AND initial.decision = 'approved'
+        AND initial.risk = 'low'
+        AND initial.prompt_version = r.prompt_version
+        AND (
+          (initial.input_version_id = kv.id AND initial.input_content_hash = kv.content_hash)
+          OR initial.revised_version_id = kv.id
+        )
+    )
+  FOR UPDATE OF r, kd, kv
+), reset_run AS (
+  UPDATE knowledge_review_run r
+  SET status = 'queued', risk = NULL, decision = NULL,
+      structured_report = '{}'::jsonb, revised_version_id = NULL,
+      completed_at = NULL, lease_token_hash = NULL, lease_expires_at = NULL,
+      updated_at = NOW()
+  FROM eligible e
+  WHERE r.id = e.id
+  RETURNING r.id, e.document_id, e.version_id, e.content_hash
+), reset_version AS (
+  UPDATE knowledge_version kv
+  SET metadata = (kv.metadata - 'automationReasons') ||
+        '{"reviewStatus":"required","automationStatus":"queued"}'::jsonb,
+      updated_at = NOW()
+  FROM reset_run r
+  WHERE kv.id = r.version_id AND kv.content_hash = r.content_hash
+  RETURNING kv.id
+), audit AS (
+  INSERT INTO audit_log (
+    actor_user_id, actor_role, action, target_type, target_id, metadata, created_at
+  )
+  SELECT NULL, 'system', 'knowledge.automation_review.retry_verify_evidence',
+         'knowledge_review_run', r.id::text,
+         jsonb_build_object(
+           'documentId', r.document_id,
+           'versionId', r.version_id,
+           'contentHash', r.content_hash,
+           'previousReason', 'AUTOMATION_REVIEW_NUMERIC_EVIDENCE_MISSING'
+         ), NOW()
+  FROM reset_run r
+  JOIN reset_version v ON v.id = r.version_id
+  RETURNING target_id
+)
+SELECT json_build_object(
+  'runId', r.id,
+  'status', 'queued',
+  'versionId', r.version_id,
+  'contentHash', r.content_hash,
+  'audited', TRUE
+)::text
+FROM reset_run r
+JOIN audit a ON a.target_id = r.id::text;
+SQL
+  )"
+  [ -n "$retry_result" ] || {
+    echo "the exact verify run is not eligible for evidence-only retry" >&2
+    exit 1
+  }
+  printf '%s\n' "$retry_result"
   exit 0
 fi
 

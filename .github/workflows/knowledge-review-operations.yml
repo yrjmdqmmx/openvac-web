@@ -8,20 +8,37 @@ on:
         required: true
         type: string
       mode:
-        description: Preview/apply pending knowledge, or diagnose one API request
+        description: Preview/apply pending knowledge, retry one verify evidence report, or diagnose one API request
         required: true
         default: preview
         type: choice
         options:
           - preview
           - apply
+          - retry-verify-evidence
           - diagnose-request
       confirmation:
-        description: Enter REQUEUE_PENDING when mode is apply
+        description: Enter REQUEUE_PENDING for apply or RETRY_VERIFY_EVIDENCE for an exact verify retry
         required: false
         type: string
       diagnostic_request_id:
         description: Lowercase request UUID, required only for diagnose-request
+        required: false
+        type: string
+      retry_document_id:
+        description: Exact knowledge document UUID, required only for retry-verify-evidence
+        required: false
+        type: string
+      retry_version_id:
+        description: Exact current knowledge version UUID, required only for retry-verify-evidence
+        required: false
+        type: string
+      retry_run_id:
+        description: Exact needs-human verify run UUID, required only for retry-verify-evidence
+        required: false
+        type: string
+      retry_content_hash:
+        description: Exact lowercase current content SHA-256, required only for retry-verify-evidence
         required: false
         type: string
 
@@ -53,6 +70,10 @@ jobs:
           MODE: ${{ inputs.mode }}
           CONFIRMATION: ${{ inputs.confirmation }}
           DIAGNOSTIC_REQUEST_ID: ${{ inputs.diagnostic_request_id }}
+          RETRY_DOCUMENT_ID: ${{ inputs.retry_document_id }}
+          RETRY_VERSION_ID: ${{ inputs.retry_version_id }}
+          RETRY_RUN_ID: ${{ inputs.retry_run_id }}
+          RETRY_CONTENT_HASH: ${{ inputs.retry_content_hash }}
         run: |
           set -Eeuo pipefail
           case "$EXPECTED_RELEASE_SHA" in
@@ -64,6 +85,7 @@ jobs:
           test "${#EXPECTED_RELEASE_SHA}" -eq 40
           git cat-file -e "$EXPECTED_RELEASE_SHA^{commit}"
           git merge-base --is-ancestor "$EXPECTED_RELEASE_SHA" HEAD
+          retry_values="$RETRY_DOCUMENT_ID$RETRY_VERSION_ID$RETRY_RUN_ID$RETRY_CONTENT_HASH"
           case "$MODE" in
             preview)
               test -z "$CONFIRMATION" || {
@@ -71,6 +93,7 @@ jobs:
                 exit 64
               }
               test -z "$DIAGNOSTIC_REQUEST_ID"
+              test -z "$retry_values"
               ;;
             apply)
               test "$CONFIRMATION" = REQUEUE_PENDING || {
@@ -78,6 +101,19 @@ jobs:
                 exit 64
               }
               test -z "$DIAGNOSTIC_REQUEST_ID"
+              test -z "$retry_values"
+              ;;
+            retry-verify-evidence)
+              test "$CONFIRMATION" = RETRY_VERIFY_EVIDENCE || {
+                echo "retry-verify-evidence requires the exact confirmation RETRY_VERIFY_EVIDENCE" >&2
+                exit 64
+              }
+              test -z "$DIAGNOSTIC_REQUEST_ID"
+              for retry_uuid in "$RETRY_DOCUMENT_ID" "$RETRY_VERSION_ID" "$RETRY_RUN_ID"; do
+                printf '%s\n' "$retry_uuid" |
+                  grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              done
+              printf '%s\n' "$RETRY_CONTENT_HASH" | grep -Eq '^[0-9a-f]{64}$'
               ;;
             diagnose-request)
               test -z "$CONFIRMATION" || {
@@ -86,6 +122,7 @@ jobs:
               }
               printf '%s\n' "$DIAGNOSTIC_REQUEST_ID" |
                 grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              test -z "$retry_values"
               ;;
             *) exit 64 ;;
           esac
@@ -106,6 +143,10 @@ jobs:
           EXPECTED_RELEASE_SHA: ${{ inputs.expected_release_sha }}
           MODE: ${{ inputs.mode }}
           DIAGNOSTIC_REQUEST_ID: ${{ inputs.diagnostic_request_id }}
+          RETRY_DOCUMENT_ID: ${{ inputs.retry_document_id }}
+          RETRY_VERSION_ID: ${{ inputs.retry_version_id }}
+          RETRY_RUN_ID: ${{ inputs.retry_run_id }}
+          RETRY_CONTENT_HASH: ${{ inputs.retry_content_hash }}
           ECS_HOST: ${{ secrets.ECS_HOST }}
           ECS_USER: ${{ secrets.ECS_USER }}
         run: |
@@ -113,6 +154,7 @@ jobs:
           ssh_base="${ECS_USER}@${ECS_HOST}"
           ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
             sh -s -- /opt/openvac "$EXPECTED_RELEASE_SHA" "$MODE" "$DIAGNOSTIC_REQUEST_ID" \
+            "$RETRY_DOCUMENT_ID" "$RETRY_VERSION_ID" "$RETRY_RUN_ID" "$RETRY_CONTENT_HASH" \
             <deploy/run-knowledge-review-operation.sh \
             | tee "$RUNNER_TEMP/knowledge-review-operation.json"
           {
