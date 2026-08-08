@@ -13,6 +13,9 @@ retry_content_hash="${8:-}"
 if [ "$diagnostic_request_id" = _ ]; then
   diagnostic_request_id=""
 fi
+if [ "$retry_run_id" = _ ]; then
+  retry_run_id=""
+fi
 
 case "$deploy_dir" in
   /opt/openvac) ;;

@@ -180,9 +180,13 @@ jobs:
           set -Eeuo pipefail
           ssh_base="${ECS_USER}@${ECS_HOST}"
           diagnostic_argument="${DIAGNOSTIC_REQUEST_ID:-_}"
+          retry_run_argument="$RETRY_RUN_ID"
+          if [ "$MODE" = retry-embedding-job ]; then
+            retry_run_argument="${RETRY_RUN_ID:-_}"
+          fi
           ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
             sh -s -- /opt/openvac "$EXPECTED_RELEASE_SHA" "$MODE" "$diagnostic_argument" \
-            "$RETRY_DOCUMENT_ID" "$RETRY_VERSION_ID" "$RETRY_RUN_ID" "$RETRY_CONTENT_HASH" \
+            "$RETRY_DOCUMENT_ID" "$RETRY_VERSION_ID" "$retry_run_argument" "$RETRY_CONTENT_HASH" \
             <deploy/run-knowledge-review-operation.sh \
             | tee "$RUNNER_TEMP/knowledge-review-operation.json"
           {
