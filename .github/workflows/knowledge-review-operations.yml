@@ -1,0 +1,107 @@
+name: Knowledge review operations
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_release_sha:
+        description: Exact production release SHA currently recorded on the server
+        required: true
+        type: string
+      mode:
+        description: Preview is read-only; apply queues eligible pending knowledge
+        required: true
+        default: preview
+        type: choice
+        options:
+          - preview
+          - apply
+      confirmation:
+        description: Enter REQUEUE_PENDING when mode is apply
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  requeue:
+    name: Requeue pending production knowledge
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+      url: https://openvac.cn/admin/knowledge
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate the requested operation
+        env:
+          EXPECTED_RELEASE_SHA: ${{ inputs.expected_release_sha }}
+          MODE: ${{ inputs.mode }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -Eeuo pipefail
+          case "$EXPECTED_RELEASE_SHA" in
+            ""|*[!0-9a-f]*)
+              echo "expected_release_sha must be lowercase hexadecimal" >&2
+              exit 64
+              ;;
+          esac
+          test "${#EXPECTED_RELEASE_SHA}" -eq 40
+          git cat-file -e "$EXPECTED_RELEASE_SHA^{commit}"
+          git merge-base --is-ancestor "$EXPECTED_RELEASE_SHA" HEAD
+          case "$MODE" in
+            preview)
+              test -z "$CONFIRMATION" || {
+                echo "confirmation must be empty in preview mode" >&2
+                exit 64
+              }
+              ;;
+            apply)
+              test "$CONFIRMATION" = REQUEUE_PENDING || {
+                echo "apply mode requires the exact confirmation REQUEUE_PENDING" >&2
+                exit 64
+              }
+              ;;
+            *) exit 64 ;;
+          esac
+          sh -n deploy/run-knowledge-review-operation.sh
+      - name: Configure SSH
+        env:
+          ECS_SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
+          ECS_KNOWN_HOSTS: ${{ secrets.ECS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$ECS_SSH_KEY" >"$HOME/.ssh/openvac"
+          chmod 600 "$HOME/.ssh/openvac"
+          printf '%s\n' "$ECS_KNOWN_HOSTS" >"$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+      - name: Run the release-bound operation
+        env:
+          EXPECTED_RELEASE_SHA: ${{ inputs.expected_release_sha }}
+          MODE: ${{ inputs.mode }}
+          ECS_HOST: ${{ secrets.ECS_HOST }}
+          ECS_USER: ${{ secrets.ECS_USER }}
+        run: |
+          set -Eeuo pipefail
+          ssh_base="${ECS_USER}@${ECS_HOST}"
+          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
+            sh -s -- /opt/openvac "$EXPECTED_RELEASE_SHA" "$MODE" \
+            <deploy/run-knowledge-review-operation.sh \
+            | tee "$RUNNER_TEMP/knowledge-review-operation.json"
+          {
+            echo "### Knowledge review operation"
+            echo
+            printf -- '- Mode: `%s`\n' "$MODE"
+            printf -- '- Expected production release: `%s`\n' "$EXPECTED_RELEASE_SHA"
+            echo '- Result: completed without bypassing production environment protection.'
+          } >>"$GITHUB_STEP_SUMMARY"
