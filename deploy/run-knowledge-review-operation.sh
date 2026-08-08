@@ -424,6 +424,64 @@ SQL
     )"
     if [ "$mode" = diagnose-review-pair ]; then
       printf '%s\n' "$retry_diagnostics"
+      schema_diagnostics="$(
+        OPENVAC_IMAGE="$web_image" compose run --rm --no-deps -T \
+          -e RETRY_VERSION_ID="$retry_version_id" \
+          -e RETRY_CONTENT_HASH="$retry_content_hash" \
+          web pnpm exec tsx -e '
+import { sqlClient } from "./src/server/db";
+import {
+  KNOWLEDGE_AUTOMATION_POLICY_VERSION,
+  knowledgeAutomationReviewRunSchema
+} from "./src/server/knowledge/review-policy";
+
+const rows = await sqlClient.unsafe(
+  `SELECT * FROM knowledge_review_run
+   WHERE prompt_version = $3
+     AND ((input_version_id = $1 AND input_content_hash = $2)
+       OR revised_version_id = $1)
+   ORDER BY created_at ASC`,
+  [
+    process.env.RETRY_VERSION_ID,
+    process.env.RETRY_CONTENT_HASH,
+    KNOWLEDGE_AUTOMATION_POLICY_VERSION
+  ]
+);
+const results = rows.map((row) => {
+  const run = {
+    id: row.id,
+    phase: row.phase,
+    status: row.status,
+    inputVersionId: row.input_version_id,
+    inputContentHash: row.input_content_hash,
+    model: row.model,
+    promptVersion: row.prompt_version,
+    risk: row.risk,
+    structuredReport: row.structured_report,
+    decision: row.decision,
+    revisedVersionId: row.revised_version_id,
+    completedAt: row.completed_at
+  };
+  const parsed = knowledgeAutomationReviewRunSchema.safeParse(run);
+  return {
+    id: row.id,
+    phase: row.phase,
+    status: row.status,
+    success: parsed.success,
+    issues: parsed.success
+      ? []
+      : parsed.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          code: issue.code,
+          expected: "expected" in issue ? String(issue.expected) : null
+        }))
+  };
+});
+console.log(JSON.stringify({ pairSchemaParse: results }));
+await sqlClient.end();
+'
+      )"
+      printf '%s\n' "$schema_diagnostics"
       exit 0
     fi
     printf '%s\n' "$retry_diagnostics" >&2

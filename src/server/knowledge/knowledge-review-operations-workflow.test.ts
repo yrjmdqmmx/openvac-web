@@ -67,6 +67,8 @@ describe("knowledge review production operations", () => {
     expect(script).toContain("reasonCodes");
     expect(script).toContain("initialRunMatches");
     expect(script).toContain("previousReasons");
+    expect(script).toContain("pairSchemaParse");
+    expect(script).toContain("knowledgeAutomationReviewRunSchema.safeParse");
     expect(script).toContain("PostgresError");
     expect(script).toContain("[DETAIL_REDACTED]");
     expect(script).toContain("--no-deps");
