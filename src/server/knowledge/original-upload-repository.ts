@@ -14,7 +14,9 @@ export interface KnowledgeUploadSql {
     query: string,
     parameters?: unknown[]
   ): Promise<Array<Record<string, unknown>>>;
-  begin<T>(handler: (transaction: KnowledgeUploadSql) => Promise<T>): Promise<T>;
+  begin<T>(
+    handler: (transaction: KnowledgeUploadSql) => Promise<T>
+  ): Promise<T>;
 }
 
 export class PostgresKnowledgeOriginalUploadRepository implements KnowledgeOriginalUploadRepository {
@@ -174,8 +176,7 @@ export class PostgresKnowledgeOriginalUploadRepository implements KnowledgeOrigi
         objectKey: target.objectKey,
         filename: target.originalFilename
       };
-      const idempotencyKey =
-        `knowledge-ingestion:${target.versionId}:${target.sha256}`;
+      const idempotencyKey = `knowledge-ingestion:${target.versionId}:${target.sha256}`;
       const [task] = await transaction.unsafe(
         `
           INSERT INTO background_task (

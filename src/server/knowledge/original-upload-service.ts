@@ -117,17 +117,16 @@ export class KnowledgeOriginalUploadService {
     private readonly uuidSource: UuidSource = crypto
   ) {}
 
-  async initiate(input: InitiateKnowledgeOriginalUploadInput): Promise<
-    KnowledgeOriginalUploadDraft & { upload: PrivateUploadUrl }
-  > {
+  async initiate(
+    input: InitiateKnowledgeOriginalUploadInput
+  ): Promise<KnowledgeOriginalUploadDraft & { upload: PrivateUploadUrl }> {
     this.assertStorageCapabilities();
     const parsed = parseUploadInput(input);
     const documentId = this.uuidSource.randomUUID();
     const versionId = this.uuidSource.randomUUID();
     const originalFilename = displayFilename(parsed.filename);
-    const sanitizedFilename = sanitizeKnowledgeOriginalFilename(
-      originalFilename
-    );
+    const sanitizedFilename =
+      sanitizeKnowledgeOriginalFilename(originalFilename);
     const objectKey =
       `private/knowledge-originals/${documentId}/${versionId}/` +
       sanitizedFilename;
@@ -210,7 +209,9 @@ export function sanitizeKnowledgeOriginalFilename(filename: string): string {
 
 function displayFilename(filename: string): string {
   const segments = filename.replaceAll("\\", "/").split("/");
-  return segments.findLast((segment) => segment && segment !== "..") ?? "upload";
+  return (
+    segments.findLast((segment) => segment && segment !== "..") ?? "upload"
+  );
 }
 
 function fileExtension(filename: string): string | null {

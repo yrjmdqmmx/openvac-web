@@ -361,10 +361,7 @@ export const knowledgeReviewRun = pgTable(
       "knowledge_review_run_hashes_valid",
       sql`${table.inputContentHash} ~ '^[0-9a-f]{64}$' and (${table.leaseTokenHash} is null or ${table.leaseTokenHash} ~ '^[0-9a-f]{64}$')`
     ),
-    check(
-      "knowledge_review_run_attempts_valid",
-      sql`${table.attempts} >= 0`
-    ),
+    check("knowledge_review_run_attempts_valid", sql`${table.attempts} >= 0`),
     check(
       "knowledge_review_run_lease_valid",
       sql`(${table.status} = 'leased' and ${table.leaseTokenHash} is not null and ${table.leaseExpiresAt} is not null) or (${table.status} <> 'leased' and ${table.leaseTokenHash} is null and ${table.leaseExpiresAt} is null)`

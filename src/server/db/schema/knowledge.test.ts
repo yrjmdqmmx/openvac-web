@@ -102,9 +102,9 @@ describe("knowledge schema safety gates", () => {
         "knowledge_original_retention_policy_valid"
       ])
     );
-    expect(config.foreignKeys.every((item) => item.onDelete === "restrict")).toBe(
-      true
-    );
+    expect(
+      config.foreignKeys.every((item) => item.onDelete === "restrict")
+    ).toBe(true);
   });
 
   it("models leased two-stage review runs without replacing legacy review", () => {
@@ -126,13 +126,7 @@ describe("knowledge schema safety gates", () => {
         knowledgeSchema,
         "knowledgeReviewRunStatus"
       ).enumValues
-    ).toEqual([
-      "queued",
-      "leased",
-      "completed",
-      "needs_human",
-      "failed"
-    ]);
+    ).toEqual(["queued", "leased", "completed", "needs_human", "failed"]);
     expect(
       requiredSchemaExport<{ enumValues: string[] }>(
         knowledgeSchema,
@@ -204,7 +198,10 @@ describe("knowledge schema safety gates", () => {
 
   it("ships an additive executable migration with a literal size limit", () => {
     const migration = readFileSync(
-      new URL("../../../../drizzle/0013_talented_human_torch.sql", import.meta.url),
+      new URL(
+        "../../../../drizzle/0013_talented_human_torch.sql",
+        import.meta.url
+      ),
       "utf8"
     );
 
@@ -215,11 +212,7 @@ describe("knowledge schema safety gates", () => {
       'CREATE UNIQUE INDEX "knowledge_review_run_version_hash_prompt_phase_unique"'
     );
     expect(migration).not.toContain("$1");
-    expect(migration).not.toContain(
-      'ALTER TABLE "knowledge_review_section"'
-    );
-    expect(migration).not.toContain(
-      'ALTER TABLE "knowledge_section_decision"'
-    );
+    expect(migration).not.toContain('ALTER TABLE "knowledge_review_section"');
+    expect(migration).not.toContain('ALTER TABLE "knowledge_section_decision"');
   });
 });

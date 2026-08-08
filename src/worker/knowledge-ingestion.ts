@@ -510,9 +510,7 @@ function isValidDate(value: string): boolean {
 
 function validateKnowledgeObjectKey(objectKey: string): void {
   if (
-    !KNOWLEDGE_OBJECT_PREFIXES.some((prefix) =>
-      objectKey.startsWith(prefix)
-    ) ||
+    !KNOWLEDGE_OBJECT_PREFIXES.some((prefix) => objectKey.startsWith(prefix)) ||
     objectKey.startsWith("/") ||
     objectKey.includes("\0") ||
     objectKey.split("/").includes("..")

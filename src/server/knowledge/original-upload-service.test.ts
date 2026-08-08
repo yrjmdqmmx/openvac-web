@@ -265,15 +265,14 @@ function makeRepository(): KnowledgeOriginalUploadRepository & {
   complete: ReturnType<typeof vi.fn>;
   queuedCount(): number;
 } {
-  let queued:
-    | Awaited<ReturnType<KnowledgeOriginalUploadRepository["complete"]>>
-    | null = null;
+  let queued: Awaited<
+    ReturnType<KnowledgeOriginalUploadRepository["complete"]>
+  > | null = null;
   let queuedCount = 0;
   const target = {
     documentId,
     versionId,
-    objectKey:
-      `private/knowledge-originals/${documentId}/${versionId}/manual.pdf`,
+    objectKey: `private/knowledge-originals/${documentId}/${versionId}/manual.pdf`,
     originalFilename: "manual.pdf",
     mimeType: "application/pdf",
     sizeBytes: 10,
@@ -317,8 +316,7 @@ function makeStorage(
   createPrivateUploadUrl: ReturnType<typeof vi.fn>;
   statPrivate: ReturnType<typeof vi.fn>;
 } {
-  const key =
-    `private/knowledge-originals/${documentId}/${versionId}/manual.pdf`;
+  const key = `private/knowledge-originals/${documentId}/${versionId}/manual.pdf`;
   return {
     id: "storage",
     putPrivate: vi.fn(async () => ({ key })),

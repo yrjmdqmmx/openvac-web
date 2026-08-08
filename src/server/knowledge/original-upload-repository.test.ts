@@ -7,8 +7,7 @@ import {
 
 const documentId = "00000000-0000-4000-8000-000000000001";
 const versionId = "00000000-0000-4000-8000-000000000002";
-const objectKey =
-  `private/knowledge-originals/${documentId}/${versionId}/manual.pdf`;
+const objectKey = `private/knowledge-originals/${documentId}/${versionId}/manual.pdf`;
 const sha256 = "a".repeat(64);
 
 describe("Postgres knowledge original upload repository", () => {
@@ -82,10 +81,18 @@ describe("Postgres knowledge original upload repository", () => {
     expect(verify).toHaveBeenCalledTimes(2);
     const insert = sql.find("INSERT INTO background_task");
     expect(insert.parameters).toContain("knowledge_ingestion");
-    expect(insert.parameters).toContain(`knowledge-ingestion:${versionId}:${sha256}`);
-    expect(JSON.parse(String(insert.parameters?.find((value) =>
-      typeof value === "string" && value.startsWith("{")
-    )))).toEqual({
+    expect(insert.parameters).toContain(
+      `knowledge-ingestion:${versionId}:${sha256}`
+    );
+    expect(
+      JSON.parse(
+        String(
+          insert.parameters?.find(
+            (value) => typeof value === "string" && value.startsWith("{")
+          )
+        )
+      )
+    ).toEqual({
       stage: "ocr_pending",
       documentId,
       versionId,
