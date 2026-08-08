@@ -657,13 +657,16 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
       `
         UPDATE background_task
         SET
-          status = $2,
+          status = $2::operation_status,
           run_at = $3,
           last_error = $4,
           locked_at = NULL,
           locked_by = NULL,
           lease_token = NULL,
-          completed_at = CASE WHEN $2 = 'failed' THEN NOW() ELSE NULL END,
+          completed_at = CASE
+            WHEN $2::operation_status = 'failed'::operation_status THEN NOW()
+            ELSE NULL
+          END,
           updated_at = NOW()
         WHERE id = $1
           AND status = 'running'
@@ -674,7 +677,7 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
       [
         job.id,
         terminal ? "failed" : "queued",
-        retryAt,
+        retryAt.toISOString(),
         safeErrorMessage(error),
         job.workerId,
         job.leaseToken
@@ -706,7 +709,13 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
           AND lease_token = $5::uuid
         RETURNING id
       `,
-      [job.id, JSON.stringify(payload), retryAt, job.workerId, job.leaseToken]
+      [
+        job.id,
+        JSON.stringify(payload),
+        retryAt.toISOString(),
+        job.workerId,
+        job.leaseToken
+      ]
     );
     assertOneLeaseRow(job, rows);
   }
