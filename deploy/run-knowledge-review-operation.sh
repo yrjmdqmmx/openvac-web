@@ -375,6 +375,31 @@ SELECT json_build_object(
         WHERE bt.type = 'knowledge_ingestion'
           AND bt.payload ->> 'versionId' = kv.id::text
           AND bt.status IN ('queued', 'running')
+      ),
+      'failedWorkerJobs', (
+        SELECT count(*)
+        FROM background_task bt
+        WHERE bt.type = 'knowledge_ingestion'
+          AND bt.payload ->> 'versionId' = kv.id::text
+          AND bt.status = 'failed'
+      ),
+      'workerJobs', COALESCE(
+        (
+          SELECT json_agg(
+            json_build_object(
+              'status', bt.status,
+              'stage', bt.payload ->> 'stage',
+              'attempts', bt.attempts,
+              'maxAttempts', bt.max_attempts,
+              'readyNow', bt.run_at <= NOW(),
+              'hasLastError', bt.last_error IS NOT NULL
+            ) ORDER BY bt.created_at
+          )
+          FROM background_task bt
+          WHERE bt.type = 'knowledge_ingestion'
+            AND bt.payload ->> 'versionId' = kv.id::text
+        ),
+        '[]'::json
       )
     )
     FROM knowledge_document kd
