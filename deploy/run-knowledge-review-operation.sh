@@ -195,7 +195,8 @@ if [ "$mode" = retry-verify-evidence ]; then
       "--set=retry_run_id=$retry_run_id" \
       "--set=retry_content_hash=$retry_content_hash" <<'SQL'
 WITH eligible AS (
-  SELECT r.id, kd.id AS document_id, kv.id AS version_id, kv.content_hash
+  SELECT r.id, kd.id AS document_id, kv.id AS version_id, kv.content_hash,
+         kv.metadata -> 'automationReasons' AS previous_reasons
   FROM knowledge_review_run r
   JOIN knowledge_version kv ON kv.id = r.input_version_id
   JOIN knowledge_document kd ON kd.id = kv.document_id
@@ -210,7 +211,12 @@ WITH eligible AS (
     AND kd.current_version_id = kv.id
     AND kd.status = 'review'
     AND kv.content_hash = :'retry_content_hash'
-    AND kv.metadata -> 'automationReasons' ? 'AUTOMATION_REVIEW_NUMERIC_EVIDENCE_MISSING'
+    AND (
+      kv.metadata -> 'automationReasons' ?
+        'AUTOMATION_REVIEW_NUMERIC_EVIDENCE_MISSING'
+      OR kv.metadata -> 'automationReasons' ?
+        'AUTOMATION_REVIEW_PAIR_MISSING_OR_MISMATCHED'
+    )
     AND EXISTS (
       SELECT 1
       FROM knowledge_review_run initial
@@ -233,7 +239,8 @@ WITH eligible AS (
       updated_at = NOW()
   FROM eligible e
   WHERE r.id = e.id
-  RETURNING r.id, e.document_id, e.version_id, e.content_hash
+  RETURNING r.id, e.document_id, e.version_id, e.content_hash,
+            e.previous_reasons
 ), reset_version AS (
   UPDATE knowledge_version kv
   SET metadata = (kv.metadata - 'automationReasons') ||
@@ -252,7 +259,7 @@ WITH eligible AS (
            'documentId', r.document_id,
            'versionId', r.version_id,
            'contentHash', r.content_hash,
-           'previousReason', 'AUTOMATION_REVIEW_NUMERIC_EVIDENCE_MISSING'
+           'previousReasons', r.previous_reasons
          ), NOW()
   FROM reset_run r
   JOIN reset_version v ON v.id = r.version_id
@@ -311,8 +318,12 @@ SELECT json_build_object(
       SELECT 1 FROM knowledge_version kv
       WHERE kv.id = :'retry_version_id'::uuid
         AND kv.content_hash = :'retry_content_hash'
-        AND kv.metadata -> 'automationReasons' ?
-          'AUTOMATION_REVIEW_NUMERIC_EVIDENCE_MISSING'
+        AND (
+          kv.metadata -> 'automationReasons' ?
+            'AUTOMATION_REVIEW_NUMERIC_EVIDENCE_MISSING'
+          OR kv.metadata -> 'automationReasons' ?
+            'AUTOMATION_REVIEW_PAIR_MISSING_OR_MISMATCHED'
+        )
     ),
     'reasonCodes', COALESCE(
       (
