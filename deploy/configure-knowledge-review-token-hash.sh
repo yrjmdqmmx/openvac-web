@@ -30,7 +30,7 @@ case "$token_hash" in ""|*[!0-9a-f]*) echo "invalid token hash" >&2; exit 64 ;; 
   echo "protected environment file is missing or unsafe" >&2
   exit 1
 }
-mode="$(stat -f '%Lp' "$env_file" 2>/dev/null || stat -c '%a' "$env_file")"
+mode="$(stat -c '%a' "$env_file" 2>/dev/null || stat -f '%Lp' "$env_file")"
 [ "$mode" = 600 ] || {
   echo "protected environment file must use mode 600" >&2
   exit 1

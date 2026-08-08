@@ -10,6 +10,13 @@ const script = "deploy/configure-knowledge-review-token-hash.sh";
 const hash = "a".repeat(64);
 
 describe("knowledge review token hash deployment", () => {
+  it("prefers GNU stat on Linux and falls back to BSD stat on macOS", () => {
+    const source = readFileSync(script, "utf8");
+    expect(source.indexOf("stat -c '%a'")).toBeLessThan(
+      source.indexOf("stat -f '%Lp'")
+    );
+  });
+
   it("atomically adds or replaces only the server-side hash", () => {
     const root = mkdtempSync(join(tmpdir(), "openvac-token-hash-"));
     const deployDir = join(root, "openvac-staging");
