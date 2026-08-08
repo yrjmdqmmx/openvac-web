@@ -682,11 +682,10 @@ async function markNeedsHuman(
   await sql.unsafe(
     `
       UPDATE knowledge_version
-      SET status = 'review', metadata = metadata || $3::jsonb, updated_at = NOW()
-      WHERE id = $2
+      SET status = 'review', metadata = metadata || $2::jsonb, updated_at = NOW()
+      WHERE id = $1
     `,
     [
-      documentId,
       versionId,
       JSON.stringify({
         reviewStatus: "required",
