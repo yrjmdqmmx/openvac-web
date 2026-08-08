@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+import {
+  automationReviewDecisionSchema,
+  automationReviewRiskSchema,
+  knowledgeSha256Schema as sharedKnowledgeSha256Schema,
+  storedAutomationReviewReportSchema
+} from "./automation-review-schema";
+
 export const ACTIVE_PENDING_REVIEW = "active_pending_review";
 export const ACTIVE_REVIEWED = "active_reviewed";
 export const KNOWLEDGE_AUTOMATION_POLICY_VERSION = "codex_automation_v1";
@@ -29,7 +36,7 @@ export const knowledgeFileExtensionSchema = z.enum([
 export const knowledgeFileMimeSchema = z.enum(
   Object.values(KNOWLEDGE_FILE_MIME_BY_EXTENSION)
 );
-export const knowledgeSha256Schema = z.string().regex(/^[0-9a-f]{64}$/u);
+export const knowledgeSha256Schema = sharedKnowledgeSha256Schema;
 export const privateKnowledgeObjectKeySchema = z
   .string()
   .min(1)
@@ -79,37 +86,11 @@ export const knowledgeAutomationReviewStatusSchema = z.enum([
   "needs_human",
   "failed"
 ]);
-export const knowledgeAutomationReviewRiskSchema = z.enum([
-  "low",
-  "medium",
-  "high"
-]);
-export const knowledgeAutomationReviewDecisionSchema = z.enum([
-  "approved",
-  "rejected",
-  "needs_human"
-]);
-
-export const knowledgeAutomationReviewReportSchema = z.object({
-  summary: z.string().trim().min(1),
-  blockers: z
-    .array(
-      z.object({
-        code: z.string().trim().min(1),
-        message: z.string().trim().min(1)
-      })
-    )
-    .default([]),
-  numericClaims: z
-    .array(
-      z.object({
-        claim: z.string().trim().min(1),
-        exactEvidence: z.string().trim().min(1).optional(),
-        sourceLocator: z.string().trim().min(1).optional()
-      })
-    )
-    .default([])
-});
+export const knowledgeAutomationReviewRiskSchema = automationReviewRiskSchema;
+export const knowledgeAutomationReviewDecisionSchema =
+  automationReviewDecisionSchema;
+export const knowledgeAutomationReviewReportSchema =
+  storedAutomationReviewReportSchema;
 
 const knowledgeAutomationReviewRunBaseSchema = z.object({
   id: z.uuid(),
@@ -232,9 +213,46 @@ export function evaluateKnowledgePublicationReadiness(input: {
     if (
       run.status !== "completed" ||
       run.decision !== "approved" ||
-      run.promptVersion !== KNOWLEDGE_AUTOMATION_POLICY_VERSION ||
-      run.inputVersionId !== input.currentVersionId ||
-      run.inputContentHash !== input.currentContentHash
+      run.promptVersion !== KNOWLEDGE_AUTOMATION_POLICY_VERSION
+    ) {
+      return [];
+    }
+    const storedTargetMatches =
+      run.structuredReport.outputContentHash === input.currentContentHash &&
+      run.structuredReport.automation.outputVersionId ===
+        input.currentVersionId &&
+      run.structuredReport.automation.outputContentHash ===
+        input.currentContentHash &&
+      run.structuredReport.automation.sourceRightsValid === true;
+    const targetsCurrentInput =
+      run.inputVersionId === input.currentVersionId &&
+      run.inputContentHash === input.currentContentHash;
+    const targetsRecordedRevision =
+      run.phase === "initial" &&
+      run.revisedVersionId === input.currentVersionId &&
+      run.structuredReport.outputContentHash === input.currentContentHash;
+    const submittedReport = run.structuredReport.automation.submittedReport;
+    const submittedRevisionHash =
+      run.structuredReport.automation.submittedRevisionHash;
+    const submittedReportMatches =
+      submittedReport.summary === run.structuredReport.summary &&
+      submittedReport.risk === run.risk &&
+      submittedReport.decision === run.decision &&
+      sameJson(submittedReport.findings, run.structuredReport.findings) &&
+      sameJson(submittedReport.blockers, run.structuredReport.blockers) &&
+      sameJson(submittedReport.evidence, run.structuredReport.evidence) &&
+      sameJson(
+        submittedReport.numericClaims,
+        run.structuredReport.numericClaims
+      );
+    const submittedRevisionMatches = targetsRecordedRevision
+      ? submittedRevisionHash === input.currentContentHash
+      : submittedRevisionHash === null;
+    if (
+      !storedTargetMatches ||
+      (!targetsCurrentInput && !targetsRecordedRevision) ||
+      !submittedReportMatches ||
+      !submittedRevisionMatches
     ) {
       return [];
     }
@@ -253,7 +271,7 @@ export function evaluateKnowledgePublicationReadiness(input: {
 
   const pair = [initial, verify];
   const reasons: KnowledgePublicationReadinessReason[] = [];
-  if (pair.some((run) => run.risk === "high")) {
+  if (pair.some((run) => run.risk !== "low")) {
     reasons.push("AUTOMATION_REVIEW_HIGH_RISK");
   }
   if (pair.some((run) => run.structuredReport.blockers.length > 0)) {
@@ -277,6 +295,10 @@ export function evaluateKnowledgePublicationReadiness(input: {
   };
 }
 
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function filenameExtension(filename: string): string | null {
   const dot = filename.lastIndexOf(".");
   if (dot <= 0 || dot === filename.length - 1) return null;
@@ -284,7 +306,9 @@ function filenameExtension(filename: string): string | null {
 }
 
 function isSafePrivateKnowledgeObjectKey(value: string): boolean {
-  if (!/^private\/knowledge-originals\/[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(value)) {
+  if (
+    !/^private\/knowledge-originals\/[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(value)
+  ) {
     return false;
   }
   const segments = value.split("/");

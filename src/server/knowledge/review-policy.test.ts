@@ -16,7 +16,9 @@ type PublicationResult = {
   path: "codex_automation_v1" | "legacy_sections" | null;
   reasons: string[];
 };
-type PublicationEvaluator = (input: Record<string, unknown>) => PublicationResult;
+type PublicationEvaluator = (
+  input: Record<string, unknown>
+) => PublicationResult;
 
 function requiredPolicyExport<T>(name: string): T {
   const value = (reviewPolicy as Record<string, unknown>)[name];
@@ -47,6 +49,26 @@ function completedRun(input: {
     sourceLocator?: string;
   }>;
 }) {
+  const risk = input.risk ?? "low";
+  const blockers = input.blockers ?? [];
+  const numericClaims = input.numericClaims ?? [];
+  const findings = [{ code: "REVIEWED", message: "Evidence checked." }];
+  const evidence = [
+    {
+      claim: "Reviewed claim",
+      exactEvidence: "Reviewed source text",
+      sourceLocator: "page 1, paragraph 1"
+    }
+  ];
+  const submittedReport = {
+    summary: "reviewed",
+    risk,
+    decision: "approved" as const,
+    findings,
+    blockers,
+    evidence,
+    numericClaims
+  };
   return {
     id: input.id,
     phase: input.phase,
@@ -55,11 +77,24 @@ function completedRun(input: {
     inputContentHash: input.contentHash ?? hash,
     model: "gpt-5.5-codex",
     promptVersion: "codex_automation_v1",
-    risk: input.risk ?? "low",
+    risk,
     structuredReport: {
       summary: "reviewed",
-      blockers: input.blockers ?? [],
-      numericClaims: input.numericClaims ?? []
+      outputContentHash: input.contentHash ?? hash,
+      blockers,
+      numericClaims,
+      findings,
+      evidence,
+      automation: {
+        idempotencyTokenHash: "c".repeat(64),
+        submittedReport,
+        submittedRevisionHash: null,
+        actor: "knowledge-review-automation",
+        outputVersionId: versionId,
+        outputContentHash: input.contentHash ?? hash,
+        sourceRightsValid: true,
+        queuedPhase: null
+      }
     },
     decision: "approved"
   };
@@ -163,18 +198,18 @@ describe("knowledge original upload policy", () => {
     );
 
     expect(maxBytes).toBe(50 * 1024 * 1024);
-    expect(schema.safeParse({ ...validUpload, sizeBytes: maxBytes }).success).toBe(
-      true
-    );
+    expect(
+      schema.safeParse({ ...validUpload, sizeBytes: maxBytes }).success
+    ).toBe(true);
     expect(
       schema.safeParse({ ...validUpload, sizeBytes: maxBytes + 1 }).success
     ).toBe(false);
-    expect(schema.safeParse({ ...validUpload, sha256: hash.toUpperCase() }).success).toBe(
-      false
-    );
-    expect(schema.safeParse({ ...validUpload, sha256: "a".repeat(63) }).success).toBe(
-      false
-    );
+    expect(
+      schema.safeParse({ ...validUpload, sha256: hash.toUpperCase() }).success
+    ).toBe(false);
+    expect(
+      schema.safeParse({ ...validUpload, sha256: "a".repeat(63) }).success
+    ).toBe(false);
   });
 
   it.each([
@@ -239,6 +274,105 @@ describe("codex_automation_v1 publication policy", () => {
     });
   });
 
+  it("accepts an immutable initial revision only when its recorded output is the current verify target", () => {
+    const revisedInitial = {
+      ...initial,
+      inputVersionId: "00000000-0000-4000-8000-000000000099",
+      inputContentHash: "b".repeat(64),
+      revisedVersionId: versionId,
+      structuredReport: {
+        ...initial.structuredReport,
+        outputContentHash: hash,
+        automation: {
+          ...initial.structuredReport.automation,
+          submittedRevisionHash: hash
+        }
+      }
+    };
+
+    expect(
+      evaluate({
+        currentVersionId: versionId,
+        currentContentHash: hash,
+        sourceRightsValid: true,
+        automationRuns: [revisedInitial, verify]
+      })
+    ).toEqual({ ready: true, path: "codex_automation_v1", reasons: [] });
+  });
+
+  it("fails closed when the submitted report disagrees with its stored review summary", () => {
+    const tamperedInitial = {
+      ...initial,
+      structuredReport: {
+        ...initial.structuredReport,
+        automation: {
+          ...initial.structuredReport.automation,
+          submittedReport: {
+            ...initial.structuredReport.automation.submittedReport,
+            risk: "high" as const,
+            blockers: [{ code: "SAFETY", message: "Unresolved hazard." }]
+          }
+        }
+      }
+    };
+
+    expect(
+      evaluate({
+        currentVersionId: versionId,
+        currentContentHash: hash,
+        sourceRightsValid: true,
+        automationRuns: [tamperedInitial, verify]
+      }).ready
+    ).toBe(false);
+  });
+
+  it("requires both independent reviews to be low risk", () => {
+    const mediumInitial = completedRun({
+      id: initial.id,
+      phase: "initial",
+      risk: "medium"
+    });
+    const mediumVerify = completedRun({
+      id: verify.id,
+      phase: "verify",
+      risk: "medium"
+    });
+
+    expect(
+      evaluate({
+        currentVersionId: versionId,
+        currentContentHash: hash,
+        sourceRightsValid: true,
+        automationRuns: [mediumInitial, mediumVerify]
+      }).ready
+    ).toBe(false);
+  });
+
+  it("binds an immutable revision hash to the final current content hash", () => {
+    const revisedInitial = {
+      ...initial,
+      inputVersionId: "00000000-0000-4000-8000-000000000099",
+      inputContentHash: "b".repeat(64),
+      revisedVersionId: versionId,
+      structuredReport: {
+        ...initial.structuredReport,
+        automation: {
+          ...initial.structuredReport.automation,
+          submittedRevisionHash: "d".repeat(64)
+        }
+      }
+    };
+
+    expect(
+      evaluate({
+        currentVersionId: versionId,
+        currentContentHash: hash,
+        sourceRightsValid: true,
+        automationRuns: [revisedInitial, verify]
+      }).ready
+    ).toBe(false);
+  });
+
   it("rejects missing, duplicate, or content-mismatched review pairs", () => {
     for (const automationRuns of [
       [initial],
@@ -263,7 +397,10 @@ describe("codex_automation_v1 publication policy", () => {
       currentVersionId: versionId,
       currentContentHash: hash,
       sourceRightsValid: true,
-      automationRuns: [initial, { ...verify, risk: "high" }]
+      automationRuns: [
+        initial,
+        completedRun({ id: verify.id, phase: "verify", risk: "high" })
+      ]
     });
     const blockers = evaluate({
       currentVersionId: versionId,
@@ -271,13 +408,11 @@ describe("codex_automation_v1 publication policy", () => {
       sourceRightsValid: true,
       automationRuns: [
         initial,
-        {
-          ...verify,
-          structuredReport: {
-            ...verify.structuredReport,
-            blockers: [{ code: "UNSUPPORTED_CLAIM", message: "claim" }]
-          }
-        }
+        completedRun({
+          id: verify.id,
+          phase: "verify",
+          blockers: [{ code: "UNSUPPORTED_CLAIM", message: "claim" }]
+        })
       ]
     });
 
@@ -286,17 +421,21 @@ describe("codex_automation_v1 publication policy", () => {
   });
 
   it.each([
-    ["high-risk", { ...verify, id: "00000000-0000-4000-8000-000000000013", risk: "high" }],
+    [
+      "high-risk",
+      completedRun({
+        id: "00000000-0000-4000-8000-000000000013",
+        phase: "verify",
+        risk: "high"
+      })
+    ],
     [
       "blocker-bearing",
-      {
-        ...verify,
+      completedRun({
         id: "00000000-0000-4000-8000-000000000014",
-        structuredReport: {
-          ...verify.structuredReport,
-          blockers: [{ code: "CONFLICT", message: "conflicting evidence" }]
-        }
-      }
+        phase: "verify",
+        blockers: [{ code: "CONFLICT", message: "conflicting evidence" }]
+      })
     ]
   ])(
     "rejects a clean verify plus a duplicate %s verify run",
@@ -334,6 +473,130 @@ describe("codex_automation_v1 publication policy", () => {
     expect(result.reasons).toContain(
       "AUTOMATION_REVIEW_NUMERIC_EVIDENCE_MISSING"
     );
+  });
+
+  it.each([
+    [
+      "missing findings",
+      (report: Record<string, unknown>) => {
+        const missingFindings = { ...report };
+        delete missingFindings.findings;
+        return missingFindings;
+      }
+    ],
+    [
+      "unknown evidence field",
+      (report: Record<string, unknown>) => ({
+        ...report,
+        evidence: [
+          {
+            claim: "Reviewed claim",
+            exactEvidence: "Reviewed source text",
+            sourceLocator: "page 1",
+            unexpected: true
+          }
+        ]
+      })
+    ],
+    [
+      "malformed evidence locator",
+      (report: Record<string, unknown>) => ({
+        ...report,
+        evidence: [
+          {
+            claim: "Reviewed claim",
+            exactEvidence: "Reviewed source text",
+            sourceLocator: ""
+          }
+        ]
+      })
+    ],
+    [
+      "unknown automation metadata",
+      (report: Record<string, unknown>) => ({
+        ...report,
+        automation: {
+          ...(report.automation as Record<string, unknown>),
+          unexpected: true
+        }
+      })
+    ]
+  ])("rejects a stored automation report with %s", (_label, mutate) => {
+    const invalidVerify = {
+      ...verify,
+      structuredReport: mutate(
+        verify.structuredReport as Record<string, unknown>
+      )
+    };
+    const schema = requiredPolicyExport<SharedSchema>(
+      "knowledgeAutomationReviewRunSchema"
+    );
+
+    expect(schema.safeParse(invalidVerify).success).toBe(false);
+    expect(
+      evaluate({
+        currentVersionId: versionId,
+        currentContentHash: hash,
+        sourceRightsValid: true,
+        automationRuns: [initial, invalidVerify]
+      }).reasons
+    ).toContain("AUTOMATION_REVIEW_PAIR_MISSING_OR_MISMATCHED");
+  });
+
+  it.each([
+    [
+      "a mismatched report output hash",
+      (report: Record<string, unknown>) => ({
+        ...report,
+        outputContentHash: "d".repeat(64)
+      })
+    ],
+    [
+      "a mismatched automation output hash",
+      (report: Record<string, unknown>) => ({
+        ...report,
+        automation: {
+          ...(report.automation as Record<string, unknown>),
+          outputContentHash: "d".repeat(64)
+        }
+      })
+    ],
+    [
+      "a mismatched automation output version",
+      (report: Record<string, unknown>) => ({
+        ...report,
+        automation: {
+          ...(report.automation as Record<string, unknown>),
+          outputVersionId: "00000000-0000-4000-8000-000000000099"
+        }
+      })
+    ],
+    [
+      "an invalid automation source-rights snapshot",
+      (report: Record<string, unknown>) => ({
+        ...report,
+        automation: {
+          ...(report.automation as Record<string, unknown>),
+          sourceRightsValid: false
+        }
+      })
+    ]
+  ])("rejects an otherwise valid stored report with %s", (_label, mutate) => {
+    const mismatchedVerify = {
+      ...verify,
+      structuredReport: mutate(
+        verify.structuredReport as Record<string, unknown>
+      )
+    };
+
+    expect(
+      evaluate({
+        currentVersionId: versionId,
+        currentContentHash: hash,
+        sourceRightsValid: true,
+        automationRuns: [initial, mismatchedVerify]
+      }).reasons
+    ).toContain("AUTOMATION_REVIEW_PAIR_MISSING_OR_MISMATCHED");
   });
 
   it("requires valid source rights for either publication path", () => {

@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 
 import { sqlClient } from "@/server/db";
 import {
+  KNOWLEDGE_AUTOMATION_POLICY_VERSION,
+  evaluateKnowledgePublicationReadiness
+} from "@/server/knowledge/review-policy";
+import {
+  assertKnowledgePublicationEvidence,
   assertKnowledgeSourceAuthorized,
   isKnowledgeSourceTier
 } from "@/server/knowledge/source-policy";
@@ -149,9 +154,7 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
       }
       const citationMetadata = recordValue(reviewTarget.citation_metadata);
       const sourceMetadata = recordValue(reviewTarget.source_metadata);
-      const governedSourceTier = isKnowledgeSourceTier(
-        reviewTarget.source_tier
-      )
+      const governedSourceTier = isKnowledgeSourceTier(reviewTarget.source_tier)
         ? reviewTarget.source_tier
         : null;
       const hasGovernedSource =
@@ -301,6 +304,20 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
           ]
         );
       }
+      await transaction.unsafe(
+        `
+          INSERT INTO knowledge_review_run (
+            phase, status, input_version_id, input_content_hash,
+            model, prompt_version, created_at, updated_at
+          ) VALUES (
+            'initial', 'queued', $1, $2,
+            'gpt-5.5-codex', '${KNOWLEDGE_AUTOMATION_POLICY_VERSION}', NOW(), NOW()
+          )
+          ON CONFLICT (input_version_id, input_content_hash, prompt_version, phase)
+          DO NOTHING
+        `,
+        [job.payload.versionId, contentHash]
+      );
       const taskRows = await transaction.unsafe(
         `
           UPDATE background_task
@@ -466,6 +483,7 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
 
     await this.sql.begin(async (transaction) => {
       await assertCurrentLease(transaction, job, true);
+      const autoPublish = await isAutomationPublicationReady(transaction, job);
       await transaction.unsafe(
         "DELETE FROM knowledge_chunk WHERE version_id = $1",
         [job.payload.versionId]
@@ -516,7 +534,8 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
           UPDATE knowledge_version
           SET
             content_hash = $3,
-            status = 'review',
+            status = $5,
+            published_at = CASE WHEN $5 = 'published' THEN NOW() ELSE published_at END,
             metadata = metadata || $2::jsonb,
             updated_at = NOW()
           WHERE
@@ -535,7 +554,8 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
             review
           }),
           review.contentHash,
-          job.payload.documentId
+          job.payload.documentId,
+          autoPublish ? "published" : "review"
         ]
       );
       if (versions.length !== 1) {
@@ -546,18 +566,48 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
       const documents = await transaction.unsafe(
         `
           UPDATE knowledge_document
-          SET status = 'review', updated_at = NOW()
+          SET status = $3, updated_at = NOW()
           WHERE
             id = $1
             AND current_version_id = $2
             AND status = 'review'
           RETURNING id
         `,
-        [job.payload.documentId, job.payload.versionId]
+        [
+          job.payload.documentId,
+          job.payload.versionId,
+          autoPublish ? "published" : "review"
+        ]
       );
       if (documents.length !== 1) {
         throw new Error(
           "Reviewed knowledge version is no longer the current document version."
+        );
+      }
+      if (autoPublish) {
+        await transaction.unsafe(
+          `
+            INSERT INTO audit_log (
+              actor_user_id, actor_role, action, target_type, target_id,
+              metadata, created_at
+            ) VALUES (
+              NULL, $1, $2, 'knowledge_version', $3, $4::jsonb, NOW()
+            )
+          `,
+          [
+            "system:knowledge-review-automation",
+            "knowledge.automation_review.published",
+            job.payload.versionId,
+            JSON.stringify({
+              documentId: job.payload.documentId,
+              contentHash: review.contentHash,
+              policyVersion: review.policyVersion,
+              risk: review.risk,
+              initialRunId: review.initialRunId,
+              verifyRunId: review.verifyRunId,
+              embeddedChunkCount: chunks.length
+            })
+          ]
         );
       }
       const taskRows = await transaction.unsafe(
@@ -584,7 +634,8 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
             documentId: job.payload.documentId,
             versionId: job.payload.versionId,
             embeddedChunkCount: chunks.length,
-            readyToPublish: true
+            readyToPublish: !autoPublish,
+            autoPublished: autoPublish
           }),
           job.workerId,
           job.leaseToken
@@ -663,6 +714,125 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
 
 function sha256(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+async function isAutomationPublicationReady(
+  database: WorkerSql,
+  job: KnowledgeIngestionJob
+): Promise<boolean> {
+  const review = job.payload.review;
+  if (
+    review?.policyVersion !== KNOWLEDGE_AUTOMATION_POLICY_VERSION ||
+    review.risk !== "low" ||
+    !review.initialRunId ||
+    !review.verifyRunId ||
+    review.initialRunId === review.verifyRunId
+  ) {
+    return false;
+  }
+  const targets = await database.unsafe(
+    `
+      SELECT
+        kv.id AS version_id,
+        kv.content_hash,
+        kv.citation_metadata,
+        ks.id AS source_id,
+        ks.source_tier,
+        ks.enabled AS source_enabled,
+        ks.deleted_at AS source_deleted_at,
+        ks.canonical_url,
+        ks.publisher,
+        ks.metadata AS source_metadata
+      FROM knowledge_version kv
+      JOIN knowledge_document kd ON kd.id = kv.document_id
+      JOIN knowledge_source ks ON ks.id = kd.source_id
+      WHERE
+        kv.id = $1
+        AND kv.document_id = $2
+        AND kv.content_hash = $3
+        AND kd.current_version_id = kv.id
+        AND kv.status = 'review'
+        AND kd.status = 'review'
+      FOR UPDATE OF kv, kd, ks
+    `,
+    [job.payload.versionId, job.payload.documentId, review.contentHash]
+  );
+  const target = targets[0];
+  if (
+    !target ||
+    target.version_id !== job.payload.versionId ||
+    target.content_hash !== review.contentHash ||
+    !isKnowledgeSourceTier(target.source_tier)
+  ) {
+    return false;
+  }
+  const citationMetadata = recordValue(target.citation_metadata);
+  try {
+    const source = {
+      sourceTier: target.source_tier,
+      enabled: target.source_enabled === true,
+      deletedAt:
+        target.source_deleted_at instanceof Date ||
+        typeof target.source_deleted_at === "string"
+          ? target.source_deleted_at
+          : null,
+      canonicalUrl:
+        typeof target.canonical_url === "string" ? target.canonical_url : null,
+      publisher: typeof target.publisher === "string" ? target.publisher : null,
+      metadata: recordValue(target.source_metadata)
+    };
+    assertKnowledgeSourceAuthorized(source, citationMetadata);
+    assertKnowledgePublicationEvidence(source, citationMetadata);
+  } catch {
+    return false;
+  }
+
+  const rows = await database.unsafe(
+    `
+      SELECT *
+      FROM knowledge_review_run
+      WHERE id IN ($1::uuid, $2::uuid)
+        AND prompt_version = $3
+        AND status = 'completed'
+        AND decision = 'approved'
+      ORDER BY created_at ASC
+    `,
+    [
+      review.initialRunId,
+      review.verifyRunId,
+      KNOWLEDGE_AUTOMATION_POLICY_VERSION
+    ]
+  );
+  if (rows.length !== 2 || rows.some((row) => row.risk !== "low")) {
+    return false;
+  }
+  const readiness = evaluateKnowledgePublicationReadiness({
+    currentVersionId: job.payload.versionId,
+    currentContentHash: review.contentHash,
+    sourceRightsValid: true,
+    automationRuns: rows.map(workerDatabaseRun),
+    legacySectionReviewReady: false
+  });
+  return (
+    readiness.ready && readiness.path === KNOWLEDGE_AUTOMATION_POLICY_VERSION
+  );
+}
+
+function workerDatabaseRun(row: Record<string, unknown>) {
+  return {
+    id: row.id,
+    phase: row.phase,
+    status: row.status,
+    inputVersionId: row.input_version_id,
+    inputContentHash: row.input_content_hash,
+    model: row.model,
+    promptVersion: row.prompt_version,
+    risk: row.risk,
+    structuredReport: row.structured_report,
+    decision: row.decision,
+    revisedVersionId: row.revised_version_id,
+    completedAt: row.completed_at
+  };
 }
 
 function isValidDate(value: string): boolean {

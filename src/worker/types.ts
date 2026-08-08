@@ -13,6 +13,10 @@ export interface ManualReviewApproval {
   reviewedBy: string;
   reviewedAt: string;
   contentHash: string;
+  policyVersion?: "codex_automation_v1";
+  risk?: "low" | "medium" | "high";
+  initialRunId?: string;
+  verifyRunId?: string;
 }
 
 export interface KnowledgeIngestionPayload {

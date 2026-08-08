@@ -53,7 +53,9 @@ describe("Postgres knowledge ingestion review lifecycle", () => {
     );
     expect(sectionInserts).toHaveLength(2);
     expect(sectionInserts.map((call) => call.parameters?.[4])).toEqual([7, 7]);
-    expect(JSON.parse(String(sectionInserts[0]?.parameters?.[6]))).toMatchObject({
+    expect(
+      JSON.parse(String(sectionInserts[0]?.parameters?.[6]))
+    ).toMatchObject({
       status: "pending",
       decision: "needs_human",
       sourceId: null,
@@ -86,6 +88,7 @@ describe("Postgres knowledge ingestion review lifecycle", () => {
     const versionUpdate = sql.find("UPDATE knowledge_version");
     const documentUpdate = sql.find("UPDATE knowledge_document");
     const sectionInsert = sql.find("INSERT INTO knowledge_review_section");
+    const automationQueue = sql.find("INSERT INTO knowledge_review_run");
     const taskUpdate = sql.find("UPDATE background_task");
     const expectedHash = createHash("sha256")
       .update(content, "utf8")
@@ -99,6 +102,9 @@ describe("Postgres knowledge ingestion review lifecycle", () => {
     expect(sectionInsert.parameters?.[3]).toBe(content);
     expect(sectionInsert.parameters?.[4]).toBe(1);
     expect(sectionInsert.parameters?.[5]).toBe(1);
+    expect(automationQueue.query).toContain("'initial'");
+    expect(automationQueue.query).toContain("'codex_automation_v1'");
+    expect(automationQueue.parameters).toContain(expectedHash);
     expect(JSON.parse(String(taskUpdate.parameters?.[1]))).toMatchObject({
       stage: "review_required",
       contentHash: expectedHash,
@@ -238,6 +244,228 @@ describe("Postgres knowledge ingestion review lifecycle", () => {
       readyToPublish: true
     });
   });
+
+  it("auto-publishes only a low-risk codex automation review after re-running publication gates", async () => {
+    const content = "Codex-reviewed content";
+    const hash = createHash("sha256").update(content, "utf8").digest("hex");
+    const documentId = "00000000-0000-4000-8000-000000000001";
+    const versionId = "00000000-0000-4000-8000-000000000002";
+    const review = {
+      ...approval(hash),
+      reviewedBy: "knowledge-review-automation",
+      policyVersion: "codex_automation_v1" as const,
+      risk: "low" as const,
+      initialRunId: "00000000-0000-4000-8000-000000000011",
+      verifyRunId: "00000000-0000-4000-8000-000000000012"
+    };
+    const sql = new RecordingSql((query) => {
+      if (query.includes("FROM knowledge_review_run")) {
+        return [
+          automationRun("initial", review.initialRunId, versionId, hash),
+          automationRun("verify", review.verifyRunId, versionId, hash)
+        ];
+      }
+      if (
+        query.includes("FROM knowledge_version kv") &&
+        query.includes("source_metadata")
+      ) {
+        return [
+          {
+            document_id: documentId,
+            version_id: versionId,
+            content,
+            content_hash: hash,
+            citation_metadata: { ingestionMode: "full_text" },
+            source_id: "source-1",
+            source_tier: "internal",
+            source_enabled: true,
+            source_deleted_at: null,
+            canonical_url: "https://example.com/manual",
+            publisher: "Example",
+            source_metadata: { commercialAiRightsConfirmed: true }
+          }
+        ];
+      }
+      return query.includes("RETURNING id") ||
+        query.includes("FROM background_task")
+        ? [{ id: "updated" }]
+        : [];
+    });
+    const repository = new PostgresKnowledgeIngestionRepository(sql);
+
+    await repository.saveEmbeddingsAndComplete(
+      makeJob({
+        stage: "embedding_processing",
+        documentId,
+        versionId,
+        review
+      }),
+      [embeddedChunk()]
+    );
+
+    const versionUpdate = sql.find("UPDATE knowledge_version");
+    const documentUpdate = sql.find("UPDATE knowledge_document");
+    expect(versionUpdate.query).toContain("status = $5");
+    expect(versionUpdate.parameters).toContain("published");
+    expect(documentUpdate.parameters).toContain("published");
+    const audit = sql.find("INSERT INTO audit_log");
+    expect(audit.parameters).toContain("system:knowledge-review-automation");
+    expect(audit.parameters).toContain("knowledge.automation_review.published");
+  });
+
+  it("does not auto-publish legacy or human-reviewed embeddings", async () => {
+    const content = "Human-reviewed content";
+    const hash = createHash("sha256").update(content, "utf8").digest("hex");
+    const sql = new RecordingSql((query) =>
+      query.includes("RETURNING id") || query.includes("FROM background_task")
+        ? [{ id: "updated" }]
+        : []
+    );
+    const repository = new PostgresKnowledgeIngestionRepository(sql);
+
+    await repository.saveEmbeddingsAndComplete(
+      makeJob({ stage: "embedding_processing", review: approval(hash) }),
+      [embeddedChunk()]
+    );
+
+    expect(sql.find("UPDATE knowledge_version").parameters).toContain("review");
+    expect(sql.find("UPDATE knowledge_document").parameters).toContain(
+      "review"
+    );
+  });
+
+  it("does not auto-publish when either codex review phase is not low risk", async () => {
+    const content = "Codex-reviewed content";
+    const hash = createHash("sha256").update(content, "utf8").digest("hex");
+    const documentId = "00000000-0000-4000-8000-000000000001";
+    const versionId = "00000000-0000-4000-8000-000000000002";
+    const review = {
+      ...approval(hash),
+      reviewedBy: "knowledge-review-automation",
+      policyVersion: "codex_automation_v1" as const,
+      risk: "low" as const,
+      initialRunId: "00000000-0000-4000-8000-000000000011",
+      verifyRunId: "00000000-0000-4000-8000-000000000012"
+    };
+    const sql = new RecordingSql((query) => {
+      if (query.includes("FROM knowledge_review_run")) {
+        return [
+          {
+            ...automationRun("initial", review.initialRunId, versionId, hash),
+            risk: "medium"
+          },
+          automationRun("verify", review.verifyRunId, versionId, hash)
+        ];
+      }
+      if (
+        query.includes("FROM knowledge_version kv") &&
+        query.includes("source_metadata")
+      ) {
+        return [
+          {
+            document_id: documentId,
+            version_id: versionId,
+            content,
+            content_hash: hash,
+            citation_metadata: { ingestionMode: "full_text" },
+            source_id: "source-1",
+            source_tier: "internal",
+            source_enabled: true,
+            source_deleted_at: null,
+            canonical_url: "https://example.com/manual",
+            publisher: "Example",
+            source_metadata: { commercialAiRightsConfirmed: true }
+          }
+        ];
+      }
+      return query.includes("RETURNING id") ||
+        query.includes("FROM background_task")
+        ? [{ id: "updated" }]
+        : [];
+    });
+    const repository = new PostgresKnowledgeIngestionRepository(sql);
+
+    await repository.saveEmbeddingsAndComplete(
+      makeJob({
+        stage: "embedding_processing",
+        documentId,
+        versionId,
+        review
+      }),
+      [embeddedChunk()]
+    );
+
+    expect(sql.find("UPDATE knowledge_version").parameters).toContain("review");
+    expect(
+      sql.calls.some((call) => call.query.includes("INSERT INTO audit_log"))
+    ).toBe(false);
+  });
+
+  it("locks and rechecks the current source after earlier approval before auto-publish", async () => {
+    const content = "Codex-reviewed content";
+    const hash = createHash("sha256").update(content, "utf8").digest("hex");
+    const documentId = "00000000-0000-4000-8000-000000000001";
+    const versionId = "00000000-0000-4000-8000-000000000002";
+    const review = automationApproval(hash);
+    let rightsEnabled = true;
+    const sql = new RecordingSql((query) => {
+      if (query.includes("FROM knowledge_review_run")) {
+        return [
+          automationRun("initial", review.initialRunId, versionId, hash),
+          automationRun("verify", review.verifyRunId, versionId, hash)
+        ];
+      }
+      if (
+        query.includes("FROM knowledge_version kv") &&
+        query.includes("source_metadata")
+      ) {
+        return [
+          {
+            document_id: documentId,
+            version_id: versionId,
+            content,
+            content_hash: hash,
+            citation_metadata: { ingestionMode: "full_text" },
+            source_id: "source-1",
+            source_tier: "internal",
+            source_enabled: rightsEnabled,
+            source_deleted_at: null,
+            canonical_url: "https://example.com/manual",
+            publisher: "Example",
+            source_metadata: { commercialAiRightsConfirmed: true }
+          }
+        ];
+      }
+      return query.includes("RETURNING id") ||
+        query.includes("FROM background_task")
+        ? [{ id: "updated" }]
+        : [];
+    });
+    const repository = new PostgresKnowledgeIngestionRepository(sql);
+    const job = makeJob({
+      stage: "embedding_processing",
+      documentId,
+      versionId,
+      review
+    });
+
+    await expect(repository.loadApprovedContent(job)).resolves.toMatchObject({
+      content
+    });
+    rightsEnabled = false;
+    await repository.saveEmbeddingsAndComplete(job, [embeddedChunk()]);
+
+    const finalSourceRead = sql.calls.find(
+      (call) =>
+        call.query.includes("FOR UPDATE OF kv, kd") &&
+        call.query.includes("JOIN knowledge_source")
+    );
+    expect(finalSourceRead?.query).toContain("FOR UPDATE OF kv, kd, ks");
+    expect(sql.find("UPDATE knowledge_version").parameters).toContain("review");
+    expect(
+      sql.calls.some((call) => call.query.includes("INSERT INTO audit_log"))
+    ).toBe(false);
+  });
 });
 
 type SqlCall = {
@@ -312,6 +540,75 @@ function embeddedChunk(): EmbeddedKnowledgeChunk {
     embedding: [0],
     embeddingModel: "text-embedding-v4",
     metadata: {}
+  };
+}
+
+function automationRun(
+  phase: "initial" | "verify",
+  id: string,
+  versionId: string,
+  hash: string
+) {
+  return {
+    id,
+    phase,
+    status: "completed",
+    input_version_id: versionId,
+    input_content_hash: hash,
+    model: "gpt-5.5-codex",
+    prompt_version: "codex_automation_v1",
+    risk: "low",
+    structured_report: storedAutomationReport(versionId, hash),
+    decision: "approved",
+    completed_at: new Date()
+  };
+}
+
+function automationApproval(contentHash: string) {
+  return {
+    ...approval(contentHash),
+    reviewedBy: "knowledge-review-automation",
+    policyVersion: "codex_automation_v1" as const,
+    risk: "low" as const,
+    initialRunId: "00000000-0000-4000-8000-000000000011",
+    verifyRunId: "00000000-0000-4000-8000-000000000012"
+  };
+}
+
+function storedAutomationReport(versionId: string, contentHash: string) {
+  const findings = [{ code: "REVIEWED", message: "Evidence checked." }];
+  const evidence = [
+    {
+      claim: "Reviewed claim",
+      exactEvidence: "Reviewed source text",
+      sourceLocator: "page 1, paragraph 1"
+    }
+  ];
+  return {
+    summary: "ok",
+    outputContentHash: contentHash,
+    blockers: [],
+    numericClaims: [],
+    findings,
+    evidence,
+    automation: {
+      idempotencyTokenHash: "b".repeat(64),
+      submittedReport: {
+        summary: "ok",
+        risk: "low",
+        decision: "approved",
+        findings,
+        blockers: [],
+        evidence,
+        numericClaims: []
+      },
+      submittedRevisionHash: null,
+      actor: "knowledge-review-automation",
+      outputVersionId: versionId,
+      outputContentHash: contentHash,
+      sourceRightsValid: true,
+      queuedPhase: null
+    }
   };
 }
 
