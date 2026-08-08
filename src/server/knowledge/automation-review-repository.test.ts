@@ -136,6 +136,12 @@ describe("PostgresKnowledgeReviewAutomationRepository", () => {
         )
       )
     ).toBe(true);
+    const markNeedsHuman = sql.find("metadata = metadata || $2::jsonb");
+    expect(markNeedsHuman.query).toContain("WHERE id = $1");
+    expect(markNeedsHuman.parameters).toHaveLength(2);
+    expect(markNeedsHuman.parameters?.[0]).toBe(
+      "00000000-0000-4000-8000-000000000002"
+    );
   });
 
   it("creates an immutable next version for revised initial content and queues exactly one verify", async () => {
