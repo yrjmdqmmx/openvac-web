@@ -201,6 +201,7 @@ WITH eligible AS (
   JOIN knowledge_version kv ON kv.id = r.input_version_id
   JOIN knowledge_document kd ON kd.id = kv.document_id
   WHERE r.id = :'retry_run_id'::uuid
+    AND FALSE -- diagnostic branch: force read-only pair diagnostics
     AND r.phase = 'verify'
     AND r.status = 'needs_human'
     AND r.decision = 'needs_human'
