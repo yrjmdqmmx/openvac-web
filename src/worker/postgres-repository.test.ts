@@ -261,8 +261,20 @@ describe("Postgres knowledge ingestion review lifecycle", () => {
     const sql = new RecordingSql((query) => {
       if (query.includes("FROM knowledge_review_run")) {
         return [
-          automationRun("initial", review.initialRunId, versionId, hash),
-          automationRun("verify", review.verifyRunId, versionId, hash)
+          automationRun(
+            "initial",
+            review.initialRunId,
+            versionId,
+            hash,
+            "2026-08-08 18:21:11.123+00"
+          ),
+          automationRun(
+            "verify",
+            review.verifyRunId,
+            versionId,
+            hash,
+            "2026-08-08 18:21:12.456+00"
+          )
         ];
       }
       if (
@@ -547,7 +559,8 @@ function automationRun(
   phase: "initial" | "verify",
   id: string,
   versionId: string,
-  hash: string
+  hash: string,
+  completedAt: unknown = new Date()
 ) {
   return {
     id,
@@ -560,7 +573,7 @@ function automationRun(
     risk: "low",
     structured_report: storedAutomationReport(versionId, hash),
     decision: "approved",
-    completed_at: new Date()
+    completed_at: completedAt
   };
 }
 

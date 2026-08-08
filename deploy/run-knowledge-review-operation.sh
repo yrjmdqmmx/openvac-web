@@ -351,8 +351,37 @@ SELECT json_build_object(
             AND initial.input_content_hash = :'retry_content_hash'
           )
           OR initial.revised_version_id = :'retry_version_id'::uuid
-        )
+      )
     )
+  ),
+  'publicationState', (
+    SELECT json_build_object(
+      'documentStatus', kd.status,
+      'versionStatus', kv.status,
+      'reviewStatus', kv.metadata ->> 'reviewStatus',
+      'automationStatus', kv.metadata ->> 'automationStatus',
+      'embeddingStatus', kv.metadata ->> 'embeddingStatus',
+      'totalChunks', (
+        SELECT count(*) FROM knowledge_chunk kc WHERE kc.version_id = kv.id
+      ),
+      'embeddedChunks', (
+        SELECT count(*)
+        FROM knowledge_chunk kc
+        WHERE kc.version_id = kv.id AND kc.embedding IS NOT NULL
+      ),
+      'pendingWorkerJobs', (
+        SELECT count(*)
+        FROM background_task bt
+        WHERE bt.type = 'knowledge_ingestion'
+          AND bt.payload ->> 'versionId' = kv.id::text
+          AND bt.status IN ('queued', 'running')
+      )
+    )
+    FROM knowledge_document kd
+    JOIN knowledge_version kv ON kv.id = kd.current_version_id
+    WHERE kd.id = :'retry_document_id'::uuid
+      AND kv.id = :'retry_version_id'::uuid
+      AND kv.content_hash = :'retry_content_hash'
   ),
   'pairRuns', COALESCE(
     (
@@ -436,6 +465,12 @@ import {
 } from "./src/server/knowledge/review-policy";
 
 void (async () => {
+const normalizeDatabaseTimestamp = (value) => {
+  if (value instanceof Date) return value;
+  if (typeof value !== "string") return value;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.valueOf()) ? value : parsed;
+};
 const rows = await sqlClient.unsafe(
   `SELECT * FROM knowledge_review_run
    WHERE prompt_version = $3
@@ -461,7 +496,7 @@ const results = rows.map((row) => {
     structuredReport: row.structured_report,
     decision: row.decision,
     revisedVersionId: row.revised_version_id,
-    completedAt: row.completed_at
+    completedAt: normalizeDatabaseTimestamp(row.completed_at)
   };
   const parsed = knowledgeAutomationReviewRunSchema.safeParse(run);
   return {
