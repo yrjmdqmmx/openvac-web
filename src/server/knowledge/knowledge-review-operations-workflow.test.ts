@@ -83,6 +83,11 @@ describe("knowledge review production operations", () => {
     expect(script).toContain("lockedAgeSeconds");
     expect(script).toContain("workerRuntime");
     expect(script).toContain("restartCount");
+    expect(script).toContain("workerRecentErrors");
+    expect(script).toContain("tail -n 9");
+    expect(script).toContain("[URL_REDACTED]");
+    expect(script).toContain("[TOKEN_REDACTED]");
+    expect(script).toContain("[DETAIL_REDACTED]");
     expect(script).toContain("normalizeDatabaseTimestamp");
     expect(script).toContain("PostgresError");
     expect(script).toContain("[DETAIL_REDACTED]");

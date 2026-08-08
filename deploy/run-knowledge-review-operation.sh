@@ -557,8 +557,24 @@ await sqlClient.end();
         docker inspect --format \
           '{"workerRuntime":{"status":"{{.State.Status}}","running":{{.State.Running}},"restarting":{{.State.Restarting}},"restartCount":{{.RestartCount}}}}' \
           "$worker_container"
+        worker_recent_errors="$(
+          docker logs --since 30m "$worker_container" 2>&1 |
+            sed -n '/\[openvac-worker\]/p' |
+            tail -n 9 |
+            sed -E \
+              -e 's#https?://[^[:space:]]+#[URL_REDACTED]#g' \
+              -e 's/(Bearer|Authorization:)[[:space:]]+[^[:space:]]+/\1 [TOKEN_REDACTED]/Ig' \
+              -e 's/[A-Za-z0-9_=.-]{32,}/[TOKEN_REDACTED]/g' \
+              -e 's/(detail|query|parameters|where):.*/\1: [DETAIL_REDACTED]/I'
+        )"
+        if [ -n "$worker_recent_errors" ]; then
+          printf '%s\n' 'workerRecentErrors:' "$worker_recent_errors"
+        else
+          printf '%s\n' 'workerRecentErrors: none'
+        fi
       else
         printf '%s\n' '{"workerRuntime":{"status":"unavailable","running":false,"restarting":false,"restartCount":null}}'
+        printf '%s\n' 'workerRecentErrors: unavailable'
       fi
       exit 0
     fi
