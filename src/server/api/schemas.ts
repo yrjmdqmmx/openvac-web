@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { ADMIN_ROLES, PROBLEM_REPORT_CATEGORIES } from "./types";
+import { KNOWLEDGE_FILE_MIME_BY_EXTENSION } from "@/server/knowledge/review-policy";
 
 const optionalTrimmed = (max: number) =>
   z.string().trim().min(1).max(max).optional();
@@ -207,6 +208,18 @@ export const knowledgeDraftSchema = z.object({
   content: z.string().min(1).max(2_000_000),
   citationMetadata: z.record(z.string(), z.unknown()).default({})
 });
+
+export const knowledgeOriginalUploadSchema = z
+  .object({
+    title: z.string().trim().min(1).max(240),
+    description: z.string().trim().min(1).max(2_000).optional(),
+    sourceUrl: z.url().max(2_048).optional(),
+    filename: z.string().trim().min(1).max(255),
+    contentType: z.enum(Object.values(KNOWLEDGE_FILE_MIME_BY_EXTENSION)),
+    sizeBytes: z.number().int().positive(),
+    sha256: z.string().trim().min(1).max(128)
+  })
+  .strict();
 
 export const knowledgeDraftUpdateSchema = z
   .object({

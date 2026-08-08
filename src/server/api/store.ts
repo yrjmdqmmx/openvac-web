@@ -39,6 +39,7 @@ import {
   dailyUsage,
   knowledgeChunks,
   knowledgeDocuments,
+  knowledgeReviewRun,
   knowledgeReviewSections,
   knowledgeSectionDecisions,
   knowledgeSources,
@@ -746,11 +747,14 @@ function assertReviewedKnowledgeEvidence(
       "发布前必须记录有效的人工复核人和复核时间。"
     );
   }
-  if (
-    review.mode !== "section" ||
-    !Number.isInteger(review.sectionCount) ||
-    Number(review.sectionCount) < 1
-  ) {
+  const sectionReview =
+    review.mode === "section" &&
+    Number.isInteger(review.sectionCount) &&
+    Number(review.sectionCount) >= 1;
+  const manualResolution =
+    review.mode === "manual_document_resolution" &&
+    Boolean(stringValue(review.note));
+  if (!sectionReview && !manualResolution) {
     throw new ApiError(
       409,
       "KNOWLEDGE_SECTION_REVIEW_REQUIRED",
@@ -802,6 +806,113 @@ function assertReviewedKnowledgeEvidence(
     "KNOWLEDGE_INGESTION_MODE_INVALID",
     "知识版本缺少有效的入库模式。"
   );
+}
+
+function hasManualDocumentResolution(
+  metadata: Record<string, unknown>
+): boolean {
+  const review = recordValue(metadata.review);
+  return (
+    review.mode === "manual_document_resolution" &&
+    Boolean(stringValue(review.note))
+  );
+}
+
+export function buildKnowledgeAutomationReviewView(
+  rows: Array<Record<string, unknown>>,
+  currentVersionId: string,
+  currentContentHash: string | null
+): Record<string, unknown> | undefined {
+  if (!currentContentHash) return undefined;
+  const currentHash = currentContentHash.toLowerCase();
+  const candidates = rows.filter((row) => {
+    const report = recordValue(row.structuredReport ?? row.structured_report);
+    const automation = recordValue(report.automation);
+    const hasStoredTarget =
+      stringValue(report.outputContentHash) !== undefined ||
+      stringValue(automation.outputVersionId) !== undefined ||
+      stringValue(automation.outputContentHash) !== undefined;
+    if (hasStoredTarget) {
+      return (
+        stringValue(report.outputContentHash)?.toLowerCase() === currentHash &&
+        stringValue(automation.outputVersionId) === currentVersionId &&
+        stringValue(automation.outputContentHash)?.toLowerCase() === currentHash
+      );
+    }
+    return (
+      stringValue(row.inputVersionId ?? row.input_version_id) ===
+        currentVersionId &&
+      stringValue(
+        row.inputContentHash ?? row.input_content_hash
+      )?.toLowerCase() === currentHash
+    );
+  });
+  const latest = candidates[0];
+  if (!latest) return undefined;
+  const report = recordValue(
+    latest.structuredReport ?? latest.structured_report
+  );
+  const revisionRow = candidates.find(
+    (row) =>
+      stringValue(row.revisedVersionId ?? row.revised_version_id) ===
+      currentVersionId
+  );
+  const revisionReport = recordValue(
+    revisionRow?.structuredReport ?? revisionRow?.structured_report
+  );
+  return {
+    status: stringValue(latest.status) ?? "queued",
+    phase: stringValue(latest.phase) ?? null,
+    risk: stringValue(latest.risk) ?? null,
+    decision: stringValue(latest.decision) ?? null,
+    summary: stringValue(report.summary) ?? null,
+    blockers: structuredList(report.blockers),
+    findings: structuredList(report.findings),
+    evidence: evidenceList(report.evidence),
+    ...(revisionRow
+      ? {
+          revision: {
+            changed: true,
+            inputVersionId: stringValue(
+              revisionRow.inputVersionId ?? revisionRow.input_version_id
+            ),
+            outputVersionId: currentVersionId,
+            inputContentHash: stringValue(
+              revisionRow.inputContentHash ?? revisionRow.input_content_hash
+            ),
+            outputContentHash:
+              stringValue(revisionReport.outputContentHash) ?? currentHash
+          }
+        }
+      : {})
+  };
+}
+
+function structuredList(value: unknown) {
+  return Array.isArray(value)
+    ? value
+        .map(recordValue)
+        .map((item) => ({
+          code: stringValue(item.code) ?? "UNKNOWN",
+          message: stringValue(item.message) ?? ""
+        }))
+        .filter((item) => item.message)
+    : [];
+}
+
+function evidenceList(value: unknown) {
+  return Array.isArray(value)
+    ? value
+        .map(recordValue)
+        .map((item) => ({
+          claim: stringValue(item.claim) ?? "",
+          exactEvidence: stringValue(item.exactEvidence) ?? "",
+          sourceLocator: stringValue(item.sourceLocator) ?? ""
+        }))
+        .filter(
+          (item) => item.claim && item.exactEvidence && item.sourceLocator
+        )
+    : [];
 }
 
 function recordValue(value: unknown): Record<string, unknown> {
@@ -864,85 +975,111 @@ async function loadKnowledgeDocumentView(
   includeContent: boolean
 ): Promise<Record<string, unknown>> {
   const currentVersionId = document.currentVersionId;
-  const [versionRows, sourceRows, chunkRows, previousRows, sectionRows] =
-    await Promise.all([
-      currentVersionId
-        ? db
-            .select()
-            .from(knowledgeVersions)
-            .where(eq(knowledgeVersions.id, currentVersionId))
-            .limit(1)
-        : Promise.resolve([]),
-      document.sourceId
-        ? db
-            .select()
-            .from(knowledgeSources)
-            .where(
-              and(
-                eq(knowledgeSources.id, document.sourceId),
-                isNull(knowledgeSources.deletedAt)
-              )
+  const [
+    versionRows,
+    sourceRows,
+    chunkRows,
+    previousRows,
+    sectionRows,
+    automationRows
+  ] = await Promise.all([
+    currentVersionId
+      ? db
+          .select()
+          .from(knowledgeVersions)
+          .where(eq(knowledgeVersions.id, currentVersionId))
+          .limit(1)
+      : Promise.resolve([]),
+    document.sourceId
+      ? db
+          .select()
+          .from(knowledgeSources)
+          .where(
+            and(
+              eq(knowledgeSources.id, document.sourceId),
+              isNull(knowledgeSources.deletedAt)
             )
-            .limit(1)
-        : Promise.resolve([]),
-      currentVersionId
-        ? db
-            .select({ value: count() })
-            .from(knowledgeChunks)
-            .where(eq(knowledgeChunks.versionId, currentVersionId))
-        : Promise.resolve([]),
-      currentVersionId
-        ? db
-            .select({
-              id: knowledgeVersions.id,
-              version: knowledgeVersions.version
-            })
-            .from(knowledgeVersions)
-            .where(
-              and(
-                eq(knowledgeVersions.documentId, document.id),
-                ne(knowledgeVersions.id, currentVersionId),
-                isNotNull(knowledgeVersions.publishedAt)
-              )
+          )
+          .limit(1)
+      : Promise.resolve([]),
+    currentVersionId
+      ? db
+          .select({ value: count() })
+          .from(knowledgeChunks)
+          .where(eq(knowledgeChunks.versionId, currentVersionId))
+      : Promise.resolve([]),
+    currentVersionId
+      ? db
+          .select({
+            id: knowledgeVersions.id,
+            version: knowledgeVersions.version
+          })
+          .from(knowledgeVersions)
+          .where(
+            and(
+              eq(knowledgeVersions.documentId, document.id),
+              ne(knowledgeVersions.id, currentVersionId),
+              isNotNull(knowledgeVersions.publishedAt)
             )
-            .orderBy(desc(knowledgeVersions.publishedAt))
-            .limit(1)
-        : Promise.resolve([]),
-      currentVersionId
-        ? db
-            .select({
-              section: {
-                id: knowledgeReviewSections.id,
-                versionId: knowledgeReviewSections.versionId,
-                sectionIndex: knowledgeReviewSections.sectionIndex,
-                contentZh: knowledgeReviewSections.contentZh,
-                officialText: knowledgeReviewSections.officialText,
-                pageStart: knowledgeReviewSections.pageStart,
-                pageEnd: knowledgeReviewSections.pageEnd,
-                rightsSnapshot: knowledgeReviewSections.rightsSnapshot,
-                rightsSnapshotHash: knowledgeReviewSections.rightsSnapshotHash,
-                versionContentHash: knowledgeReviewSections.versionContentHash,
-                sectionHash: knowledgeReviewSections.sectionHash
-              },
-              decision: {
-                decision: knowledgeSectionDecisions.decision,
-                sectionHash: knowledgeSectionDecisions.sectionHash,
-                reviewerId: knowledgeSectionDecisions.reviewerId,
-                note: knowledgeSectionDecisions.note
-              }
-            })
-            .from(knowledgeReviewSections)
-            .leftJoin(
-              knowledgeSectionDecisions,
-              eq(
-                knowledgeSectionDecisions.sectionId,
-                knowledgeReviewSections.id
-              )
+          )
+          .orderBy(desc(knowledgeVersions.publishedAt))
+          .limit(1)
+      : Promise.resolve([]),
+    currentVersionId
+      ? db
+          .select({
+            section: {
+              id: knowledgeReviewSections.id,
+              versionId: knowledgeReviewSections.versionId,
+              sectionIndex: knowledgeReviewSections.sectionIndex,
+              contentZh: knowledgeReviewSections.contentZh,
+              officialText: knowledgeReviewSections.officialText,
+              pageStart: knowledgeReviewSections.pageStart,
+              pageEnd: knowledgeReviewSections.pageEnd,
+              rightsSnapshot: knowledgeReviewSections.rightsSnapshot,
+              rightsSnapshotHash: knowledgeReviewSections.rightsSnapshotHash,
+              versionContentHash: knowledgeReviewSections.versionContentHash,
+              sectionHash: knowledgeReviewSections.sectionHash
+            },
+            decision: {
+              decision: knowledgeSectionDecisions.decision,
+              sectionHash: knowledgeSectionDecisions.sectionHash,
+              reviewerId: knowledgeSectionDecisions.reviewerId,
+              note: knowledgeSectionDecisions.note
+            }
+          })
+          .from(knowledgeReviewSections)
+          .leftJoin(
+            knowledgeSectionDecisions,
+            eq(knowledgeSectionDecisions.sectionId, knowledgeReviewSections.id)
+          )
+          .where(eq(knowledgeReviewSections.versionId, currentVersionId))
+          .orderBy(asc(knowledgeReviewSections.sectionIndex))
+      : Promise.resolve([]),
+    currentVersionId
+      ? db
+          .select({
+            id: knowledgeReviewRun.id,
+            phase: knowledgeReviewRun.phase,
+            status: knowledgeReviewRun.status,
+            inputVersionId: knowledgeReviewRun.inputVersionId,
+            inputContentHash: knowledgeReviewRun.inputContentHash,
+            risk: knowledgeReviewRun.risk,
+            decision: knowledgeReviewRun.decision,
+            structuredReport: knowledgeReviewRun.structuredReport,
+            revisedVersionId: knowledgeReviewRun.revisedVersionId,
+            createdAt: knowledgeReviewRun.createdAt
+          })
+          .from(knowledgeReviewRun)
+          .where(
+            or(
+              eq(knowledgeReviewRun.inputVersionId, currentVersionId),
+              eq(knowledgeReviewRun.revisedVersionId, currentVersionId)
             )
-            .where(eq(knowledgeReviewSections.versionId, currentVersionId))
-            .orderBy(asc(knowledgeReviewSections.sectionIndex))
-        : Promise.resolve([])
-    ]);
+          )
+          .orderBy(desc(knowledgeReviewRun.createdAt))
+      : Promise.resolve([])
+  ]);
 
   const version = versionRows[0];
   const source = sourceRows[0];
@@ -969,23 +1106,25 @@ async function loadKnowledgeDocumentView(
         version.citationMetadata,
         "发布"
       );
-      assertKnowledgeSectionPublicationReady({
-        versionId: version.id,
-        versionContentHash: version.contentHash ?? "",
-        versionCreatedBy: version.createdBy,
-        currentRightsSnapshot: publicationRightsSnapshot(source),
-        sections: sectionRows.map((row) => ({
-          ...row.section,
-          decision: row.decision?.decision
-            ? {
-                decision: row.decision.decision,
-                sectionHash: row.decision.sectionHash ?? "",
-                reviewerId: row.decision.reviewerId ?? "",
-                note: row.decision.note
-              }
-            : null
-        }))
-      });
+      if (!hasManualDocumentResolution(recordValue(version.metadata))) {
+        assertKnowledgeSectionPublicationReady({
+          versionId: version.id,
+          versionContentHash: version.contentHash ?? "",
+          versionCreatedBy: version.createdBy,
+          currentRightsSnapshot: publicationRightsSnapshot(source),
+          sections: sectionRows.map((row) => ({
+            ...row.section,
+            decision: row.decision?.decision
+              ? {
+                  decision: row.decision.decision,
+                  sectionHash: row.decision.sectionHash ?? "",
+                  reviewerId: row.decision.reviewerId ?? "",
+                  note: row.decision.note
+                }
+              : null
+          }))
+        });
+      }
       publishReady = true;
     } catch (error) {
       publishReady = false;
@@ -1025,6 +1164,11 @@ async function loadKnowledgeDocumentView(
     previousPublishedVersionId: previousRows[0]?.id ?? null,
     publishReady,
     publishBlockers,
+    automationReview: buildKnowledgeAutomationReviewView(
+      automationRows as Array<Record<string, unknown>>,
+      currentVersionId ?? "",
+      version?.contentHash ?? null
+    ),
     ...(includeContent
       ? {
           content: version?.content ?? "",
@@ -3862,23 +4006,25 @@ export const apiStore: ApiStore = {
         )
         .where(eq(knowledgeReviewSections.versionId, version.id))
         .orderBy(asc(knowledgeReviewSections.sectionIndex));
-      assertKnowledgeSectionPublicationReady({
-        versionId: version.id,
-        versionContentHash: version.contentHash ?? "",
-        versionCreatedBy: version.createdBy,
-        currentRightsSnapshot: publicationRightsSnapshot(source),
-        sections: sectionRows.map((row) => ({
-          ...row.section,
-          decision: row.decision?.decision
-            ? {
-                decision: row.decision.decision,
-                sectionHash: row.decision.sectionHash ?? "",
-                reviewerId: row.decision.reviewerId ?? "",
-                note: row.decision.note
-              }
-            : null
-        }))
-      });
+      if (!hasManualDocumentResolution(version.metadata)) {
+        assertKnowledgeSectionPublicationReady({
+          versionId: version.id,
+          versionContentHash: version.contentHash ?? "",
+          versionCreatedBy: version.createdBy,
+          currentRightsSnapshot: publicationRightsSnapshot(source),
+          sections: sectionRows.map((row) => ({
+            ...row.section,
+            decision: row.decision?.decision
+              ? {
+                  decision: row.decision.decision,
+                  sectionHash: row.decision.sectionHash ?? "",
+                  reviewerId: row.decision.reviewerId ?? "",
+                  note: row.decision.note
+                }
+              : null
+          }))
+        });
+      }
 
       const [publishedVersion] = await tx
         .update(knowledgeVersions)

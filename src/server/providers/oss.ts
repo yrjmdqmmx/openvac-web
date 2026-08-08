@@ -190,8 +190,8 @@ export class AlibabaOssStorage implements ObjectStorage {
     });
     const requiredHeaders: Record<string, string> = {
       "Content-Type": request.contentType,
-      "Content-Length": String(request.contentLength),
       "x-oss-object-acl": "private",
+      "x-oss-forbid-overwrite": "true",
       ...Object.fromEntries(
         Object.entries(metadata).map(([key, value]) => [
           `x-oss-meta-${key}`,
@@ -204,13 +204,13 @@ export class AlibabaOssStorage implements ObjectStorage {
     let url: string;
     if (client.signatureUrlV4) {
       // ali-oss includes content-type and all x-oss-* headers in the V4
-      // canonical request. content-length must be named explicitly.
+      // canonical request. Content-Length is deliberately omitted because
+      // browser JavaScript cannot set that forbidden request header.
       url = await client.signatureUrlV4(
         "PUT",
         expiresSeconds,
         { headers: requiredHeaders, queries: {} },
-        request.key,
-        ["content-length"]
+        request.key
       );
     } else if (client.signatureUrl) {
       // The legacy signer includes Content-Type and x-oss-* metadata. The

@@ -41,6 +41,31 @@ export const knowledgeSectionDecisionStatus = pgEnum(
   ["approved", "rejected", "changes_requested"]
 );
 
+export const knowledgeReviewPhase = pgEnum("knowledge_review_phase", [
+  "initial",
+  "verify"
+]);
+
+export const knowledgeReviewRunStatus = pgEnum("knowledge_review_run_status", [
+  "queued",
+  "leased",
+  "completed",
+  "needs_human",
+  "failed"
+]);
+
+export const knowledgeReviewRisk = pgEnum("knowledge_review_risk", [
+  "low",
+  "medium",
+  "high"
+]);
+
+export const knowledgeReviewDecision = pgEnum("knowledge_review_decision", [
+  "approved",
+  "rejected",
+  "needs_human"
+]);
+
 export const knowledgeSourceTier = pgEnum("knowledge_source_tier", [
   "open_license",
   "metadata_only",
@@ -208,6 +233,142 @@ export const knowledgeVersion = pgTable(
     check(
       "knowledge_version_content_hash_valid",
       sql`${table.contentHash} is null or ${table.contentHash} ~ '^[0-9a-f]{64}$'`
+    )
+  ]
+);
+
+export const knowledgeOriginal = pgTable(
+  "knowledge_original",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    versionId: uuid("version_id")
+      .notNull()
+      .references(() => knowledgeVersion.id, { onDelete: "restrict" }),
+    objectKey: text("object_key").notNull(),
+    originalFilename: text("original_filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    sha256: text("sha256").notNull(),
+    uploadedBy: text("uploaded_by")
+      .notNull()
+      .references(() => user.id, { onDelete: "restrict" }),
+    retentionPolicy: text("retention_policy")
+      .default("retain_indefinitely")
+      .notNull(),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      withTimezone: true
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      mode: "date",
+      withTimezone: true
+    })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull()
+  },
+  (table) => [
+    uniqueIndex("knowledge_original_version_unique").on(table.versionId),
+    uniqueIndex("knowledge_original_object_key_unique").on(table.objectKey),
+    index("knowledge_original_uploaded_by_idx").on(table.uploadedBy),
+    check(
+      "knowledge_original_mime_type_valid",
+      sql`${table.mimeType} in ('application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'text/csv', 'text/plain', 'text/markdown', 'image/jpeg', 'image/png')`
+    ),
+    check(
+      "knowledge_original_size_valid",
+      sql`${table.sizeBytes} > 0 and ${table.sizeBytes} <= 52428800`
+    ),
+    check(
+      "knowledge_original_sha256_valid",
+      sql`${table.sha256} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "knowledge_original_object_key_valid",
+      sql`${table.objectKey} ~ '^private/knowledge-originals/[A-Za-z0-9][A-Za-z0-9._/-]*$' and ${table.objectKey} !~ '(^|/)\\.\\.(/|$)' and ${table.objectKey} !~ '//'`
+    ),
+    check(
+      "knowledge_original_retention_policy_valid",
+      sql`${table.retentionPolicy} = 'retain_indefinitely'`
+    )
+  ]
+);
+
+export const knowledgeReviewRun = pgTable(
+  "knowledge_review_run",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    phase: knowledgeReviewPhase("phase").notNull(),
+    status: knowledgeReviewRunStatus("status").default("queued").notNull(),
+    inputVersionId: uuid("input_version_id")
+      .notNull()
+      .references(() => knowledgeVersion.id, { onDelete: "restrict" }),
+    inputContentHash: text("input_content_hash").notNull(),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    risk: knowledgeReviewRisk("risk"),
+    structuredReport: jsonb("structured_report")
+      .$type<Record<string, unknown>>()
+      .default({})
+      .notNull(),
+    decision: knowledgeReviewDecision("decision"),
+    leaseTokenHash: text("lease_token_hash"),
+    leaseExpiresAt: timestamp("lease_expires_at", {
+      mode: "date",
+      withTimezone: true
+    }),
+    attempts: integer("attempts").default(0).notNull(),
+    revisedVersionId: uuid("revised_version_id").references(
+      () => knowledgeVersion.id,
+      { onDelete: "restrict" }
+    ),
+    completedAt: timestamp("completed_at", {
+      mode: "date",
+      withTimezone: true
+    }),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      withTimezone: true
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      mode: "date",
+      withTimezone: true
+    })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull()
+  },
+  (table) => [
+    uniqueIndex("knowledge_review_run_version_hash_prompt_phase_unique").on(
+      table.inputVersionId,
+      table.inputContentHash,
+      table.promptVersion,
+      table.phase
+    ),
+    index("knowledge_review_run_lease_idx").on(
+      table.status,
+      table.leaseExpiresAt,
+      table.createdAt
+    ),
+    index("knowledge_review_run_revised_version_idx").on(
+      table.revisedVersionId
+    ),
+    check(
+      "knowledge_review_run_hashes_valid",
+      sql`${table.inputContentHash} ~ '^[0-9a-f]{64}$' and (${table.leaseTokenHash} is null or ${table.leaseTokenHash} ~ '^[0-9a-f]{64}$')`
+    ),
+    check("knowledge_review_run_attempts_valid", sql`${table.attempts} >= 0`),
+    check(
+      "knowledge_review_run_lease_valid",
+      sql`(${table.status} = 'leased' and ${table.leaseTokenHash} is not null and ${table.leaseExpiresAt} is not null) or (${table.status} <> 'leased' and ${table.leaseTokenHash} is null and ${table.leaseExpiresAt} is null)`
+    ),
+    check(
+      "knowledge_review_run_completion_valid",
+      sql`${table.status} <> 'completed' or (${table.risk} is not null and ${table.decision} is not null and ${table.completedAt} is not null)`
     )
   ]
 );
@@ -393,7 +554,44 @@ export const knowledgeVersionRelations = relations(
       relationName: "knowledge_document_versions"
     }),
     chunks: many(knowledgeChunk),
-    reviewSections: many(knowledgeReviewSection)
+    reviewSections: many(knowledgeReviewSection),
+    original: one(knowledgeOriginal),
+    reviewRuns: many(knowledgeReviewRun, {
+      relationName: "knowledge_review_run_input_version"
+    }),
+    revisedByReviewRuns: many(knowledgeReviewRun, {
+      relationName: "knowledge_review_run_revised_version"
+    })
+  })
+);
+
+export const knowledgeOriginalRelations = relations(
+  knowledgeOriginal,
+  ({ one }) => ({
+    version: one(knowledgeVersion, {
+      fields: [knowledgeOriginal.versionId],
+      references: [knowledgeVersion.id]
+    }),
+    uploader: one(user, {
+      fields: [knowledgeOriginal.uploadedBy],
+      references: [user.id]
+    })
+  })
+);
+
+export const knowledgeReviewRunRelations = relations(
+  knowledgeReviewRun,
+  ({ one }) => ({
+    inputVersion: one(knowledgeVersion, {
+      fields: [knowledgeReviewRun.inputVersionId],
+      references: [knowledgeVersion.id],
+      relationName: "knowledge_review_run_input_version"
+    }),
+    revisedVersion: one(knowledgeVersion, {
+      fields: [knowledgeReviewRun.revisedVersionId],
+      references: [knowledgeVersion.id],
+      relationName: "knowledge_review_run_revised_version"
+    })
   })
 );
 
@@ -436,5 +634,7 @@ export const knowledgeSources = knowledgeSource;
 export const knowledgeDocuments = knowledgeDocument;
 export const knowledgeVersions = knowledgeVersion;
 export const knowledgeChunks = knowledgeChunk;
+export const knowledgeOriginals = knowledgeOriginal;
+export const knowledgeReviewRuns = knowledgeReviewRun;
 export const knowledgeReviewSections = knowledgeReviewSection;
 export const knowledgeSectionDecisions = knowledgeSectionDecision;

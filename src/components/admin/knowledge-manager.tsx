@@ -71,6 +71,38 @@ type ReviewWorkspace = {
   sections: ReviewSection[];
 };
 
+type UploadStage =
+  | "idle"
+  | "hashing"
+  | "registering"
+  | "uploading"
+  | "completing"
+  | "completed"
+  | "failed";
+
+const knowledgeUploadAccept = ".pdf,.docx,.xlsx,.csv,.txt,.md,.jpg,.png";
+
+const uploadMimeByExtension: Record<string, string> = {
+  pdf: "application/pdf",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  csv: "text/csv",
+  txt: "text/plain",
+  md: "text/markdown",
+  jpg: "image/jpeg",
+  png: "image/png"
+};
+
+const uploadStageLabel: Record<UploadStage, string> = {
+  idle: "",
+  hashing: "正在计算 SHA-256…",
+  registering: "正在登记私有原件…",
+  uploading: "正在上传原件…",
+  completing: "正在校验并排队…",
+  completed: "上传完成，自动审核任务已排队。",
+  failed: "知识原件上传失败。"
+};
+
 const toneClass: Record<StateTone, string> = {
   positive: "bg-[var(--accent)]",
   warning: "bg-[var(--warning)]",
@@ -202,6 +234,29 @@ function versionLabel(document: KnowledgeDocumentView): string {
   return document.version === undefined ? "未返回" : `v${document.version}`;
 }
 
+function automationStatusLabel(status: string): string {
+  return (
+    {
+      queued: "等待自动审核",
+      leased: "自动审核中",
+      completed: "审核完成",
+      needs_human: "需要人工处理",
+      failed: "自动审核失败"
+    }[status] ?? status
+  );
+}
+
+function automationDecisionLabel(decision?: string): string {
+  if (!decision) return "结论未返回";
+  return (
+    {
+      approved: "通过",
+      rejected: "驳回",
+      needs_human: "转人工"
+    }[decision] ?? decision
+  );
+}
+
 async function responseError(
   response: Response,
   fallback: string
@@ -236,11 +291,15 @@ export function KnowledgeManager() {
   const [reviewWorkspace, setReviewWorkspace] = useState<ReviewWorkspace>();
   const [reviewWorkspaceLoading, setReviewWorkspaceLoading] = useState(false);
   const [reviewSectionIndex, setReviewSectionIndex] = useState(0);
-  const [reviewSectionNotes, setReviewSectionNotes] = useState<
-    Record<string, string>
-  >({});
-  const [reviewSectionActioning, setReviewSectionActioning] = useState(false);
   const [mobileReviewStep, setMobileReviewStep] = useState<0 | 1 | 2>(0);
+  const [uploadStage, setUploadStage] = useState<UploadStage>("idle");
+  const [uploadError, setUploadError] = useState("");
+  const [lastUploadFile, setLastUploadFile] = useState<File>();
+  const [uploadSourceUrl, setUploadSourceUrl] = useState("");
+  const [uploadDescription, setUploadDescription] = useState("");
+  const [manualNote, setManualNote] = useState("");
+  const [manualContent, setManualContent] = useState("");
+  const [manualActioning, setManualActioning] = useState<string>();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -322,6 +381,104 @@ export function KnowledgeManager() {
     }
   }
 
+  async function uploadOriginal(file?: File) {
+    if (!file) return;
+    setLastUploadFile(file);
+    setUploadError("");
+    setActionError("");
+    const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const contentType = uploadMimeByExtension[extension];
+    if (!contentType) {
+      setUploadStage("failed");
+      setUploadError("仅支持 PDF、DOCX、XLSX、CSV、TXT、MD、JPG 和 PNG。");
+      return;
+    }
+    try {
+      setUploadStage("hashing");
+      const bytes = await file.arrayBuffer();
+      const digest = await crypto.subtle.digest("SHA-256", bytes);
+      const sha256 = Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, "0")
+      ).join("");
+      setUploadStage("registering");
+      const initiated = await fetch("/api/admin/knowledge/uploads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: file.name.replace(/\.[^.]+$/u, ""),
+          ...(uploadSourceUrl.trim()
+            ? { sourceUrl: uploadSourceUrl.trim() }
+            : {}),
+          ...(uploadDescription.trim()
+            ? { description: uploadDescription.trim() }
+            : {}),
+          filename: file.name,
+          contentType,
+          sizeBytes: file.size,
+          sha256
+        })
+      });
+      if (!initiated.ok) {
+        throw new Error(
+          await responseError(initiated, "知识原件上传失败，请重试。")
+        );
+      }
+      const envelope = (await initiated.json()) as {
+        data?: {
+          versionId?: unknown;
+          upload?: {
+            url?: unknown;
+            uploadUrl?: unknown;
+            method?: unknown;
+            requiredHeaders?: unknown;
+          };
+        };
+      };
+      const data = envelope.data;
+      const uploadUrl =
+        typeof data?.upload?.url === "string"
+          ? data.upload.url
+          : typeof data?.upload?.uploadUrl === "string"
+            ? data.upload.uploadUrl
+            : undefined;
+      if (
+        typeof data?.versionId !== "string" ||
+        !uploadUrl ||
+        data.upload?.method !== "PUT" ||
+        !data.upload.requiredHeaders ||
+        typeof data.upload.requiredHeaders !== "object"
+      ) {
+        throw new Error("上传登记响应不完整，请重新发起上传。");
+      }
+      setUploadStage("uploading");
+      const uploaded = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: data.upload.requiredHeaders as Record<string, string>,
+        body: file
+      });
+      if (!uploaded.ok) throw new Error("原件传输失败，请重试。");
+      setUploadStage("completing");
+      const completed = await fetch(
+        `/api/admin/knowledge/uploads/${data.versionId}/complete`,
+        { method: "POST" }
+      );
+      if (!completed.ok) {
+        throw new Error(
+          await responseError(completed, "原件校验或任务排队失败，请重试。")
+        );
+      }
+      setUploadStage("completed");
+      await refresh();
+    } catch (uploadFailure) {
+      setUploadStage("failed");
+      setUploadError(
+        uploadFailure instanceof Error
+          ? uploadFailure.message
+          : "知识原件上传失败，请重试。"
+      );
+    }
+  }
+
   const selected =
     visible.find((document) => document.id === selectedId) ?? visible[0];
 
@@ -355,7 +512,10 @@ export function KnowledgeManager() {
   }, []);
 
   useEffect(() => {
-    if (!selected?.currentVersionId) return;
+    if (!selected?.currentVersionId) {
+      const timer = window.setTimeout(() => setReviewWorkspace(undefined), 0);
+      return () => window.clearTimeout(timer);
+    }
     const timer = window.setTimeout(
       () => void loadReviewWorkspace(selected.id),
       0
@@ -367,71 +527,6 @@ export function KnowledgeManager() {
     reviewWorkspace?.documentId === selected?.id ? reviewWorkspace : undefined;
   const activeReviewSection =
     currentReviewWorkspace?.sections[reviewSectionIndex];
-
-  async function decideReviewSection(
-    decision: "approved" | "rejected" | "changes_requested"
-  ) {
-    if (!selected || !currentReviewWorkspace || !activeReviewSection) return;
-    const note = reviewSectionNotes[activeReviewSection.id]?.trim();
-    if (decision !== "approved" && !note) {
-      setActionError("驳回或要求修改段落时必须填写审核备注。");
-      return;
-    }
-    setReviewSectionActioning(true);
-    setActionError("");
-    try {
-      const response = await fetch(
-        `/api/admin/knowledge/${selected.id}/versions/${currentReviewWorkspace.versionId}/sections/${activeReviewSection.id}/decision`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            expectedSectionHash: activeReviewSection.sectionHash,
-            expectedRevision: activeReviewSection.decision?.revision ?? 0,
-            decision,
-            ...(note ? { note } : {})
-          })
-        }
-      );
-      if (!response.ok) {
-        setActionError(await responseError(response, "段落决定保存失败。"));
-        return;
-      }
-      await loadReviewWorkspace(selected.id);
-    } catch {
-      setActionError("段落决定保存失败。");
-    } finally {
-      setReviewSectionActioning(false);
-    }
-  }
-
-  async function completeSectionReview() {
-    if (!selected || !currentReviewWorkspace) return;
-    setReviewSectionActioning(true);
-    setActionError("");
-    try {
-      const response = await fetch(
-        `/api/admin/knowledge/${selected.id}/versions/${currentReviewWorkspace.versionId}/complete-review`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            versionId: currentReviewWorkspace.versionId,
-            expectedContentHash: currentReviewWorkspace.versionContentHash
-          })
-        }
-      );
-      if (!response.ok) {
-        setActionError(await responseError(response, "完成逐段审核失败。"));
-        return;
-      }
-      await Promise.all([refresh(), loadReviewWorkspace(selected.id)]);
-    } catch {
-      setActionError("完成逐段审核失败。");
-    } finally {
-      setReviewSectionActioning(false);
-    }
-  }
 
   async function action(name: "publish" | "archive" | "rollback") {
     if (!selected) return;
@@ -485,6 +580,56 @@ export function KnowledgeManager() {
     }
   }
 
+  async function manualAction(
+    name:
+      | "retry"
+      | "adopt_revision_and_retry"
+      | "manual_edit_and_retry"
+      | "manual_approve_with_note"
+      | "archive"
+  ) {
+    if (!selected?.currentVersionId || !selected.contentHash) return;
+    if (name === "manual_approve_with_note" && !manualNote.trim()) {
+      setActionError("人工批准必须填写处理备注。");
+      return;
+    }
+    if (name === "manual_edit_and_retry" && !manualContent.trim()) {
+      setActionError("人工修订后重试必须填写修订内容。");
+      return;
+    }
+    setManualActioning(name);
+    setActionError("");
+    try {
+      const response = await fetch(
+        `/api/admin/knowledge/${selected.id}/${name === "retry" ? "retry" : "manual-resolution"}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...(name === "retry" ? {} : { action: name }),
+            expectedVersionId: selected.currentVersionId,
+            expectedContentHash: selected.contentHash,
+            ...(manualNote.trim() ? { note: manualNote.trim() } : {}),
+            ...(name === "manual_edit_and_retry"
+              ? { revisedContent: manualContent.trim() }
+              : {})
+          })
+        }
+      );
+      if (!response.ok) {
+        setActionError(await responseError(response, "人工处理失败，请重试。"));
+        return;
+      }
+      setManualNote("");
+      setManualContent("");
+      await refresh();
+    } catch {
+      setActionError("人工处理失败，请重试。");
+    } finally {
+      setManualActioning(undefined);
+    }
+  }
+
   const publishDisabledReason = selected
     ? selected.publishReady === undefined
       ? "接口尚未返回发布门禁结果。"
@@ -500,6 +645,96 @@ export function KnowledgeManager() {
           <p className="mt-2 text-sm text-[var(--muted)]">
             管理可检索、可引用、可回滚的真空领域资料。
           </p>
+        </div>
+
+        <div
+          aria-label="上传知识原件"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => {
+            event.preventDefault();
+            void uploadOriginal(event.dataTransfer.files?.[0]);
+          }}
+          className="mt-7 rounded-xl border border-dashed border-[var(--border-strong)] bg-[var(--surface)] p-5"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium">上传新资料原件</p>
+              <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
+                拖放到此处，或选择 PDF、DOCX、XLSX、CSV、TXT、MD、JPG、PNG。
+              </p>
+            </div>
+            <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-lg bg-[var(--ink)] px-4 text-sm font-medium text-white">
+              <Upload className="h-4 w-4" />
+              选择文件
+              <input
+                type="file"
+                accept={knowledgeUploadAccept}
+                aria-label="选择知识原件"
+                disabled={
+                  uploadStage === "hashing" ||
+                  uploadStage === "registering" ||
+                  uploadStage === "uploading" ||
+                  uploadStage === "completing"
+                }
+                className="sr-only"
+                onChange={(event) => {
+                  void uploadOriginal(event.target.files?.[0]);
+                  event.currentTarget.value = "";
+                }}
+              />
+            </label>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <label className="grid gap-1.5 text-xs text-[var(--muted)]">
+              资料来源链接（可选）
+              <input
+                type="url"
+                value={uploadSourceUrl}
+                onChange={(event) => setUploadSourceUrl(event.target.value)}
+                placeholder="https://官方来源或原始页面"
+                className="h-10 rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm text-[var(--ink)] outline-none"
+              />
+            </label>
+            <label className="grid gap-1.5 text-xs text-[var(--muted)]">
+              资料说明（可选）
+              <input
+                type="text"
+                value={uploadDescription}
+                onChange={(event) => setUploadDescription(event.target.value)}
+                maxLength={2000}
+                placeholder="资料用途、版本或授权说明"
+                className="h-10 rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm text-[var(--ink)] outline-none"
+              />
+            </label>
+          </div>
+          {uploadStage !== "idle" ? (
+            <div className="mt-4 flex flex-wrap items-center gap-3 text-sm">
+              {uploadStage !== "completed" && uploadStage !== "failed" ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : null}
+              <span
+                role={uploadStage === "failed" ? "alert" : "status"}
+                className={
+                  uploadStage === "failed"
+                    ? "text-[var(--danger)]"
+                    : uploadStage === "completed"
+                      ? "text-[var(--accent)]"
+                      : "text-[var(--muted)]"
+                }
+              >
+                {uploadError || uploadStageLabel[uploadStage]}
+              </span>
+              {uploadStage === "failed" && lastUploadFile ? (
+                <button
+                  type="button"
+                  onClick={() => void uploadOriginal(lastUploadFile)}
+                  className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs"
+                >
+                  重试上传
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-[auto_minmax(16rem,1fr)_auto_auto_auto]">
@@ -679,6 +914,104 @@ export function KnowledgeManager() {
           </div>
         )}
 
+        {selected?.automationReview ? (
+          <section className="mt-10 border-t border-[var(--border)] pt-7">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">自动审核报告</h2>
+                <p className="mt-1 text-xs text-[var(--muted)]">
+                  {selected.automationReview.phase === "verify"
+                    ? "独立复核阶段"
+                    : "初次审核阶段"}
+                </p>
+              </div>
+              <span className="rounded-full border border-[var(--border)] px-3 py-1 text-xs">
+                {selected.automationReview.risk === "high"
+                  ? "高风险"
+                  : selected.automationReview.risk === "medium"
+                    ? "中风险"
+                    : selected.automationReview.risk === "low"
+                      ? "低风险"
+                      : "风险未返回"}
+              </span>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2 text-xs">
+              <span className="rounded-full bg-[var(--surface)] px-3 py-1">
+                {automationStatusLabel(selected.automationReview.status)}
+              </span>
+              <span className="rounded-full bg-[var(--surface)] px-3 py-1">
+                {automationDecisionLabel(selected.automationReview.decision)}
+              </span>
+            </div>
+            <p className="mt-5 rounded-xl bg-[var(--surface)] p-4 text-sm leading-6">
+              {selected.automationReview.summary ?? "自动审核摘要未返回。"}
+            </p>
+            {selected.automationReview.revision?.changed ? (
+              <div className="mt-4 rounded-xl border border-[var(--border)] p-4 text-sm">
+                <p className="font-medium">自动修订已生成新版本</p>
+                <p className="mt-2 font-mono text-xs break-all text-[var(--muted)]">
+                  {selected.automationReview.revision.inputContentHash ??
+                    "未知"}
+                  {" → "}
+                  {selected.automationReview.revision.outputContentHash ??
+                    "未知"}
+                </p>
+              </div>
+            ) : null}
+            {selected.automationReview.blockers.length > 0 ? (
+              <div className="mt-5">
+                <h3 className="text-xs font-semibold text-[var(--danger)]">
+                  阻断项
+                </h3>
+                <ul className="mt-2 space-y-2 text-sm">
+                  {selected.automationReview.blockers.map((blocker) => (
+                    <li key={`${blocker.code}:${blocker.message}`}>
+                      {blocker.message}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {selected.automationReview.findings.length > 0 ? (
+              <div className="mt-5">
+                <h3 className="text-xs font-semibold text-[var(--muted)]">
+                  审核发现
+                </h3>
+                <ul className="mt-2 space-y-2 text-sm">
+                  {selected.automationReview.findings.map((finding) => (
+                    <li key={`${finding.code}:${finding.message}`}>
+                      {finding.message}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {selected.automationReview.evidence.length > 0 ? (
+              <div className="mt-5">
+                <h3 className="text-xs font-semibold text-[var(--muted)]">
+                  来源证据
+                </h3>
+                <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                  {selected.automationReview.evidence.map((item) => (
+                    <article
+                      key={`${item.claim}:${item.sourceLocator}`}
+                      className="rounded-xl border border-[var(--border)] p-4"
+                    >
+                      <p className="text-sm font-medium">{item.claim}</p>
+                      <p className="mt-2 text-sm leading-6">
+                        {item.exactEvidence}
+                      </p>
+                      <p className="mt-2 text-xs text-[var(--muted)]">
+                        {item.sourceLocator}
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
         {reviewWorkspaceLoading ? (
           <div className="mt-8 flex items-center gap-2 text-sm text-[var(--muted)]">
             <LoaderCircle className="h-4 w-4 animate-spin" />
@@ -688,25 +1021,15 @@ export function KnowledgeManager() {
           <section className="mt-10 border-t border-[var(--border)] pt-7">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h2 className="text-lg font-semibold">逐段知识审核</h2>
+                <h2 className="text-lg font-semibold">历史逐段审核记录</h2>
                 <p className="mt-1 text-xs text-[var(--muted)]">
                   第 {activeReviewSection.sectionIndex + 1} /{" "}
                   {currentReviewWorkspace.sections.length} 段
                 </p>
               </div>
-              <button
-                type="button"
-                disabled={
-                  reviewSectionActioning ||
-                  !currentReviewWorkspace.sections.every(
-                    (section) => section.reviewStatus === "approved"
-                  )
-                }
-                onClick={() => void completeSectionReview()}
-                className="h-10 rounded-lg bg-[var(--ink)] px-4 text-sm font-medium text-white disabled:opacity-30"
-              >
-                完成逐段审核
-              </button>
+              <span className="rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--muted)]">
+                只读兼容
+              </span>
             </div>
 
             <div className="mt-5 grid grid-cols-3 gap-2 lg:hidden">
@@ -761,50 +1084,18 @@ export function KnowledgeManager() {
                 className={`${mobileReviewStep === 2 ? "block" : "hidden"} rounded-xl border border-[var(--border)] p-5 lg:block`}
               >
                 <p className="text-xs font-semibold text-[var(--muted)]">
-                  审核决定
+                  历史审核记录（只读）
                 </p>
-                <textarea
-                  aria-label="段落审核备注"
-                  value={reviewSectionNotes[activeReviewSection.id] ?? ""}
-                  onChange={(event) =>
-                    setReviewSectionNotes((current) => ({
-                      ...current,
-                      [activeReviewSection.id]: event.target.value
-                    }))
-                  }
-                  rows={4}
-                  maxLength={2000}
-                  placeholder="驳回或需修改时必须说明原因"
-                  className="mt-4 w-full resize-y rounded-lg border border-[var(--border)] bg-transparent p-3 text-sm outline-none"
-                />
-                <div className="mt-4 grid gap-2">
-                  <button
-                    type="button"
-                    disabled={reviewSectionActioning}
-                    onClick={() => void decideReviewSection("approved")}
-                    className="h-9 rounded-lg border border-[var(--accent)] text-sm text-[var(--accent)] disabled:opacity-30"
-                  >
-                    通过段落
-                  </button>
-                  <button
-                    type="button"
-                    disabled={reviewSectionActioning}
-                    onClick={() =>
-                      void decideReviewSection("changes_requested")
-                    }
-                    className="h-9 rounded-lg border border-[var(--warning)] text-sm text-[var(--warning)] disabled:opacity-30"
-                  >
-                    需修改
-                  </button>
-                  <button
-                    type="button"
-                    disabled={reviewSectionActioning}
-                    onClick={() => void decideReviewSection("rejected")}
-                    className="h-9 rounded-lg border border-[var(--danger)] text-sm text-[var(--danger)] disabled:opacity-30"
-                  >
-                    驳回段落
-                  </button>
-                </div>
+                <p className="mt-4 text-sm">
+                  {activeReviewSection.reviewStatus === "required"
+                    ? "尚无历史决定"
+                    : activeReviewSection.reviewStatus}
+                </p>
+                {activeReviewSection.decision?.note ? (
+                  <p className="mt-3 text-sm text-[var(--muted)]">
+                    {activeReviewSection.decision.note}
+                  </p>
+                ) : null}
               </article>
             </div>
 
@@ -926,6 +1217,77 @@ export function KnowledgeManager() {
                 整份哈希批准已停用。请在逐段审核工作台为每一段记录通过、驳回或需修改决定。
               </p>
             </section>
+
+            {selected.automationReview ? (
+              <section className="mt-7 border-t border-[var(--border)] pt-6">
+                <h3 className="text-xs font-semibold tracking-wide text-[var(--muted)]">
+                  文档级人工处理
+                </h3>
+                <textarea
+                  aria-label="人工处理备注"
+                  value={manualNote}
+                  onChange={(event) => setManualNote(event.target.value)}
+                  rows={3}
+                  maxLength={2000}
+                  placeholder="批准时必填；其他动作建议说明原因"
+                  className="mt-4 w-full resize-y rounded-lg border border-[var(--border)] bg-transparent p-3 text-sm"
+                />
+                <textarea
+                  aria-label="人工修订内容"
+                  value={manualContent}
+                  onChange={(event) => setManualContent(event.target.value)}
+                  rows={5}
+                  placeholder="仅“人工编辑并重试”使用"
+                  className="mt-3 w-full resize-y rounded-lg border border-[var(--border)] bg-transparent p-3 text-sm"
+                />
+                <div className="mt-4 grid gap-2">
+                  <button
+                    type="button"
+                    disabled={Boolean(manualActioning)}
+                    onClick={() => void manualAction("retry")}
+                    className="h-10 rounded-lg border border-[var(--border)] text-sm disabled:opacity-30"
+                  >
+                    重试自动审核
+                  </button>
+                  <button
+                    type="button"
+                    disabled={Boolean(manualActioning)}
+                    onClick={() =>
+                      void manualAction("adopt_revision_and_retry")
+                    }
+                    className="h-10 rounded-lg border border-[var(--border)] text-sm disabled:opacity-30"
+                  >
+                    采用自动修订并重试
+                  </button>
+                  <button
+                    type="button"
+                    disabled={Boolean(manualActioning)}
+                    onClick={() => void manualAction("manual_edit_and_retry")}
+                    className="h-10 rounded-lg border border-[var(--border)] text-sm disabled:opacity-30"
+                  >
+                    人工编辑并重试
+                  </button>
+                  <button
+                    type="button"
+                    disabled={Boolean(manualActioning)}
+                    onClick={() =>
+                      void manualAction("manual_approve_with_note")
+                    }
+                    className="h-10 rounded-lg bg-[var(--ink)] text-sm text-white disabled:opacity-30"
+                  >
+                    带备注人工批准
+                  </button>
+                  <button
+                    type="button"
+                    disabled={Boolean(manualActioning)}
+                    onClick={() => void manualAction("archive")}
+                    className="h-10 rounded-lg text-sm text-[var(--danger)] disabled:opacity-30"
+                  >
+                    归档并停止处理
+                  </button>
+                </div>
+              </section>
+            ) : null}
 
             <section className="mt-7 border-t border-[var(--border)] pt-6">
               <h3 className="text-xs font-semibold tracking-wide text-[var(--muted)]">

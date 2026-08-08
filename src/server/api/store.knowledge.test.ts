@@ -11,6 +11,7 @@ import {
   invalidateKnowledgeReviewAfterHashChange,
   knowledgeEvidenceMetadataChanged,
   sha256KnowledgeContent,
+  buildKnowledgeAutomationReviewView,
   type KnowledgePublicationGateInput
 } from "./store";
 
@@ -57,6 +58,20 @@ describe("knowledge publication gate", () => {
     expectGateError(input, "KNOWLEDGE_SECTION_REVIEW_REQUIRED");
   });
 
+  it("accepts a note-bound document-level manual resolution with the current hash", () => {
+    const input = validPublication();
+    input.metadata = {
+      ...input.metadata,
+      review: {
+        ...(input.metadata.review as Record<string, unknown>),
+        mode: "manual_document_resolution",
+        note: "已核对当前原件、来源权利和自动审核阻断项。"
+      }
+    };
+
+    expect(() => assertKnowledgePublicationGate(input)).not.toThrow();
+  });
+
   it("rejects content changed after the approved SHA-256", () => {
     const input = validPublication();
     input.content = `${input.content}\nChanged after review.`;
@@ -91,6 +106,106 @@ describe("knowledge publication gate", () => {
     input.chunkCount = 0;
 
     expect(() => assertKnowledgePublicationGate(input)).not.toThrow();
+  });
+});
+
+describe("knowledge automation review read model", () => {
+  it("shows the latest run plus the adopted revision lineage for the current hash", () => {
+    const currentVersionId = "00000000-0000-4000-8000-000000000003";
+    const currentHash = "c".repeat(64);
+    const result = buildKnowledgeAutomationReviewView(
+      [
+        {
+          id: "00000000-0000-4000-8000-000000000020",
+          phase: "verify",
+          status: "needs_human",
+          inputVersionId: currentVersionId,
+          inputContentHash: currentHash,
+          risk: "high",
+          decision: "needs_human",
+          revisedVersionId: null,
+          structuredReport: {
+            summary: "核验发现参数冲突。",
+            blockers: [{ code: "MISMATCH", message: "抽速不一致" }],
+            findings: [],
+            evidence: [
+              {
+                claim: "抽速",
+                exactEvidence: "8 L/s",
+                sourceLocator: "page 12"
+              }
+            ],
+            outputContentHash: currentHash,
+            automation: {
+              outputVersionId: currentVersionId,
+              outputContentHash: currentHash
+            }
+          }
+        },
+        {
+          id: "00000000-0000-4000-8000-000000000010",
+          phase: "initial",
+          status: "completed",
+          inputVersionId: "00000000-0000-4000-8000-000000000002",
+          inputContentHash: "a".repeat(64),
+          risk: "low",
+          decision: "approved",
+          revisedVersionId: currentVersionId,
+          structuredReport: {
+            summary: "已修订。",
+            blockers: [],
+            findings: [],
+            evidence: [],
+            outputContentHash: currentHash,
+            automation: {
+              outputVersionId: currentVersionId,
+              outputContentHash: currentHash
+            }
+          }
+        }
+      ],
+      currentVersionId,
+      currentHash
+    );
+
+    expect(result).toMatchObject({
+      status: "needs_human",
+      phase: "verify",
+      risk: "high",
+      summary: "核验发现参数冲突。",
+      blockers: [{ code: "MISMATCH", message: "抽速不一致" }],
+      revision: {
+        changed: true,
+        inputVersionId: "00000000-0000-4000-8000-000000000002",
+        outputVersionId: currentVersionId,
+        inputContentHash: "a".repeat(64),
+        outputContentHash: currentHash
+      }
+    });
+  });
+
+  it("ignores reports whose output hash does not target the current version", () => {
+    expect(
+      buildKnowledgeAutomationReviewView(
+        [
+          {
+            phase: "verify",
+            status: "needs_human",
+            inputVersionId: "version-current",
+            inputContentHash: "b".repeat(64),
+            structuredReport: {
+              outputContentHash: "a".repeat(64),
+              automation: {
+                outputVersionId: "version-current",
+                outputContentHash: "a".repeat(64)
+              }
+            }
+          }
+        ],
+        "version-current",
+        "b".repeat(64)
+      )
+    ).toBeUndefined();
   });
 });
 

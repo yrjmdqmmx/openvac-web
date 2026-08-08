@@ -36,6 +36,8 @@
     "knowledge:validate": "tsx scripts/validate-phase-one-knowledge.ts",
     "knowledge:embed-published": "tsx scripts/embed-published-knowledge.ts",
     "knowledge:verify-governance": "tsx scripts/verify-knowledge-governance.ts",
+    "knowledge:requeue-pending": "tsx scripts/requeue-pending-knowledge.ts",
+    "knowledge:automation-runner": "tsx scripts/knowledge-review-runner.ts",
     "eval:core": "tsx scripts/eval-core-retrieval.ts",
     "eval:core:live": "tsx scripts/eval-core-retrieval.ts --live",
     "eval:candidates": "tsx scripts/eval-candidate-retrieval.ts",
