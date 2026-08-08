@@ -29,6 +29,9 @@ describe("knowledge review production operations", () => {
     expect(workflow).toContain("retry_version_id:");
     expect(workflow).toContain("retry_run_id:");
     expect(workflow).toContain("retry_content_hash:");
+    expect(workflow).toContain(
+      'diagnostic_argument="${DIAGNOSTIC_REQUEST_ID:-_}"'
+    );
     expect(workflow).toContain("REQUEUE_PENDING");
     expect(workflow).toContain("secrets.ECS_SSH_KEY");
     expect(workflow).toContain("secrets.ECS_KNOWN_HOSTS");
@@ -48,6 +51,7 @@ describe("knowledge review production operations", () => {
     expect(script).toContain('operation_args="--apply"');
     expect(script).toContain("diagnose-request");
     expect(script).toContain("retry-verify-evidence");
+    expect(script).toContain('[ "$diagnostic_request_id" = _ ]');
     expect(script).toContain("AUTOMATION_REVIEW_NUMERIC_EVIDENCE_MISSING");
     expect(script).toContain(
       "knowledge.automation_review.retry_verify_evidence"

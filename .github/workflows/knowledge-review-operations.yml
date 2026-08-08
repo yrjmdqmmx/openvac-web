@@ -152,8 +152,9 @@ jobs:
         run: |
           set -Eeuo pipefail
           ssh_base="${ECS_USER}@${ECS_HOST}"
+          diagnostic_argument="${DIAGNOSTIC_REQUEST_ID:-_}"
           ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
-            sh -s -- /opt/openvac "$EXPECTED_RELEASE_SHA" "$MODE" "$DIAGNOSTIC_REQUEST_ID" \
+            sh -s -- /opt/openvac "$EXPECTED_RELEASE_SHA" "$MODE" "$diagnostic_argument" \
             "$RETRY_DOCUMENT_ID" "$RETRY_VERSION_ID" "$RETRY_RUN_ID" "$RETRY_CONTENT_HASH" \
             <deploy/run-knowledge-review-operation.sh \
             | tee "$RUNNER_TEMP/knowledge-review-operation.json"

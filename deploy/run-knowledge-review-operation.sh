@@ -10,6 +10,10 @@ retry_version_id="${6:-}"
 retry_run_id="${7:-}"
 retry_content_hash="${8:-}"
 
+if [ "$diagnostic_request_id" = _ ]; then
+  diagnostic_request_id=""
+fi
+
 case "$deploy_dir" in
   /opt/openvac) ;;
   *)
