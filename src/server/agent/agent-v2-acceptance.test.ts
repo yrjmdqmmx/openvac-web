@@ -12,6 +12,7 @@ import {
   ToolRegistry,
   type CalculatorName
 } from "@/server/agent";
+import * as modePolicy from "./mode-policy";
 import { sanitizeEvidenceExcerpt } from "@/server/chat/evidence";
 import { createDeepSeekUserPartition } from "@/server/providers";
 
@@ -90,7 +91,8 @@ describe("Agent V2: 40 multi-turn, budget, and memory policy cases", () => {
     expect(resolved).toBe("deep");
     expect(agentRunBudgetProfile("auto")).toEqual({
       timeoutEnvironmentName: "AGENT_AUTO_TIMEOUT_MS",
-      timeoutFallbackMs: 60_000,
+      timeoutFallbackMs: 120_000,
+      maxToolRounds: 1,
       inputTokenBudget: 64 * 1024,
       outputTokenEnvironmentName: "AGENT_AUTO_MAX_OUTPUT_TOKENS",
       outputTokenFallback: 4_096
@@ -101,10 +103,30 @@ describe("Agent V2: 40 multi-turn, budget, and memory policy cases", () => {
     expect(agentRunBudgetProfile("deep")).toEqual({
       timeoutEnvironmentName: "AGENT_DEEP_TIMEOUT_MS",
       timeoutFallbackMs: 180_000,
+      maxToolRounds: 3,
       inputTokenBudget: 128 * 1024,
       outputTokenEnvironmentName: "AGENT_DEEP_MAX_OUTPUT_TOKENS",
       outputTokenFallback: 8_192
     });
+  });
+
+  it("enforces the safe automatic timeout floor over a stale 60 second deployment value", () => {
+    const resolver = (
+      modePolicy as unknown as {
+        effectiveAgentRunTimeoutMs?: (
+          requestedMode: "auto" | "deep",
+          environment: Record<string, string | undefined>
+        ) => number;
+      }
+    ).effectiveAgentRunTimeoutMs;
+
+    expect(resolver).toBeTypeOf("function");
+    expect(resolver?.("auto", { AGENT_AUTO_TIMEOUT_MS: "60000" })).toBe(
+      120_000
+    );
+    expect(resolver?.("auto", { AGENT_AUTO_TIMEOUT_MS: "150000" })).toBe(
+      150_000
+    );
   });
 });
 

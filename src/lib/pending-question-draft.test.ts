@@ -119,6 +119,27 @@ describe("pending question draft", () => {
 });
 
 describe("pending question send intent v2", () => {
+  it("preserves the requested reasoning and web modes", () => {
+    const storage = new MemoryStorage();
+    expect(
+      savePendingQuestionIntent({
+        text: "使用深度思考并联网",
+        mode: "deep",
+        webMode: "always",
+        now: 1_000,
+        storage
+      })
+    ).toBe(true);
+
+    expect(
+      consumePendingQuestionIntent({
+        userId: "user-a",
+        now: 2_000,
+        storage
+      })
+    ).toMatchObject({ mode: "deep", webMode: "always" });
+  });
+
   it("saves and atomically consumes an unbound pre-login intent", () => {
     const storage = new MemoryStorage();
     expect(

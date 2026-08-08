@@ -337,7 +337,13 @@ export function ChatWorkspace({
   }, [messages, stage]);
 
   const send = useCallback(
-    async (rawQuestion: string) => {
+    async (
+      rawQuestion: string,
+      requested?: {
+        mode?: "auto" | "deep";
+        webMode?: "auto" | "always";
+      }
+    ) => {
       const question = rawQuestion.trim();
       if (!question || busy) return;
       if (Array.from(question).length < 2) {
@@ -345,6 +351,8 @@ export function ChatWorkspace({
         return;
       }
       pendingQuestionHandledRef.current = true;
+      const requestedMode = requested?.mode ?? mode;
+      const requestedWebMode = requested?.webMode ?? webMode;
 
       const clientRequestId = crypto.randomUUID();
       const localUserId = makeLocalId("user");
@@ -392,15 +400,20 @@ export function ChatWorkspace({
             conversationId,
             message: question,
             clientRequestId,
-            mode,
-            webMode
+            mode: requestedMode,
+            webMode: requestedWebMode
           }),
           signal: controller.signal
         });
 
         if (response.status === 401) {
           if (
-            !savePendingQuestionIntent({ text: question, ownerUserId: userId })
+            !savePendingQuestionIntent({
+              text: question,
+              ownerUserId: userId,
+              mode: requestedMode,
+              webMode: requestedWebMode
+            })
           ) {
             throw new Error(
               "登录状态已失效，且浏览器无法暂存问题。问题仍保留在当前对话中，请复制后重新登录。"
@@ -704,7 +717,14 @@ export function ChatWorkspace({
 
       const intent = consumePendingQuestionIntent({ userId });
       if (intent) {
-        void send(intent.text);
+        const intentMode = intent.mode ?? "auto";
+        const intentWebMode = intent.webMode ?? "auto";
+        setMode(intentMode);
+        setWebMode(intentWebMode);
+        void send(intent.text, {
+          mode: intentMode,
+          webMode: intentWebMode
+        });
         return;
       }
 

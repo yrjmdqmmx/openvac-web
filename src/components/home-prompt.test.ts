@@ -63,6 +63,21 @@ describe("HomePrompt", () => {
     ).toMatchObject({ ownerUserId: "user-a" });
   });
 
+  it("sends the homepage reasoning and web choices into chat", async () => {
+    render(createElement(HomePrompt, { currentUserId: "user-a" }));
+
+    const input = screen.getByLabelText("向 OpenVac 提问");
+    await waitFor(() => expect(input).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "深度思考" }));
+    fireEvent.click(screen.getByRole("button", { name: "联网" }));
+    fireEvent.change(input, { target: { value: "联网分析这个真空问题" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送问题" }));
+
+    expect(
+      JSON.parse(sessionStorage.getItem(PENDING_QUESTION_INTENT_KEY) ?? "{}")
+    ).toMatchObject({ mode: "deep", webMode: "always" });
+  });
+
   it("does not submit while a Chinese IME composition is active", async () => {
     render(createElement(HomePrompt, { currentUserId: "user-a" }));
 

@@ -502,7 +502,7 @@ export function KnowledgeManager() {
           </p>
         </div>
 
-        <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+        <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-[auto_minmax(16rem,1fr)_auto_auto_auto]">
           <label className="inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-lg bg-[var(--ink)] px-4 text-sm font-medium text-white">
             <Upload className="h-4 w-4" />
             {importing ? "导入中…" : "导入待审 JSON"}
@@ -521,6 +521,8 @@ export function KnowledgeManager() {
           <label className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-lg border border-[var(--border)] px-3">
             <Search className="h-4 w-4 text-[var(--muted)]" />
             <input
+              type="search"
+              aria-label="搜索知识文档或来源"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               className="min-w-0 flex-1 outline-none"
@@ -531,7 +533,7 @@ export function KnowledgeManager() {
             aria-label="来源层级"
             value={sourceTierFilter}
             onChange={(event) => setSourceTierFilter(event.target.value)}
-            className="h-11 rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm"
+            className="h-11 min-w-0 rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm"
           >
             <option value="">全部来源层级</option>
             {Object.entries(sourceTierLabel).map(([value, label]) => (
@@ -544,7 +546,7 @@ export function KnowledgeManager() {
             aria-label="许可状态"
             value={licenseFilter}
             onChange={(event) => setLicenseFilter(event.target.value)}
-            className="h-11 rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm"
+            className="h-11 min-w-0 rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm"
           >
             <option value="">全部许可</option>
             {[
@@ -561,7 +563,7 @@ export function KnowledgeManager() {
             aria-label="发布状态"
             value={statusFilter}
             onChange={(event) => setStatusFilter(event.target.value)}
-            className="h-11 rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm"
+            className="h-11 min-w-0 rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm"
           >
             <option value="">全部状态</option>
             {Object.entries(statusLabel).map(([value, label]) => (

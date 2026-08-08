@@ -12,7 +12,8 @@ const COMPLEX =
 
 export type AgentRunBudgetProfile = {
   timeoutEnvironmentName: "AGENT_AUTO_TIMEOUT_MS" | "AGENT_DEEP_TIMEOUT_MS";
-  timeoutFallbackMs: 60_000 | 180_000;
+  timeoutFallbackMs: 120_000 | 180_000;
+  maxToolRounds: 1 | 3;
   inputTokenBudget: 65_536 | 131_072;
   outputTokenEnvironmentName:
     "AGENT_AUTO_MAX_OUTPUT_TOKENS" | "AGENT_DEEP_MAX_OUTPUT_TOKENS";
@@ -51,6 +52,7 @@ export function agentRunBudgetProfile(
     return {
       timeoutEnvironmentName: "AGENT_DEEP_TIMEOUT_MS",
       timeoutFallbackMs: 180_000,
+      maxToolRounds: 3,
       inputTokenBudget: 131_072,
       outputTokenEnvironmentName: "AGENT_DEEP_MAX_OUTPUT_TOKENS",
       outputTokenFallback: 8_192
@@ -58,9 +60,25 @@ export function agentRunBudgetProfile(
   }
   return {
     timeoutEnvironmentName: "AGENT_AUTO_TIMEOUT_MS",
-    timeoutFallbackMs: 60_000,
+    timeoutFallbackMs: 120_000,
+    maxToolRounds: 1,
     inputTokenBudget: 65_536,
     outputTokenEnvironmentName: "AGENT_AUTO_MAX_OUTPUT_TOKENS",
     outputTokenFallback: 4_096
   };
+}
+
+export function effectiveAgentRunTimeoutMs(
+  requestedMode: RequestedAgentMode,
+  environment: Record<string, string | undefined> = process.env
+): number {
+  const profile = agentRunBudgetProfile(requestedMode);
+  const configured = Number.parseInt(
+    environment[profile.timeoutEnvironmentName] ?? "",
+    10
+  );
+  if (!Number.isSafeInteger(configured) || configured <= 0) {
+    return profile.timeoutFallbackMs;
+  }
+  return Math.max(configured, profile.timeoutFallbackMs);
 }

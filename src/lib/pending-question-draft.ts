@@ -17,6 +17,8 @@ export type PendingQuestionIntentV2 = {
   version: 2;
   intent: "send";
   text: string;
+  mode?: "auto" | "deep";
+  webMode?: "auto" | "always";
   createdAt: number;
   expiresAt: number;
   ownerUserId?: string;
@@ -122,6 +124,12 @@ function isValidIntent(
     typeof intent.text === "string" &&
     Array.from(intent.text.trim()).length >= 2 &&
     intent.text.length <= MAX_QUESTION_LENGTH &&
+    (intent.mode === undefined ||
+      intent.mode === "auto" ||
+      intent.mode === "deep") &&
+    (intent.webMode === undefined ||
+      intent.webMode === "auto" ||
+      intent.webMode === "always") &&
     typeof intent.createdAt === "number" &&
     Number.isFinite(intent.createdAt) &&
     typeof intent.expiresAt === "number" &&
@@ -137,11 +145,15 @@ function isValidIntent(
 export function savePendingQuestionIntent({
   text,
   ownerUserId,
+  mode,
+  webMode,
   now = Date.now(),
   storage
 }: {
   text: string;
   ownerUserId?: string;
+  mode?: "auto" | "deep";
+  webMode?: "auto" | "always";
   now?: number;
   storage?: DraftStorage;
 }) {
@@ -160,6 +172,8 @@ export function savePendingQuestionIntent({
     version: 2,
     intent: "send",
     text: normalizedText,
+    ...(mode ? { mode } : {}),
+    ...(webMode ? { webMode } : {}),
     createdAt: now,
     expiresAt: now + PENDING_QUESTION_INTENT_TTL_MS,
     ...(normalizedOwner ? { ownerUserId: normalizedOwner } : {})

@@ -29,6 +29,23 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 describe("admin components", () => {
+  it("keeps the knowledge search field usable beside the detail panel", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ data: { items: [] } }))
+    );
+
+    render(createElement(KnowledgeManager));
+    await screen.findByText("还没有可显示的资料");
+
+    const search = screen.getByRole("searchbox", {
+      name: "搜索知识文档或来源"
+    });
+    expect(search).toHaveAttribute("placeholder", "搜索文档或来源");
+    expect(search.closest("div")).toHaveClass("sm:grid-cols-2");
+    expect(search.closest("label")).toHaveClass("min-w-0");
+  });
+
   it("imports governed JSON and applies real knowledge filters", async () => {
     const candidate = {
       sourceCanonicalUrl: "https://www.hse.gov.uk/example",

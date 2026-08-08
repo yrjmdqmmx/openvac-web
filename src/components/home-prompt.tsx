@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUpRight, LoaderCircle } from "lucide-react";
+import { ArrowUpRight, BrainCircuit, Globe2, LoaderCircle } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { savePendingQuestionIntent } from "@/lib/pending-question-draft";
@@ -16,6 +16,8 @@ const examples = [
 export function HomePrompt({ currentUserId }: { currentUserId?: string }) {
   const ready = useHydrated();
   const [question, setQuestion] = useState("");
+  const [mode, setMode] = useState<"auto" | "deep">("auto");
+  const [webMode, setWebMode] = useState<"auto" | "always">("auto");
   const [submitting, setSubmitting] = useState(false);
   const [draftError, setDraftError] = useState("");
   const router = useRouter();
@@ -34,7 +36,9 @@ export function HomePrompt({ currentUserId }: { currentUserId?: string }) {
     if (
       !savePendingQuestionIntent({
         text: value,
-        ownerUserId: currentUserId
+        ownerUserId: currentUserId,
+        mode,
+        webMode
       })
     ) {
       setDraftError("浏览器无法暂存这个问题，请刷新后重试。");
@@ -49,31 +53,63 @@ export function HomePrompt({ currentUserId }: { currentUserId?: string }) {
     <div>
       <form
         onSubmit={submit}
-        className="flex min-h-[138px] items-center gap-3 rounded-[14px] border border-[var(--border-strong)] bg-white px-5 transition-[border-color,box-shadow] focus-within:border-[var(--ink)] focus-within:shadow-[0_0_0_3px_rgba(17,19,21,0.08)] sm:px-7"
+        className="flex min-h-[138px] items-end gap-3 rounded-[14px] border border-[var(--border-strong)] bg-white px-5 py-4 transition-[border-color,box-shadow] focus-within:border-[var(--ink)] focus-within:shadow-[0_0_0_3px_rgba(17,19,21,0.08)] sm:px-7"
       >
         <label htmlFor="home-question" className="visually-hidden">
           向 OpenVac 提问
         </label>
-        <textarea
-          id="home-question"
-          rows={2}
-          maxLength={4000}
-          disabled={!ready}
-          value={question}
-          onChange={(event) => setQuestion(event.target.value)}
-          onKeyDown={(event) => {
-            if (
-              event.key === "Enter" &&
-              !event.shiftKey &&
-              !event.nativeEvent.isComposing
-            ) {
-              event.preventDefault();
-              void submit();
-            }
-          }}
-          placeholder="输入你的工况、型号、故障现象或技术问题……"
-          className="composer-textarea min-h-16 flex-1 resize-none border-0 bg-transparent py-5 text-base leading-7 text-[var(--ink)] outline-none placeholder:text-[#8a9094] sm:text-lg"
-        />
+        <div className="min-w-0 flex-1">
+          <textarea
+            id="home-question"
+            rows={2}
+            maxLength={4000}
+            disabled={!ready}
+            value={question}
+            onChange={(event) => setQuestion(event.target.value)}
+            onKeyDown={(event) => {
+              if (
+                event.key === "Enter" &&
+                !event.shiftKey &&
+                !event.nativeEvent.isComposing
+              ) {
+                event.preventDefault();
+                void submit();
+              }
+            }}
+            placeholder="输入你的工况、型号、故障现象或技术问题……"
+            className="composer-textarea min-h-16 w-full resize-none border-0 bg-transparent py-2 text-base leading-7 text-[var(--ink)] outline-none placeholder:text-[#8a9094] sm:text-lg"
+          />
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              aria-pressed={mode === "deep"}
+              title="关闭时自动选择思考强度；开启后强制深度思考"
+              onClick={() =>
+                setMode((value) => (value === "deep" ? "auto" : "deep"))
+              }
+              className={`inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs transition-colors ${mode === "deep" ? "bg-[var(--ink)] text-white" : "bg-[var(--surface)] text-[var(--muted)] hover:text-[var(--ink)]"}`}
+            >
+              <BrainCircuit aria-hidden className="size-3.5" />
+              深度思考
+            </button>
+            <button
+              type="button"
+              aria-pressed={webMode === "always"}
+              title="关闭时按问题自动联网；开启后强制联网"
+              onClick={() =>
+                setWebMode((value) => (value === "always" ? "auto" : "always"))
+              }
+              className={`inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs transition-colors ${webMode === "always" ? "bg-[var(--ink)] text-white" : "bg-[var(--surface)] text-[var(--muted)] hover:text-[var(--ink)]"}`}
+            >
+              <Globe2 aria-hidden className="size-3.5" />
+              联网
+            </button>
+            <span className="text-[11px] text-[var(--muted)]">
+              {mode === "deep" ? "深度" : "自动思考"} ·{" "}
+              {webMode === "always" ? "强制联网" : "自动联网"}
+            </span>
+          </div>
+        </div>
         <button
           type="submit"
           disabled={

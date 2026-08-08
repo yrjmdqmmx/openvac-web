@@ -94,6 +94,14 @@ export function SiteHeader({
             <GitHubMark />
             开源项目
           </a>
+          {authenticated ? (
+            <Link
+              href="/chat"
+              className="hidden min-h-11 items-center rounded-full border border-[var(--border-strong)] px-4 transition-colors hover:border-[var(--ink)] sm:inline-flex"
+            >
+              继续对话
+            </Link>
+          ) : null}
           {!authenticated ? (
             <Link
               href="/sign-in"
@@ -131,12 +139,6 @@ export function SiteHeader({
                   <p className="truncate px-3 py-2 text-xs text-[var(--muted)]">
                     {displayName}
                   </p>
-                  <Link
-                    href="/chat"
-                    className="block rounded-lg px-3 py-2 hover:bg-[var(--surface)]"
-                  >
-                    继续对话
-                  </Link>
                   <Link
                     href="/settings"
                     className="block rounded-lg px-3 py-2 hover:bg-[var(--surface)]"
@@ -231,6 +233,15 @@ export function SiteHeader({
               <GitHubMark />
               开源项目
             </a>
+            {authenticated ? (
+              <Link
+                href="/chat"
+                onClick={closeMobileMenu}
+                className="flex min-h-11 items-center border-t border-[var(--border)] text-[15px] font-medium"
+              >
+                继续对话
+              </Link>
+            ) : null}
           </div>
         </nav>
       ) : null}
