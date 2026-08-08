@@ -33,12 +33,32 @@ describe("knowledge review production operations", () => {
     expect(workflow).toContain(
       'diagnostic_argument="${DIAGNOSTIC_REQUEST_ID:-_}"'
     );
+    expect(workflow).toContain('retry_run_argument="${RETRY_RUN_ID:-_}"');
+    expect(workflow).toContain(
+      '"$RETRY_DOCUMENT_ID" "$RETRY_VERSION_ID" "$retry_run_argument" "$RETRY_CONTENT_HASH"'
+    );
     expect(workflow).toContain("REQUEUE_PENDING");
     expect(workflow).toContain("secrets.ECS_SSH_KEY");
     expect(workflow).toContain("secrets.ECS_KNOWN_HOSTS");
     expect(workflow).toContain("secrets.ECS_HOST");
     expect(workflow).toContain("secrets.ECS_USER");
     expect(workflow).not.toContain("DATABASE_URL");
+  });
+
+  it("only preserves an empty retry-run argument for embedding-job retries", () => {
+    const workflow = readFileSync(workflowPath, "utf8");
+
+    expect(workflow).toContain(
+      `retry_run_argument="$RETRY_RUN_ID"
+          if [ "$MODE" = retry-embedding-job ]; then
+            retry_run_argument="${"${RETRY_RUN_ID:-_}"}"
+          fi`
+    );
+    expect(workflow).not.toContain(
+      `diagnostic_argument="${"${DIAGNOSTIC_REQUEST_ID:-_}"}"
+          retry_run_argument="${"${RETRY_RUN_ID:-_}"}"
+          ssh`
+    );
   });
 
   it("binds execution to the current immutable release and defaults to preview", () => {
@@ -54,6 +74,7 @@ describe("knowledge review production operations", () => {
     expect(script).toContain("retry-verify-evidence");
     expect(script).toContain("diagnose-review-pair");
     expect(script).toContain('[ "$diagnostic_request_id" = _ ]');
+    expect(script).toContain('[ "$retry_run_id" = _ ]');
     expect(script).toContain("AUTOMATION_REVIEW_NUMERIC_EVIDENCE_MISSING");
     expect(script).toContain("AUTOMATION_REVIEW_PAIR_MISSING_OR_MISMATCHED");
     expect(script).toContain(
