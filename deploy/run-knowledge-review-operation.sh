@@ -37,7 +37,7 @@ esac
 }
 
 case "$mode" in
-  preview|apply|diagnose-request|retry-verify-evidence|diagnose-review-pair) ;;
+  preview|apply|diagnose-request|retry-embedding-job|retry-verify-evidence|diagnose-review-pair) ;;
   *)
     echo "unsupported knowledge review operation mode" >&2
     exit 64
@@ -53,6 +53,26 @@ if [ "$mode" = diagnose-request ]; then
   }
   [ -z "$retry_values" ] || {
     echo "retry target is only accepted in retry-verify-evidence mode" >&2
+    exit 64
+  }
+elif [ "$mode" = retry-embedding-job ]; then
+  [ -z "$diagnostic_request_id" ] || {
+    echo "diagnostic request id is only accepted in diagnose-request mode" >&2
+    exit 64
+  }
+  [ -z "$retry_run_id" ] || {
+    echo "retry run id must be empty in retry-embedding-job mode" >&2
+    exit 64
+  }
+  for retry_uuid in "$retry_document_id" "$retry_version_id"; do
+    printf '%s\n' "$retry_uuid" |
+      grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || {
+      echo "retry target UUID is invalid" >&2
+      exit 64
+    }
+  done
+  printf '%s\n' "$retry_content_hash" | grep -Eq '^[0-9a-f]{64}$' || {
+    echo "retry content hash is invalid" >&2
     exit 64
   }
 elif [ "$mode" = retry-verify-evidence ] || [ "$mode" = diagnose-review-pair ]; then
@@ -183,6 +203,290 @@ if [ "$mode" = diagnose-request ]; then
     sed -E 's/(detail|query|parameters|where):.*/\1: [DETAIL_REDACTED]/I' |
     head -n 40
   exit 0
+fi
+
+if [ "$mode" = retry-embedding-job ]; then
+  retry_result="$(
+    compose exec -T postgres sh -lc \
+      'exec psql -X -q -v ON_ERROR_STOP=1 -tA -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"' \
+      sh \
+      "--set=retry_document_id=$retry_document_id" \
+      "--set=retry_version_id=$retry_version_id" \
+      "--set=retry_content_hash=$retry_content_hash" <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SELECT pg_advisory_xact_lock(
+  hashtextextended(:'retry_document_id' || ':' || :'retry_version_id', 0)
+) \gset
+WITH eligible AS (
+  SELECT
+    bt.id,
+    bt.status AS previous_status,
+    bt.attempts AS previous_attempts,
+    bt.max_attempts AS previous_max_attempts,
+    bt.last_error IS NOT NULL AS had_last_error,
+    kd.id AS document_id,
+    kv.id AS version_id,
+    kv.content_hash
+  FROM background_task bt
+  JOIN knowledge_version kv ON kv.id = :'retry_version_id'::uuid
+  JOIN knowledge_document kd ON kd.id = kv.document_id
+  JOIN knowledge_source ks ON ks.id = kd.source_id
+  JOIN knowledge_review_run initial
+    ON initial.id = (kv.metadata #>> '{review,initialRunId}')::uuid
+  JOIN knowledge_review_run verify
+    ON verify.id = (kv.metadata #>> '{review,verifyRunId}')::uuid
+  WHERE kd.id = :'retry_document_id'::uuid
+    AND bt.type = 'knowledge_ingestion'
+    AND bt.idempotency_key =
+      'knowledge-embedding:' || kv.id::text || ':' || kv.content_hash || ':codex_automation_v1'
+    AND (
+      bt.status = 'failed'
+      OR (
+        bt.status = 'running'
+        AND bt.locked_at < NOW() - INTERVAL '15 minutes'
+      )
+    )
+    AND bt.payload ->> 'stage' = 'embedding_pending'
+    AND bt.payload ->> 'documentId' = kd.id::text
+    AND bt.payload ->> 'versionId' = kv.id::text
+    AND bt.payload #>> '{review,status}' = 'approved'
+    AND bt.payload #>> '{review,contentHash}' = kv.content_hash
+    AND bt.payload #>> '{review,policyVersion}' = 'codex_automation_v1'
+    AND bt.payload #>> '{review,risk}' = 'low'
+    AND bt.payload #>> '{review,initialRunId}' = kv.metadata #>> '{review,initialRunId}'
+    AND bt.payload #>> '{review,verifyRunId}' = kv.metadata #>> '{review,verifyRunId}'
+    AND kd.current_version_id = kv.id
+    AND kd.status = 'review'
+    AND kv.status = 'review'
+    AND kv.published_at IS NULL
+    AND kv.content_hash = :'retry_content_hash'
+    AND kv.metadata ->> 'reviewStatus' = 'approved'
+    AND kv.metadata ->> 'embeddingStatus' = 'queued'
+    AND kv.metadata #>> '{review,status}' = 'approved'
+    AND kv.metadata #>> '{review,contentHash}' = kv.content_hash
+    AND kv.metadata #>> '{review,policyVersion}' = 'codex_automation_v1'
+    AND kv.metadata #>> '{review,risk}' = 'low'
+    AND ks.enabled = TRUE
+    AND ks.deleted_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM knowledge_chunk kc
+      WHERE kc.version_id = kv.id
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM background_task sibling
+      WHERE sibling.id <> bt.id
+        AND sibling.type = 'knowledge_ingestion'
+        AND sibling.payload ->> 'versionId' = kv.id::text
+        AND sibling.status IN ('queued', 'running')
+    )
+    AND initial.id <> verify.id
+    AND initial.phase = 'initial'
+    AND verify.phase = 'verify'
+    AND initial.status = 'completed'
+    AND verify.status = 'completed'
+    AND initial.decision = 'approved'
+    AND verify.decision = 'approved'
+    AND initial.risk = 'low'
+    AND verify.risk = 'low'
+    AND initial.prompt_version = 'codex_automation_v1'
+    AND verify.prompt_version = 'codex_automation_v1'
+    AND (
+      (initial.input_version_id = kv.id AND initial.input_content_hash = kv.content_hash)
+      OR initial.revised_version_id = kv.id
+    )
+    AND verify.input_version_id = kv.id
+    AND verify.input_content_hash = kv.content_hash
+    AND initial.structured_report ->> 'outputContentHash' = kv.content_hash
+    AND verify.structured_report ->> 'outputContentHash' = kv.content_hash
+    AND initial.structured_report #>> '{automation,outputVersionId}' = kv.id::text
+    AND verify.structured_report #>> '{automation,outputVersionId}' = kv.id::text
+    AND initial.structured_report #>> '{automation,outputContentHash}' = kv.content_hash
+    AND verify.structured_report #>> '{automation,outputContentHash}' = kv.content_hash
+    AND initial.structured_report #>> '{automation,sourceRightsValid}' = 'true'
+    AND verify.structured_report #>> '{automation,sourceRightsValid}' = 'true'
+  FOR UPDATE OF bt, kd, kv, ks
+), requeued AS (
+  UPDATE background_task bt
+  SET status = 'queued',
+      run_at = NOW(),
+      max_attempts = GREATEST(bt.max_attempts, bt.attempts + 1),
+      locked_at = NULL,
+      locked_by = NULL,
+      lease_token = NULL,
+      completed_at = NULL,
+      last_error = NULL,
+      updated_at = NOW()
+  FROM eligible e
+  WHERE bt.id = e.id
+  RETURNING
+    bt.id,
+    bt.status,
+    bt.attempts,
+    bt.max_attempts,
+    e.document_id,
+    e.version_id,
+    e.content_hash,
+    e.previous_status,
+    e.previous_attempts,
+    e.previous_max_attempts,
+    e.had_last_error
+), audit AS (
+  INSERT INTO audit_log (
+    actor_user_id, actor_role, action, target_type, target_id, metadata, created_at
+  )
+  SELECT NULL, 'system', 'knowledge.embedding.retry_job',
+         'background_task', r.id::text,
+         jsonb_build_object(
+           'documentId', r.document_id,
+           'versionId', r.version_id,
+           'contentHash', r.content_hash,
+           'previousStatus', r.previous_status,
+           'previousAttempts', r.previous_attempts,
+           'previousMaxAttempts', r.previous_max_attempts,
+           'hadLastError', r.had_last_error
+         ), NOW()
+  FROM requeued r
+  RETURNING target_id
+)
+SELECT json_build_object(
+  'taskId', r.id,
+  'status', r.status,
+  'attemptsPreserved', r.attempts,
+  'maxAttempts', r.max_attempts,
+  'audited', TRUE
+)::text
+FROM requeued r
+JOIN audit a ON a.target_id = r.id::text;
+COMMIT;
+SQL
+  )"
+  if [ -n "$retry_result" ]; then
+    printf '%s\n' "$retry_result"
+    exit 0
+  fi
+
+  retry_diagnostics="$(
+    compose exec -T postgres sh -lc \
+      'exec psql -X -q -v ON_ERROR_STOP=1 -tA -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"' \
+      sh \
+      "--set=retry_document_id=$retry_document_id" \
+      "--set=retry_version_id=$retry_version_id" \
+      "--set=retry_content_hash=$retry_content_hash" <<'SQL'
+WITH requested AS (
+  SELECT
+    :'retry_document_id'::uuid AS document_id,
+    :'retry_version_id'::uuid AS version_id,
+    :'retry_content_hash' AS content_hash,
+    'knowledge-embedding:' || :'retry_version_id' || ':' || :'retry_content_hash' || ':codex_automation_v1'
+      AS idempotency_key
+), target AS (
+  SELECT kd.id AS document_id, kv.id AS version_id, kv.content_hash, kv.metadata
+  FROM requested requested
+  JOIN knowledge_document kd ON kd.id = requested.document_id
+  JOIN knowledge_version kv ON kv.id = requested.version_id
+  JOIN knowledge_source ks ON ks.id = kd.source_id
+  WHERE kd.current_version_id = kv.id
+    AND kd.status = 'review'
+    AND kv.status = 'review'
+    AND kv.published_at IS NULL
+    AND kv.content_hash = requested.content_hash
+    AND kv.metadata ->> 'reviewStatus' = 'approved'
+    AND kv.metadata ->> 'embeddingStatus' = 'queued'
+    AND kv.metadata #>> '{review,status}' = 'approved'
+    AND kv.metadata #>> '{review,contentHash}' = kv.content_hash
+    AND kv.metadata #>> '{review,policyVersion}' = 'codex_automation_v1'
+    AND kv.metadata #>> '{review,risk}' = 'low'
+    AND ks.enabled = TRUE
+    AND ks.deleted_at IS NULL
+), requested_task AS (
+  SELECT bt.*
+  FROM requested requested
+  JOIN background_task bt ON bt.idempotency_key = requested.idempotency_key
+  WHERE bt.type = 'knowledge_ingestion'
+)
+SELECT json_build_object(
+  'retryEligibility', json_build_object(
+    'taskExists', EXISTS (SELECT 1 FROM requested_task),
+    'taskStateEligible', EXISTS (
+      SELECT 1 FROM requested_task bt
+      WHERE bt.status = 'failed'
+         OR (
+           bt.status = 'running'
+           AND bt.locked_at < NOW() - INTERVAL '15 minutes'
+         )
+    ),
+    'taskPayloadMatches', EXISTS (
+      SELECT 1
+      FROM requested_task bt
+      JOIN target t ON TRUE
+      WHERE bt.payload ->> 'stage' = 'embedding_pending'
+        AND bt.payload ->> 'documentId' = t.document_id::text
+        AND bt.payload ->> 'versionId' = t.version_id::text
+        AND bt.payload #>> '{review,status}' = 'approved'
+        AND bt.payload #>> '{review,contentHash}' = t.content_hash
+        AND bt.payload #>> '{review,policyVersion}' = 'codex_automation_v1'
+        AND bt.payload #>> '{review,risk}' = 'low'
+        AND bt.payload #>> '{review,initialRunId}' = t.metadata #>> '{review,initialRunId}'
+        AND bt.payload #>> '{review,verifyRunId}' = t.metadata #>> '{review,verifyRunId}'
+    ),
+    'currentTarget', EXISTS (SELECT 1 FROM target),
+    'reviewPair', EXISTS (
+      SELECT 1
+      FROM target t
+      JOIN knowledge_review_run initial
+        ON initial.id::text = t.metadata #>> '{review,initialRunId}'
+      JOIN knowledge_review_run verify
+        ON verify.id::text = t.metadata #>> '{review,verifyRunId}'
+      WHERE initial.id <> verify.id
+        AND initial.phase = 'initial'
+        AND verify.phase = 'verify'
+        AND initial.status = 'completed'
+        AND verify.status = 'completed'
+        AND initial.decision = 'approved'
+        AND verify.decision = 'approved'
+        AND initial.risk = 'low'
+        AND verify.risk = 'low'
+        AND initial.prompt_version = 'codex_automation_v1'
+        AND verify.prompt_version = 'codex_automation_v1'
+        AND (
+          (initial.input_version_id = t.version_id AND initial.input_content_hash = t.content_hash)
+          OR initial.revised_version_id = t.version_id
+        )
+        AND verify.input_version_id = t.version_id
+        AND verify.input_content_hash = t.content_hash
+        AND initial.structured_report ->> 'outputContentHash' = t.content_hash
+        AND verify.structured_report ->> 'outputContentHash' = t.content_hash
+        AND initial.structured_report #>> '{automation,outputVersionId}' = t.version_id::text
+        AND verify.structured_report #>> '{automation,outputVersionId}' = t.version_id::text
+        AND initial.structured_report #>> '{automation,outputContentHash}' = t.content_hash
+        AND verify.structured_report #>> '{automation,outputContentHash}' = t.content_hash
+        AND initial.structured_report #>> '{automation,sourceRightsValid}' = 'true'
+        AND verify.structured_report #>> '{automation,sourceRightsValid}' = 'true'
+    ),
+    'chunksAbsent', NOT EXISTS (
+      SELECT 1 FROM knowledge_chunk kc
+      WHERE kc.version_id = :'retry_version_id'::uuid
+    ),
+    'siblingAbsent', NOT EXISTS (
+      SELECT 1
+      FROM background_task sibling
+      WHERE sibling.type = 'knowledge_ingestion'
+        AND sibling.payload ->> 'versionId' = :'retry_version_id'
+        AND sibling.status IN ('queued', 'running')
+        AND NOT EXISTS (
+          SELECT 1 FROM requested_task exact WHERE exact.id = sibling.id
+        )
+    )
+  )
+)::text;
+SQL
+  )"
+  printf '%s\n' "$retry_diagnostics" >&2
+  echo "the exact embedding task is not eligible for retry" >&2
+  exit 1
 fi
 
 if [ "$mode" = retry-verify-evidence ] || [ "$mode" = diagnose-review-pair ]; then

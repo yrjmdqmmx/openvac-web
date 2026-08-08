@@ -8,18 +8,19 @@ on:
         required: true
         type: string
       mode:
-        description: Preview/apply pending knowledge, retry one verify evidence report, or diagnose one API request
+        description: Preview/apply pending knowledge, retry one exact job or verify report, or diagnose one API request
         required: true
         default: preview
         type: choice
         options:
           - preview
           - apply
+          - retry-embedding-job
           - retry-verify-evidence
           - diagnose-review-pair
           - diagnose-request
       confirmation:
-        description: Enter REQUEUE_PENDING for apply or RETRY_VERIFY_EVIDENCE for an exact verify retry
+        description: Enter REQUEUE_PENDING, RETRY_EMBEDDING_JOB, or RETRY_VERIFY_EVIDENCE for its exact operation
         required: false
         type: string
       diagnostic_request_id:
@@ -27,11 +28,11 @@ on:
         required: false
         type: string
       retry_document_id:
-        description: Exact knowledge document UUID, required only for retry-verify-evidence
+        description: Exact knowledge document UUID, required only for an exact retry/diagnosis
         required: false
         type: string
       retry_version_id:
-        description: Exact current knowledge version UUID, required only for retry-verify-evidence
+        description: Exact current knowledge version UUID, required only for an exact retry/diagnosis
         required: false
         type: string
       retry_run_id:
@@ -39,7 +40,7 @@ on:
         required: false
         type: string
       retry_content_hash:
-        description: Exact lowercase current content SHA-256, required only for retry-verify-evidence
+        description: Exact lowercase current content SHA-256, required only for an exact retry/diagnosis
         required: false
         type: string
 
@@ -103,6 +104,19 @@ jobs:
               }
               test -z "$DIAGNOSTIC_REQUEST_ID"
               test -z "$retry_values"
+              ;;
+            retry-embedding-job)
+              test "$CONFIRMATION" = RETRY_EMBEDDING_JOB || {
+                echo "retry-embedding-job requires the exact confirmation RETRY_EMBEDDING_JOB" >&2
+                exit 64
+              }
+              test -z "$DIAGNOSTIC_REQUEST_ID"
+              test -z "$RETRY_RUN_ID"
+              for retry_uuid in "$RETRY_DOCUMENT_ID" "$RETRY_VERSION_ID"; do
+                printf '%s\n' "$retry_uuid" |
+                  grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              done
+              printf '%s\n' "$RETRY_CONTENT_HASH" | grep -Eq '^[0-9a-f]{64}$'
               ;;
             retry-verify-evidence)
               test "$CONFIRMATION" = RETRY_VERIFY_EVIDENCE || {
