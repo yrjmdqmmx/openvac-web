@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { mergeSeedSourceMetadata } from "./source-metadata";
+import {
+  existingSeedSourcePatch,
+  mergeSeedSourceMetadata
+} from "./source-metadata";
 
 describe("seed source metadata merge", () => {
   it("adds a manifest rights decision to a new source", () => {
@@ -40,5 +43,25 @@ describe("seed source metadata merge", () => {
       manualNote: "keep",
       rightsDecision: manualDecision
     });
+  });
+
+  it("limits existing-source seed updates to metadata and timestamp", () => {
+    const updatedAt = new Date("2026-08-08T00:00:00.000Z");
+    const patch = existingSeedSourcePatch({
+      existingMetadata: { rightsDecision: { status: "rejected" } },
+      seededMetadata: { sourceKey: "cern" },
+      updatedAt
+    });
+
+    expect(patch).toEqual({
+      metadata: {
+        sourceKey: "cern",
+        rightsDecision: { status: "rejected" }
+      },
+      updatedAt
+    });
+    expect(patch).not.toHaveProperty("enabled");
+    expect(patch).not.toHaveProperty("sourceTier");
+    expect(patch).not.toHaveProperty("licensePolicy");
   });
 });

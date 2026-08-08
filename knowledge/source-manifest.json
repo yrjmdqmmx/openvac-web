@@ -34,6 +34,7 @@
     "trustLevel": 95,
     "enabled": true,
     "rightsReviewed": true,
+    "officialPublishedPdfBinaryRequired": true,
     "rightsDecision": {
       "status": "approved",
       "scope": "full_text",

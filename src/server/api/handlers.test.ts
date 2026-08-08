@@ -24,6 +24,7 @@ vi.mock("@/server/problem-reports/notification", () => notificationMocks);
 
 import {
   handleArchiveKnowledge,
+  handleImportKnowledgeCandidate,
   handleGrantAdminRole,
   handleListAuditLogs,
   handleListAdminConversations,
@@ -550,6 +551,54 @@ describe("API handlers", () => {
       error: { code: "KNOWLEDGE_SECTION_REVIEW_REQUIRED" }
     });
     expect(reviewKnowledgeDocument).not.toHaveBeenCalled();
+  });
+
+  it("imports a governed knowledge candidate as required review sections", async () => {
+    const importKnowledgeCandidate = vi.fn().mockResolvedValue({
+      id: "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+      status: "review",
+      sectionCount: 1
+    });
+    const candidate = {
+      sourceCanonicalUrl: "https://www.hse.gov.uk/example",
+      document: {
+        externalKey: "hse-example-v1",
+        title: "HSE 示例资料",
+        description: "用于验证受治理知识导入和逐段审核的示例资料。",
+        language: "zh-CN",
+        mimeType: "application/json",
+        tags: ["HSE", "安全"]
+      },
+      citation: { ingestionMode: "full_text", licenseClass: "open" },
+      review: { status: "required", requirements: ["逐段人工复核"] },
+      sections: [
+        {
+          sourceSection: "Example section",
+          sectionPath: ["Example"],
+          keywords: ["真空"],
+          content:
+            "这是一段长度足够的中文待审核内容，审核者必须根据官方来源定位逐段判断，系统不能自动批准。"
+        }
+      ]
+    };
+    const store = partialStore({
+      getAdminRole: vi.fn().mockResolvedValue("knowledge_editor"),
+      importKnowledgeCandidate
+    });
+
+    const response = await handleImportKnowledgeCandidate(
+      jsonRequest("/api/admin/knowledge/import", candidate),
+      store
+    );
+
+    expect(response.status).toBe(201);
+    expect(importKnowledgeCandidate).toHaveBeenCalledWith(
+      candidate,
+      expect.objectContaining({
+        path: "/api/admin/knowledge/import",
+        actor: expect.objectContaining({ role: "knowledge_editor" })
+      })
+    );
   });
 
   it("archives knowledge through the authenticated audit context", async () => {

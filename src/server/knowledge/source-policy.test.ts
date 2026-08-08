@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assertKnowledgePublicationEvidence,
   assertKnowledgeSourceAuthorized,
   KnowledgeSourcePolicyError,
   type GovernedKnowledgeSource
@@ -157,6 +158,51 @@ describe("knowledge source authorization policy", () => {
           { ingestionMode: "full_text" }
         ),
       "SOURCE_COMMERCIAL_AI_RIGHTS_REQUIRED"
+    );
+  });
+
+  it("blocks publication while the CERN 2014 official binary recheck is pending", () => {
+    expectPolicyError(
+      () =>
+        assertKnowledgePublicationEvidence(source(), {
+          ingestionMode: "full_text",
+          excerptVerification: {
+            officialPublishedPdfBinaryStatus: "pending_2014_anubis_recheck"
+          }
+        }),
+      "KNOWLEDGE_OFFICIAL_BINARY_RECHECK_REQUIRED"
+    );
+  });
+
+  it("allows publication evidence without a pending binary gate", () => {
+    expect(() =>
+      assertKnowledgePublicationEvidence(source(), {
+        ingestionMode: "full_text",
+        excerptVerification: {
+          officialPublishedPdfBinaryStatus: "complete"
+        }
+      })
+    ).not.toThrow();
+    expect(() =>
+      assertKnowledgePublicationEvidence(source(), {
+        ingestionMode: "metadata_only"
+      })
+    ).not.toThrow();
+  });
+
+  it("requires complete binary evidence when the governed source says it is required", () => {
+    const gatedSource = source({
+      metadata: {
+        ...source().metadata,
+        officialPublishedPdfBinaryRequired: true
+      }
+    });
+    expectPolicyError(
+      () =>
+        assertKnowledgePublicationEvidence(gatedSource, {
+          ingestionMode: "full_text"
+        }),
+      "KNOWLEDGE_OFFICIAL_BINARY_RECHECK_REQUIRED"
     );
   });
 });

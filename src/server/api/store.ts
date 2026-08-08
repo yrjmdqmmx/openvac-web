@@ -53,6 +53,7 @@ import {
   user as users
 } from "@/server/db/schema";
 import {
+  assertKnowledgePublicationEvidence,
   assertKnowledgeSourceAuthorized,
   KnowledgeSourcePolicyError,
   type GovernedKnowledgeSource
@@ -61,7 +62,11 @@ import {
   ACTIVE_REVIEWED,
   isPendingReviewRetrievalActive
 } from "@/server/knowledge/review-policy";
-import { assertKnowledgeSectionPublicationReady } from "@/server/knowledge/review-sections";
+import { renderKnowledgeCandidate } from "@/server/knowledge/candidate-schema";
+import {
+  assertKnowledgeSectionPublicationReady,
+  buildCandidateKnowledgeReviewSections
+} from "@/server/knowledge/review-sections";
 import {
   problemReportClosureTransition,
   problemReportRetentionUntil
@@ -471,6 +476,7 @@ function assertPublishableKnowledgeSource(
 ): void {
   try {
     assertKnowledgeSourceAuthorized(source, citationMetadata);
+    assertKnowledgePublicationEvidence(source, citationMetadata);
   } catch (error) {
     if (error instanceof KnowledgeSourcePolicyError) {
       throw new ApiError(
@@ -3151,7 +3157,7 @@ export const apiStore: ApiStore = {
         title: input.title,
         sourceId: input.sourceId ?? null,
         status: "draft",
-        currentVersionId: versionId,
+        currentVersionId: null,
         createdBy: audit.actor.id,
         createdAt: now,
         updatedAt: now
@@ -3177,6 +3183,11 @@ export const apiStore: ApiStore = {
         updatedAt: now
       });
 
+      await tx
+        .update(knowledgeDocuments)
+        .set({ currentVersionId: versionId, updatedAt: now })
+        .where(eq(knowledgeDocuments.id, documentId));
+
       await tx.insert(auditLogs).values(
         auditValues(
           audit,
@@ -3196,6 +3207,167 @@ export const apiStore: ApiStore = {
         .where(eq(knowledgeDocuments.id, documentId))
         .limit(1);
       return created;
+    });
+  },
+
+  async importKnowledgeCandidate(input, audit) {
+    const documentId = crypto.randomUUID();
+    const versionId = crypto.randomUUID();
+    const content = renderKnowledgeCandidate(input);
+    const contentHash = sha256KnowledgeContent(content);
+    const now = new Date();
+
+    return db.transaction(async (tx) => {
+      const [source] = await tx
+        .select()
+        .from(knowledgeSources)
+        .where(
+          and(
+            eq(knowledgeSources.canonicalUrl, input.sourceCanonicalUrl),
+            isNull(knowledgeSources.deletedAt)
+          )
+        )
+        .limit(1)
+        .for("update");
+      if (!source) {
+        throw new ApiError(
+          409,
+          "KNOWLEDGE_SOURCE_NOT_GOVERNED",
+          "请先在来源白名单创建并批准该官方来源，再导入知识资料。"
+        );
+      }
+      assertKnowledgeSourceAuthorized(source, input.citation);
+
+      const [duplicate] = await tx
+        .select({ id: knowledgeDocuments.id })
+        .from(knowledgeDocuments)
+        .where(
+          and(
+            eq(knowledgeDocuments.sourceId, source.id),
+            eq(knowledgeDocuments.externalKey, input.document.externalKey)
+          )
+        )
+        .limit(1);
+      if (duplicate) {
+        throw new ApiError(
+          409,
+          "KNOWLEDGE_CANDIDATE_ALREADY_EXISTS",
+          "该来源的 externalKey 已存在；请修改现有草稿或使用新的 externalKey。"
+        );
+      }
+
+      const rightsSnapshot = publicationRightsSnapshot(source);
+      const sections = buildCandidateKnowledgeReviewSections({
+        candidate: input,
+        versionId,
+        versionContentHash: contentHash,
+        rightsSnapshot
+      });
+
+      const [insertedDocument] = await tx
+        .insert(knowledgeDocuments)
+        .values({
+          id: documentId,
+          sourceId: source.id,
+          externalKey: input.document.externalKey,
+          title: input.document.title,
+          description: input.document.description,
+          language: input.document.language,
+          mimeType: input.document.mimeType,
+          status: "review",
+          currentVersionId: null,
+          tags: input.document.tags,
+          metadata: {
+            curationStatus: "ai_assisted_draft",
+            reviewRequirements: input.review.requirements,
+            notRetrievableUntilHumanReviewAndPublication: true
+          },
+          createdBy: audit.actor.id,
+          createdAt: now,
+          updatedAt: now
+        })
+        .onConflictDoNothing({
+          target: [knowledgeDocuments.sourceId, knowledgeDocuments.externalKey]
+        })
+        .returning({ id: knowledgeDocuments.id });
+      if (!insertedDocument) {
+        throw new ApiError(
+          409,
+          "KNOWLEDGE_CANDIDATE_ALREADY_EXISTS",
+          "该来源的 externalKey 已存在；请修改现有草稿或使用新的 externalKey。"
+        );
+      }
+      await tx.insert(knowledgeVersions).values({
+        id: versionId,
+        documentId,
+        version: 1,
+        contentHash,
+        content,
+        citationMetadata: {
+          ...input.citation,
+          sourceCandidatePath: "admin_json_import",
+          reviewEvidenceMode: "normalized_sections_v1"
+        },
+        status: "review",
+        parserVersion: "openvac-normalized-review-v1",
+        metadata: {
+          reviewStatus: "required",
+          embeddingStatus:
+            input.citation.ingestionMode === "full_text"
+              ? "pending_review"
+              : "not_applicable",
+          curationStatus: "ai_assisted_draft",
+          importedForHumanReview: true
+        },
+        createdBy: audit.actor.id,
+        createdAt: now,
+        updatedAt: now
+      });
+      await tx.insert(knowledgeReviewSections).values(
+        sections.map((section) => ({
+          versionId,
+          sectionIndex: section.sectionIndex,
+          contentZh: section.contentZh,
+          officialText: section.officialText,
+          pageStart: section.pageStart,
+          pageEnd: section.pageEnd,
+          rightsSnapshot: section.rightsSnapshot,
+          rightsSnapshotHash: section.rightsSnapshotHash,
+          versionContentHash: section.versionContentHash,
+          sectionHash: section.sectionHash,
+          createdAt: now,
+          updatedAt: now
+        }))
+      );
+      await tx
+        .update(knowledgeDocuments)
+        .set({ currentVersionId: versionId, updatedAt: now })
+        .where(eq(knowledgeDocuments.id, documentId));
+      await tx.insert(auditLogs).values(
+        auditValues(
+          audit,
+          "knowledge.candidate.import",
+          "knowledge_document",
+          documentId,
+          {
+            versionId,
+            sourceId: source.id,
+            externalKey: input.document.externalKey,
+            sectionCount: sections.length,
+            decisions: 0,
+            chunks: 0
+          }
+        )
+      );
+
+      return {
+        id: documentId,
+        versionId,
+        status: "review",
+        sectionCount: sections.length,
+        decisions: 0,
+        chunks: 0
+      };
     });
   },
 
@@ -4369,7 +4541,7 @@ export const apiStore: ApiStore = {
     const usage = await db
       .select({
         model: dailyUsage.model,
-        dailyUsedCents: sql<number>`coalesce(sum(case when ${dailyUsage.date} >= ${dayStart} then ${dailyUsage.costCents} else 0 end), 0)`,
+        dailyUsedCents: sql<number>`coalesce(sum(case when ${gte(dailyUsage.date, dayStart)} then ${dailyUsage.costCents} else 0 end), 0)`,
         monthlyUsedCents: sql<number>`coalesce(sum(${dailyUsage.costCents}), 0)`
       })
       .from(dailyUsage)

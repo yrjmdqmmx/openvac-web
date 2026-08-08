@@ -28,7 +28,8 @@ export type KnowledgeSourcePolicyCode =
   | "SOURCE_LICENSE_RESTRICTED"
   | "SOURCE_RIGHTS_DECISION_REQUIRED"
   | "SOURCE_RIGHTS_DECISION_INVALID"
-  | "SOURCE_COMMERCIAL_AI_RIGHTS_REQUIRED";
+  | "SOURCE_COMMERCIAL_AI_RIGHTS_REQUIRED"
+  | "KNOWLEDGE_OFFICIAL_BINARY_RECHECK_REQUIRED";
 
 export class KnowledgeSourcePolicyError extends Error {
   readonly code: KnowledgeSourcePolicyCode;
@@ -122,6 +123,27 @@ export function assertKnowledgeSourceAuthorized(
   }
 
   fail("SOURCE_LICENSE_RESTRICTED", "该来源层级未获准进行全文入库。");
+}
+
+export function assertKnowledgePublicationEvidence(
+  source: GovernedKnowledgeSource | undefined,
+  citationMetadata: Record<string, unknown>
+): void {
+  if (citationMetadata.ingestionMode !== "full_text") return;
+  const verification = recordValue(citationMetadata.excerptVerification);
+  const binaryStatus = verification.officialPublishedPdfBinaryStatus;
+  if (
+    (source?.metadata.officialPublishedPdfBinaryRequired === true &&
+      binaryStatus !== "complete") ||
+    (binaryStatus !== undefined &&
+      binaryStatus !== null &&
+      binaryStatus !== "complete")
+  ) {
+    fail(
+      "KNOWLEDGE_OFFICIAL_BINARY_RECHECK_REQUIRED",
+      "正式发布 PDF 二进制仍待独立复核，不能发布该知识版本。"
+    );
+  }
 }
 
 export function isMetadataOnlyTier(sourceTier: KnowledgeSourceTier): boolean {

@@ -105,7 +105,7 @@ export function withApiErrors<TArgs extends unknown[]>(
         );
       }
 
-      console.error("Unhandled API error", error);
+      console.error("Unhandled API error", { requestId, error });
       return withRequestId(
         jsonError(
           new ApiError(500, "INTERNAL_ERROR", "服务暂时不可用，请稍后重试。")

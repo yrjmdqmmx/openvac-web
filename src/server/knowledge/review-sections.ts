@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 
 import { ApiError } from "@/server/api/errors";
 
+import {
+  hasCompleteKnowledgeSectionAudit,
+  type KnowledgeCandidate
+} from "./candidate-schema";
+
 export type KnowledgeSectionReviewStatus =
   "required" | "approved" | "rejected" | "changes_requested";
 
@@ -165,6 +170,64 @@ export function buildPageAwareKnowledgeReviewSections(input: {
       pageStart:
         content.pageStart ?? input.pages?.[sectionIndex]?.pageStart ?? null,
       pageEnd: content.pageEnd ?? input.pages?.[sectionIndex]?.pageEnd ?? null,
+      rightsSnapshot: input.rightsSnapshot
+    };
+    return {
+      ...item,
+      versionId: input.versionId,
+      versionContentHash: input.versionContentHash,
+      sectionHash: knowledgeReviewSectionHash(item),
+      rightsSnapshotHash: knowledgeRightsSnapshotHash(input.rightsSnapshot),
+      reviewStatus: "required",
+      decision: null
+    };
+  });
+}
+
+export function buildCandidateKnowledgeReviewSections(input: {
+  candidate: KnowledgeCandidate;
+  versionId: string;
+  versionContentHash: string;
+  rightsSnapshot: Record<string, unknown>;
+}): KnowledgeReviewSection[] {
+  return input.candidate.sections.map((section, sectionIndex) => {
+    const completeAudit = hasCompleteKnowledgeSectionAudit(section);
+    const metadataOnly =
+      input.candidate.citation.ingestionMode === "metadata_only";
+    const sourceLocator = section.sourceSection?.trim();
+    if (!completeAudit && !metadataOnly && !sourceLocator) {
+      throw new ApiError(
+        409,
+        "KNOWLEDGE_REVIEW_EVIDENCE_INCOMPLETE",
+        `第 ${sectionIndex + 1} 段缺少官方原文、页码或审核证据。`
+      );
+    }
+    const citation = input.candidate.citation as Record<string, unknown>;
+    const metadataEvidence = [
+      citation.publicationNumber
+        ? `出版号：${String(citation.publicationNumber)}`
+        : null,
+      citation.title ? `来源题名：${String(citation.title)}` : null,
+      citation.officialRecordUrl
+        ? `官方记录：${String(citation.officialRecordUrl)}`
+        : citation.primaryAuthorityUrl
+          ? `官方机构：${String(citation.primaryAuthorityUrl)}`
+          : null,
+      Array.isArray(citation.claimLocators)
+        ? `定位：${citation.claimLocators.map(String).join("；")}`
+        : null
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join("\n");
+    const locatorEvidence = sourceLocator
+      ? `官方页面：${input.candidate.sourceCanonicalUrl}\n来源章节：${sourceLocator}`
+      : metadataEvidence;
+    const item: KnowledgeReviewSectionInput = {
+      sectionIndex,
+      contentZh: completeAudit ? section.chineseStatement : section.content,
+      officialText: completeAudit ? section.originalExcerpt : locatorEvidence,
+      pageStart: completeAudit ? section.originalExcerptPage : null,
+      pageEnd: completeAudit ? section.originalExcerptPage : null,
       rightsSnapshot: input.rightsSnapshot
     };
     return {

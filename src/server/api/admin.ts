@@ -42,6 +42,7 @@ import {
 } from "./schemas";
 import { apiStore } from "./store";
 import type { Actor, ApiStore } from "./types";
+import { knowledgeCandidateSchema } from "@/server/knowledge/candidate-schema";
 
 function pageInput(input: ReturnType<typeof pageSchema.parse>) {
   return {
@@ -468,6 +469,18 @@ export const handleCreateKnowledgeDraft = withApiErrors(
     const actor = await requireCapability(request, store, "knowledge:draft");
     const input = await parseJson(request, knowledgeDraftSchema);
     const created = await store.createKnowledgeDraft(
+      input,
+      auditContext(request, actor)
+    );
+    return jsonData(created, { status: 201 });
+  }
+);
+
+export const handleImportKnowledgeCandidate = withApiErrors(
+  async (request: Request, store: ApiStore = apiStore) => {
+    const actor = await requireCapability(request, store, "knowledge:draft");
+    const input = await parseJson(request, knowledgeCandidateSchema);
+    const created = await store.importKnowledgeCandidate(
       input,
       auditContext(request, actor)
     );
