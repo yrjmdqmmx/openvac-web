@@ -9,6 +9,58 @@ import {
 import type { EmbeddedKnowledgeChunk, KnowledgeIngestionJob } from "./types";
 
 describe("Postgres knowledge ingestion review lifecycle", () => {
+  it("persists uploaded OCR for human rights review without a governed source", async () => {
+    const sql = new RecordingSql((query) => {
+      if (query.includes("SELECT") && query.includes("knowledge_source")) {
+        return [
+          {
+            citation_metadata: {
+              ingestionMode: "full_text",
+              sourceUrl: "https://example.com/manual"
+            },
+            source_id: null,
+            source_tier: null,
+            source_enabled: null,
+            source_deleted_at: null,
+            canonical_url: null,
+            publisher: null,
+            source_metadata: null
+          }
+        ];
+      }
+      return query.includes("RETURNING id") ||
+        query.includes("FROM background_task")
+        ? [{ id: "updated" }]
+        : [];
+    });
+    const repository = new PostgresKnowledgeIngestionRepository(sql);
+
+    await repository.saveParsedForReview(
+      makeJob({ stage: "ocr_processing", parserJobId: "parser-1" }),
+      {
+        jobId: "parser-1",
+        pages: [
+          { pageNumber: 7, markdown: "First paragraph\n\nSecond paragraph" }
+        ]
+      },
+      "First paragraph\n\nSecond paragraph"
+    );
+
+    const target = sql.find("FROM knowledge_version kv");
+    expect(target.query).toContain("LEFT JOIN knowledge_source");
+    const sectionInserts = sql.calls.filter((call) =>
+      call.query.includes("INSERT INTO knowledge_review_section")
+    );
+    expect(sectionInserts).toHaveLength(2);
+    expect(sectionInserts.map((call) => call.parameters?.[4])).toEqual([7, 7]);
+    expect(JSON.parse(String(sectionInserts[0]?.parameters?.[6]))).toMatchObject({
+      status: "pending",
+      decision: "needs_human",
+      sourceId: null,
+      canonicalUrl: "https://example.com/manual"
+    });
+  });
+
   it("moves OCR output and its document into review with a SHA-256 hash", async () => {
     const sql = new RecordingSql((query) => {
       if (query.includes("SELECT") && query.includes("knowledge_source")) {

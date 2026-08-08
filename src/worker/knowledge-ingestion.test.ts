@@ -66,6 +66,31 @@ describe("knowledge ingestion review gate", () => {
     expect(repository.markOcrSubmitted).toHaveBeenCalledOnce();
   });
 
+  it("accepts the schema-canonical private knowledge-original key", async () => {
+    const canonicalKey =
+      "private/knowledge-originals/00000000-0000-4000-8000-000000000001/" +
+      "00000000-0000-4000-8000-000000000002/manual.pdf";
+    const job = makeJob({ stage: "ocr_pending", objectKey: canonicalKey });
+    const repository = makeRepository(job);
+    const parser = makeParser();
+    const storage = makeObjectStorage(
+      "https://openvac-private.oss-cn-hangzhou.aliyuncs.com/private/knowledge-originals/manual.pdf?signature=redacted"
+    );
+    const worker = new KnowledgeIngestionWorker({
+      repository,
+      parser,
+      embeddings: makeEmbeddings(),
+      objectStorage: storage,
+      allowedDocumentHosts: ["openvac-private.oss-cn-hangzhou.aliyuncs.com"]
+    });
+
+    await expect(worker.runOnce()).resolves.toBe("deferred");
+    expect(storage.createPrivateDownloadUrl).toHaveBeenCalledWith(
+      canonicalKey,
+      900
+    );
+  });
+
   it("rejects a signed URL whose hostname is not exactly allowlisted", async () => {
     const job = makeJob({ stage: "ocr_pending" });
     const repository = makeRepository(job);

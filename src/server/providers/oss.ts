@@ -192,6 +192,7 @@ export class AlibabaOssStorage implements ObjectStorage {
       "Content-Type": request.contentType,
       "Content-Length": String(request.contentLength),
       "x-oss-object-acl": "private",
+      "x-oss-forbid-overwrite": "true",
       ...Object.fromEntries(
         Object.entries(metadata).map(([key, value]) => [
           `x-oss-meta-${key}`,

@@ -45,6 +45,7 @@ describe("AlibabaOssStorage private uploads", () => {
           "Content-Type": "model/step",
           "Content-Length": "1024",
           "x-oss-object-acl": "private",
+          "x-oss-forbid-overwrite": "true",
           "x-oss-meta-sha256": "a".repeat(64),
           "x-oss-meta-size-bytes": "1024",
           "x-oss-meta-project-id": "project"
@@ -62,11 +63,33 @@ describe("AlibabaOssStorage private uploads", () => {
         "Content-Type": "model/step",
         "Content-Length": "1024",
         "x-oss-object-acl": "private",
+        "x-oss-forbid-overwrite": "true",
         "x-oss-meta-project-id": "project",
         "x-oss-meta-sha256": "a".repeat(64),
         "x-oss-meta-size-bytes": "1024"
       }
     });
+  });
+
+  it("binds forbid-overwrite in the legacy signed PUT path", async () => {
+    const signatureUrl = vi.fn(() => "https://oss.test/legacy");
+    const storage = storageWithClient({ signatureUrl });
+
+    const result = await storage.createPrivateUploadUrl({
+      key: "private/knowledge-originals/document/version/manual.pdf",
+      contentType: "application/pdf",
+      contentLength: 10,
+      checksumSha256: "a".repeat(64)
+    });
+
+    expect(signatureUrl).toHaveBeenCalledWith(
+      "private/knowledge-originals/document/version/manual.pdf",
+      expect.objectContaining({
+        method: "PUT",
+        "x-oss-forbid-overwrite": "true"
+      })
+    );
+    expect(result.requiredHeaders["x-oss-forbid-overwrite"]).toBe("true");
   });
 
   it("reads the authoritative size and user metadata from OSS", async () => {

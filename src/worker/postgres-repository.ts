@@ -136,7 +136,7 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
             ks.metadata AS source_metadata
           FROM knowledge_version kv
           JOIN knowledge_document kd ON kd.id = kv.document_id
-          JOIN knowledge_source ks ON ks.id = kd.source_id
+          LEFT JOIN knowledge_source ks ON ks.id = kd.source_id
           WHERE kv.id = $1
             AND kv.document_id = $2
             AND kd.current_version_id = kv.id
@@ -144,44 +144,63 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
         `,
         [job.payload.versionId, job.payload.documentId]
       );
-      if (
-        !reviewTarget ||
-        typeof reviewTarget.source_id !== "string" ||
-        !isKnowledgeSourceTier(reviewTarget.source_tier)
-      ) {
-        throw new Error("OCR target has no governed knowledge source.");
+      if (!reviewTarget) {
+        throw new Error("OCR target knowledge version no longer exists.");
       }
       const citationMetadata = recordValue(reviewTarget.citation_metadata);
       const sourceMetadata = recordValue(reviewTarget.source_metadata);
-      assertKnowledgeSourceAuthorized(
-        {
-          sourceTier: reviewTarget.source_tier,
-          enabled: reviewTarget.source_enabled === true,
-          deletedAt:
-            reviewTarget.source_deleted_at instanceof Date ||
-            typeof reviewTarget.source_deleted_at === "string"
-              ? reviewTarget.source_deleted_at
-              : null,
-          canonicalUrl:
-            typeof reviewTarget.canonical_url === "string"
-              ? reviewTarget.canonical_url
-              : null,
-          publisher:
-            typeof reviewTarget.publisher === "string"
-              ? reviewTarget.publisher
-              : null,
-          metadata: sourceMetadata
-        },
-        citationMetadata
-      );
-      const rightsSnapshot = {
-        ...recordValue(sourceMetadata.rightsDecision),
-        status: "approved",
-        sourceId: reviewTarget.source_id,
-        canonicalUrl: reviewTarget.canonical_url,
-        sourceTier: reviewTarget.source_tier,
-        publisher: reviewTarget.publisher
-      };
+      const governedSourceTier = isKnowledgeSourceTier(
+        reviewTarget.source_tier
+      )
+        ? reviewTarget.source_tier
+        : null;
+      const hasGovernedSource =
+        typeof reviewTarget.source_id === "string" &&
+        governedSourceTier !== null;
+      if (hasGovernedSource) {
+        assertKnowledgeSourceAuthorized(
+          {
+            sourceTier: governedSourceTier!,
+            enabled: reviewTarget.source_enabled === true,
+            deletedAt:
+              reviewTarget.source_deleted_at instanceof Date ||
+              typeof reviewTarget.source_deleted_at === "string"
+                ? reviewTarget.source_deleted_at
+                : null,
+            canonicalUrl:
+              typeof reviewTarget.canonical_url === "string"
+                ? reviewTarget.canonical_url
+                : null,
+            publisher:
+              typeof reviewTarget.publisher === "string"
+                ? reviewTarget.publisher
+                : null,
+            metadata: sourceMetadata
+          },
+          citationMetadata
+        );
+      }
+      const rightsSnapshot = hasGovernedSource
+        ? {
+            ...recordValue(sourceMetadata.rightsDecision),
+            status: "approved",
+            sourceId: reviewTarget.source_id,
+            canonicalUrl: reviewTarget.canonical_url,
+            sourceTier: reviewTarget.source_tier,
+            publisher: reviewTarget.publisher
+          }
+        : {
+            status: "pending",
+            decision: "needs_human",
+            basis: "uploaded_original_without_governed_source",
+            sourceId: null,
+            canonicalUrl:
+              typeof citationMetadata.sourceUrl === "string"
+                ? citationMetadata.sourceUrl
+                : null,
+            sourceTier: null,
+            publisher: null
+          };
       const sections = buildPageAwareKnowledgeReviewSections({
         versionId: job.payload.versionId,
         versionContentHash: contentHash,

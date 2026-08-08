@@ -25,7 +25,10 @@ const DEFAULT_CHUNK_OVERLAP = 200;
 const DEFAULT_LEASE_HEARTBEAT_MS = 60_000;
 const DEFAULT_MAX_OCR_POLLS = 240;
 const DEFAULT_MAX_OCR_AGE_MS = 2 * 60 * 60 * 1_000;
-const KNOWLEDGE_OBJECT_PREFIX = "knowledge-originals/";
+const KNOWLEDGE_OBJECT_PREFIXES = [
+  "private/knowledge-originals/",
+  "knowledge-originals/"
+] as const;
 const MAX_WORKER_CONCURRENCY = 4;
 
 export interface KnowledgeIngestionWorkerOptions {
@@ -507,14 +510,16 @@ function isValidDate(value: string): boolean {
 
 function validateKnowledgeObjectKey(objectKey: string): void {
   if (
-    !objectKey.startsWith(KNOWLEDGE_OBJECT_PREFIX) ||
+    !KNOWLEDGE_OBJECT_PREFIXES.some((prefix) =>
+      objectKey.startsWith(prefix)
+    ) ||
     objectKey.startsWith("/") ||
     objectKey.includes("\0") ||
     objectKey.split("/").includes("..")
   ) {
     throw new ProviderResponseError(
       "knowledge-worker",
-      `OCR object keys must stay under ${KNOWLEDGE_OBJECT_PREFIX}.`
+      `OCR object keys must stay under ${KNOWLEDGE_OBJECT_PREFIXES[0]}.`
     );
   }
 }
