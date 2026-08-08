@@ -229,6 +229,10 @@ describe("Postgres knowledge ingestion review lifecycle", () => {
     ) as Record<string, unknown>;
 
     expect(versionUpdate.query).toContain("content_hash = $3");
+    expect(versionUpdate.query).toContain("status = $5::knowledge_status");
+    expect(versionUpdate.query).toContain(
+      "$5::knowledge_status = 'published'::knowledge_status"
+    );
     expect(versionUpdate.query).toContain("status = 'review'");
     expect(versionUpdate.query).toContain("AND content_hash = $3");
     expect(versionUpdate.parameters?.[2]).toBe(hash);

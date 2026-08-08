@@ -534,8 +534,11 @@ export class PostgresKnowledgeIngestionRepository implements KnowledgeIngestionR
           UPDATE knowledge_version
           SET
             content_hash = $3,
-            status = $5,
-            published_at = CASE WHEN $5 = 'published' THEN NOW() ELSE published_at END,
+            status = $5::knowledge_status,
+            published_at = CASE
+              WHEN $5::knowledge_status = 'published'::knowledge_status THEN NOW()
+              ELSE published_at
+            END,
             metadata = metadata || $2::jsonb,
             updated_at = NOW()
           WHERE
