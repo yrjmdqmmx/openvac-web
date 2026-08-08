@@ -244,6 +244,29 @@ export type KnowledgeDocumentView = {
   publishedAt?: string;
   createdAt?: string;
   updatedAt?: string;
+  automationReview?: KnowledgeAutomationReviewView;
+};
+
+export type KnowledgeAutomationReviewView = {
+  status: string;
+  phase?: string;
+  risk?: "low" | "medium" | "high";
+  decision?: string;
+  summary?: string;
+  blockers: Array<{ code: string; message: string }>;
+  findings: Array<{ code: string; message: string }>;
+  evidence: Array<{
+    claim: string;
+    exactEvidence: string;
+    sourceLocator: string;
+  }>;
+  revision?: {
+    changed: boolean;
+    inputVersionId?: string;
+    outputVersionId?: string;
+    inputContentHash?: string;
+    outputContentHash?: string;
+  };
 };
 
 function recordValue(value: unknown): AdminRow {
@@ -299,6 +322,7 @@ function normalizeKnowledgeDocument(
       row.publication ??
       (typeof row.publishReady === "object" ? row.publishReady : undefined)
   );
+  const automationReview = normalizeAutomationReview(row.automationReview);
 
   const status = stringValue(row.status) ?? "draft";
   const explicitPublishReady = booleanValue(
@@ -384,7 +408,62 @@ function normalizeKnowledgeDocument(
     ),
     publishedAt: stringValue(row.publishedAt, version.publishedAt),
     createdAt: stringValue(row.createdAt),
-    updatedAt: stringValue(row.updatedAt)
+    updatedAt: stringValue(row.updatedAt),
+    ...(automationReview ? { automationReview } : {})
+  };
+}
+
+function normalizeAutomationReview(
+  value: unknown
+): KnowledgeAutomationReviewView | undefined {
+  if (!isRecord(value)) return undefined;
+  const status = stringValue(value.status);
+  if (!status) return undefined;
+  const revision = recordValue(value.revision);
+  const risk = stringValue(value.risk);
+  const normalizeFindings = (items: unknown) =>
+    Array.isArray(items)
+      ? items
+          .filter(isRecord)
+          .map((item) => ({
+            code: stringValue(item.code) ?? "UNKNOWN",
+            message: stringValue(item.message) ?? ""
+          }))
+          .filter((item) => item.message)
+      : [];
+  const evidence = Array.isArray(value.evidence)
+    ? value.evidence
+        .filter(isRecord)
+        .map((item) => ({
+          claim: stringValue(item.claim) ?? "",
+          exactEvidence: stringValue(item.exactEvidence) ?? "",
+          sourceLocator: stringValue(item.sourceLocator) ?? ""
+        }))
+        .filter(
+          (item) => item.claim && item.exactEvidence && item.sourceLocator
+        )
+    : [];
+  return {
+    status,
+    phase: stringValue(value.phase),
+    risk:
+      risk === "low" || risk === "medium" || risk === "high" ? risk : undefined,
+    decision: stringValue(value.decision),
+    summary: stringValue(value.summary),
+    blockers: normalizeFindings(value.blockers),
+    findings: normalizeFindings(value.findings),
+    evidence,
+    ...(Object.keys(revision).length > 0
+      ? {
+          revision: {
+            changed: revision.changed === true,
+            inputVersionId: stringValue(revision.inputVersionId),
+            outputVersionId: stringValue(revision.outputVersionId),
+            inputContentHash: stringValue(revision.inputContentHash),
+            outputContentHash: stringValue(revision.outputContentHash)
+          }
+        }
+      : {})
   };
 }
 

@@ -121,7 +121,7 @@ describe("admin components", () => {
     ).toBeInTheDocument();
   });
 
-  it("reviews normalized knowledge sections against the official paragraph", async () => {
+  it("shows legacy normalized knowledge sections as read-only evidence", async () => {
     const documentId = "d607d4d6-82df-4f1b-a5d4-7d80277e327d";
     const versionId = "cb71f682-9bdc-4899-b7b3-c459402b192c";
     const sectionId = "ab71f682-9bdc-4899-b7b3-c459402b192c";
@@ -181,21 +181,13 @@ describe("admin components", () => {
       screen.getByText("Check the vacuum pump regularly.")
     ).toBeInTheDocument();
     expect(screen.getByText("第 4 页")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "通过段落" }));
-
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        `/api/admin/knowledge/${documentId}/versions/${versionId}/sections/${sectionId}/decision`,
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            expectedSectionHash: sectionHash,
-            expectedRevision: 0,
-            decision: "approved"
-          })
-        })
-      )
-    );
+    expect(screen.getByText("只读兼容")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "通过段落" })
+    ).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([, init]) => init?.method === "POST")
+    ).toBe(false);
   });
 
   it("renders review, embedding and publish readiness from knowledge detail", async () => {
