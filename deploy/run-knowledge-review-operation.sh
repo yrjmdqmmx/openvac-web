@@ -393,6 +393,36 @@ SELECT json_build_object(
               'maxAttempts', bt.max_attempts,
               'readyNow', bt.run_at <= NOW(),
               'hasLastError', bt.last_error IS NOT NULL,
+              'lastErrorClass', CASE
+                WHEN bt.last_error IS NULL THEN NULL
+                ELSE left(split_part(bt.last_error, ':', 1), 64)
+              END,
+              'lastErrorSignals', json_build_object(
+                'providerTimeout', COALESCE(
+                  bt.last_error ~* '(ProviderTimeoutError|timed out|timeout|exceeded [0-9]+ms)',
+                  FALSE
+                ),
+                'authentication', COALESCE(
+                  bt.last_error ~* '(401|403|unauthoriz|authenticat|api[_ -]?key|credentials?)',
+                  FALSE
+                ),
+                'rateLimited', COALESCE(
+                  bt.last_error ~* '(429|rate[ -]?limit|throttl|too many requests)',
+                  FALSE
+                ),
+                'configuration', COALESCE(
+                  bt.last_error ~* '(ConfigurationError|configur|missing|required)',
+                  FALSE
+                ),
+                'database', COALESCE(
+                  bt.last_error ~* '(PostgresError|database|sqlstate|deadlock|lock timeout|statement timeout)',
+                  FALSE
+                ),
+                'vectorShape', COALESCE(
+                  bt.last_error ~* '(dimension|vector|embedding result count|finite)',
+                  FALSE
+                )
+              ),
               'leaseStale', bt.status = 'running' AND (
                 bt.locked_at IS NULL
                 OR bt.locked_at < NOW() - INTERVAL '15 minutes'
