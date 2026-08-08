@@ -46,12 +46,15 @@ import {
   estimateTokens
 } from "./context-builder";
 import { EvidenceRegistry } from "./evidence-registry";
-import { agentRunBudgetProfile, shouldUseWeb } from "./mode-policy";
+import {
+  agentRunBudgetProfile,
+  effectiveAgentRunTimeoutMs,
+  shouldUseWeb
+} from "./mode-policy";
 import { RunStore, type CreatedRun } from "./run-store";
 import { ToolRegistry, type ToolExecutionResult } from "./tool-registry";
 import { WebEvidenceService } from "./web-evidence";
 
-const MAX_TOOL_ROUNDS = 3;
 const MAX_TOOL_CALLS = 8;
 const MAX_PARALLEL_TOOLS = 2;
 const MAX_MODEL_REQUESTS = 6;
@@ -134,10 +137,7 @@ export class AgentRunOrchestrator {
   }): Promise<OrchestratorResult> {
     const startedAt = Date.now();
     const budgetProfile = agentRunBudgetProfile(input.requestedMode);
-    const modeTimeoutMs = readPositiveInteger(
-      budgetProfile.timeoutEnvironmentName,
-      budgetProfile.timeoutFallbackMs
-    );
+    const modeTimeoutMs = effectiveAgentRunTimeoutMs(input.requestedMode);
     const timeoutSignal = AbortSignal.timeout(modeTimeoutMs);
     const signal = AbortSignal.any([input.signal, timeoutSignal]);
 
@@ -180,7 +180,7 @@ export class AgentRunOrchestrator {
         currentInput,
         signal,
         `answer_${this.modelRequests + 1}`,
-        true
+        this.toolRounds < budgetProfile.maxToolRounds
       );
       outputText = result.finish.outputText || result.outputText;
       finalUsage = result.finish.usage;
@@ -199,7 +199,7 @@ export class AgentRunOrchestrator {
         incomplete = true;
         break;
       }
-      if (this.toolRounds >= MAX_TOOL_ROUNDS) {
+      if (this.toolRounds >= budgetProfile.maxToolRounds) {
         throw new AgentRuntimeError(
           "TOOL_ROUND_LIMIT",
           "本次工具轮次已达到安全上限。",

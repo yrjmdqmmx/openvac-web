@@ -37,5 +37,20 @@ describe("Agent V2 deployment contract", () => {
         `${key} is not passed to application containers`
       ).toContain(`  ${key}: \${${key}:-`);
     }
+
+    expect(example).toContain("AGENT_AUTO_TIMEOUT_MS=120000");
+    expect(compose).toContain(
+      "AGENT_AUTO_TIMEOUT_MS: ${AGENT_AUTO_TIMEOUT_MS:-120000}"
+    );
+  });
+
+  it("wires the timeout floor and mode-specific tool-round budget into the orchestrator", () => {
+    const orchestrator = readFileSync(
+      join(process.cwd(), "src/server/agent/orchestrator.ts"),
+      "utf8"
+    );
+
+    expect(orchestrator).toContain("effectiveAgentRunTimeoutMs");
+    expect(orchestrator).toContain("budgetProfile.maxToolRounds");
   });
 });
