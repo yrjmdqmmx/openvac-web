@@ -76,9 +76,12 @@ describe("SiteHeader", () => {
   it("renders a server-determined continue link for signed-in users", () => {
     render(createElement(SiteHeader, { authenticated: true }));
 
-    fireEvent.click(screen.getByRole("button", { name: "打开账户菜单" }));
     const continueLink = screen.getByRole("link", { name: "继续对话" });
     expect(continueLink).toHaveAttribute("href", "/chat");
+    fireEvent.click(screen.getByRole("button", { name: "打开账户菜单" }));
+    expect(
+      screen.getByRole("menu", { name: "账户菜单" })
+    ).not.toHaveTextContent("继续对话");
     expect(
       screen.queryByRole("link", { name: "登录" })
     ).not.toBeInTheDocument();

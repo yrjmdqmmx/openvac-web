@@ -128,6 +128,42 @@ describe("ChatWorkspace pending question flow", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("uses the reasoning and web modes selected on the homepage", async () => {
+    savePendingQuestionIntent({
+      text: "首页带模式的问题",
+      mode: "deep",
+      webMode: "always",
+      now: Date.now()
+    });
+    const fetchMock = installFetch();
+
+    render(
+      createElement(ChatWorkspace, {
+        userId: "user-a",
+        userName: "用户 A",
+        userEmail: "user-a@openvac.test"
+      })
+    );
+
+    await waitFor(() => expect(chatPostCount(fetchMock)).toBe(1));
+    const chatCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        String(input) === "/api/chat" &&
+        (init as RequestInit | undefined)?.method === "POST"
+    );
+    expect(
+      JSON.parse(String((chatCall?.[1] as RequestInit).body))
+    ).toMatchObject({ mode: "deep", webMode: "always" });
+    expect(screen.getByRole("button", { name: "深度思考" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(screen.getByRole("button", { name: "联网" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+  });
+
   it("migrates a legacy v1 draft into the composer without sending", async () => {
     savePendingQuestionDraft({
       text: "旧版只预填的问题",
