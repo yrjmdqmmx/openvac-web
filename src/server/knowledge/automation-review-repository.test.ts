@@ -240,8 +240,8 @@ describe("PostgresKnowledgeReviewAutomationRepository", () => {
       }
       if (query.includes("SELECT * FROM knowledge_review_run")) {
         return [
-          databaseReviewRun("initial", "low"),
-          databaseReviewRun("verify", "low")
+          databaseReviewRun("initial", "low", "2026-08-08 18:21:11.123+00"),
+          databaseReviewRun("verify", "low", "2026-08-08 18:21:12.456+00")
         ];
       }
       return query.includes("RETURNING id") ? [{ id: "updated" }] : [];
@@ -467,7 +467,11 @@ function reviewTarget(input: { sourceId?: string | null } = {}) {
   };
 }
 
-function databaseReviewRun(phase: "initial" | "verify", risk: "low" | "high") {
+function databaseReviewRun(
+  phase: "initial" | "verify",
+  risk: "low" | "high",
+  completedAt: unknown = new Date()
+) {
   return {
     id:
       phase === "initial"
@@ -482,7 +486,7 @@ function databaseReviewRun(phase: "initial" | "verify", risk: "low" | "high") {
     risk,
     structured_report: storedAutomationReport(risk),
     decision: "approved",
-    completed_at: new Date()
+    completed_at: completedAt
   };
 }
 

@@ -760,8 +760,16 @@ function databaseRun(row: Record<string, unknown>) {
     structuredReport: row.structured_report,
     decision: row.decision,
     revisedVersionId: row.revised_version_id,
-    completedAt: row.completed_at
+    completedAt: normalizeDatabaseTimestamp(row.completed_at)
   };
+}
+
+function normalizeDatabaseTimestamp(value: unknown): unknown {
+  if (value instanceof Date) return value;
+  if (typeof value !== "string") return value;
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.valueOf()) ? value : parsed;
 }
 
 function findRunId(rows: Array<Record<string, unknown>>, phase: string) {
