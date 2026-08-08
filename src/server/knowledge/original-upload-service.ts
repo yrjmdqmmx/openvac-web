@@ -250,7 +250,7 @@ function assertHeaderBoundUpload(
     upload.method !== "PUT" ||
     upload.key !== expected.objectKey ||
     headers["content-type"] !== expected.contentType ||
-    headers["content-length"] !== String(expected.sizeBytes) ||
+    headers["x-oss-meta-size-bytes"] !== String(expected.sizeBytes) ||
     headers["x-oss-forbid-overwrite"] !== "true" ||
     headers["x-oss-meta-sha256"] !== expected.sha256
   ) {

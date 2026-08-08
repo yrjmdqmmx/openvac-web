@@ -53,9 +53,9 @@ describe("knowledge manager original uploads", () => {
                 method: "PUT",
                 requiredHeaders: {
                   "Content-Type": "application/pdf",
-                  "Content-Length": "4",
                   "x-oss-forbid-overwrite": "true",
-                  "x-oss-meta-sha256": sha256
+                  "x-oss-meta-sha256": sha256,
+                  "x-oss-meta-size-bytes": "4"
                 }
               }
             },
@@ -118,9 +118,9 @@ describe("knowledge manager original uploads", () => {
         method: "PUT",
         headers: {
           "Content-Type": "application/pdf",
-          "Content-Length": "4",
           "x-oss-forbid-overwrite": "true",
-          "x-oss-meta-sha256": sha256
+          "x-oss-meta-sha256": sha256,
+          "x-oss-meta-size-bytes": "4"
         },
         body: file
       })
@@ -153,7 +153,7 @@ describe("knowledge manager original uploads", () => {
     const chooser = await screen.findByLabelText("选择知识原件");
     expect(chooser).toHaveAttribute(
       "accept",
-      ".pdf,.docx,.xlsx,.csv,.txt,.md,.jpg,.jpeg,.png"
+      ".pdf,.docx,.xlsx,.csv,.txt,.md,.jpg,.png"
     );
     fireEvent.change(chooser, { target: { files: [file] } });
 
@@ -171,6 +171,26 @@ describe("knowledge manager automation review", () => {
     const contentHash = "c".repeat(64);
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url === `/api/admin/knowledge/${documentId}/review`) {
+        return response({
+          documentId,
+          versionId,
+          versionContentHash: contentHash,
+          versionStatus: "review",
+          sections: [
+            {
+              id: "00000000-0000-4000-8000-000000000012",
+              versionId,
+              sectionIndex: 0,
+              contentZh: "旧逐段审核内容仍需保留。",
+              officialText: "Legacy section evidence remains visible.",
+              sectionHash: "e".repeat(64),
+              reviewStatus: "approved",
+              decision: { note: "历史审核备注" }
+            }
+          ]
+        });
+      }
       if (url === "/api/admin/knowledge") {
         return response({
           items: [
@@ -220,14 +240,21 @@ describe("knowledge manager automation review", () => {
       await screen.findByText("参数表与原件存在冲突。")
     ).toBeInTheDocument();
     expect(screen.getByText("高风险")).toBeInTheDocument();
+    expect(screen.getByText("需要人工处理")).toBeInTheDocument();
+    expect(screen.getByText("转人工")).toBeInTheDocument();
     expect(screen.getByText("抽速值不一致")).toBeInTheDocument();
+    expect(screen.getByText("单位已规范")).toBeInTheDocument();
     expect(screen.getByText("Pumping speed: 8 L/s")).toBeInTheDocument();
     expect(screen.getByText("第 12 页表 3")).toBeInTheDocument();
     expect(screen.getByText("自动修订已生成新版本")).toBeInTheDocument();
     expect(
+      await screen.findByText("旧逐段审核内容仍需保留。")
+    ).toBeInTheDocument();
+    expect(screen.getByText("历史审核备注")).toBeInTheDocument();
+    expect(
       screen.queryByRole("button", { name: "通过段落" })
     ).not.toBeInTheDocument();
-    expect(fetchMock).not.toHaveBeenCalledWith(
+    expect(fetchMock).toHaveBeenCalledWith(
       `/api/admin/knowledge/${documentId}/review`,
       expect.anything()
     );

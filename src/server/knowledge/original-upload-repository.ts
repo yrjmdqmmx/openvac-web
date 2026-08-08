@@ -28,6 +28,9 @@ export class PostgresKnowledgeOriginalUploadRepository implements KnowledgeOrigi
     input: KnowledgeOriginalUploadDraftInput
   ): Promise<KnowledgeOriginalUploadDraft> {
     await this.sql.begin(async (transaction) => {
+      const sourceId = input.sourceUrl
+        ? await findExactGovernedSourceId(transaction, input.sourceUrl)
+        : null;
       await transaction.unsafe(
         `
           INSERT INTO knowledge_document (
@@ -40,7 +43,7 @@ export class PostgresKnowledgeOriginalUploadRepository implements KnowledgeOrigi
         `,
         [
           input.documentId,
-          null,
+          sourceId,
           input.title,
           input.description ?? null,
           input.mimeType,
@@ -233,6 +236,26 @@ export class PostgresKnowledgeOriginalUploadRepository implements KnowledgeOrigi
 
 export const knowledgeOriginalUploadRepository =
   new PostgresKnowledgeOriginalUploadRepository();
+
+async function findExactGovernedSourceId(
+  sql: KnowledgeUploadSql,
+  sourceUrl: string
+): Promise<string | null> {
+  const rows = await sql.unsafe(
+    `
+      SELECT id
+      FROM knowledge_source
+      WHERE canonical_url = $1
+        AND enabled = TRUE
+        AND deleted_at IS NULL
+      ORDER BY id
+      LIMIT 2
+      FOR SHARE
+    `,
+    [sourceUrl]
+  );
+  return rows.length === 1 ? stringValue(rows[0]?.id) : null;
+}
 
 function parseTarget(
   row: Record<string, unknown> | undefined

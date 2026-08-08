@@ -50,9 +50,9 @@ describe("knowledge original upload initiation", () => {
         method: "PUT",
         requiredHeaders: {
           "Content-Type": "application/pdf",
-          "Content-Length": "1024",
           "x-oss-forbid-overwrite": "true",
-          "x-oss-meta-sha256": sha256
+          "x-oss-meta-sha256": sha256,
+          "x-oss-meta-size-bytes": "1024"
         }
       }
     });
@@ -165,7 +165,6 @@ describe("knowledge original upload initiation", () => {
         url: "https://signed.test/upload",
         requiredHeaders: {
           "Content-Type": "application/pdf",
-          "Content-Length": "10",
           "x-oss-meta-sha256": sha256
         },
         expiresAt: "2026-08-08T15:00:00.000Z"
@@ -329,9 +328,9 @@ function makeStorage(
       url: "https://signed.test/upload",
       requiredHeaders: {
         "Content-Type": request.contentType,
-        "Content-Length": String(request.contentLength),
         "x-oss-forbid-overwrite": "true",
-        "x-oss-meta-sha256": request.checksumSha256
+        "x-oss-meta-sha256": request.checksumSha256,
+        "x-oss-meta-size-bytes": String(request.contentLength)
       },
       expiresAt: "2026-08-08T15:00:00.000Z"
     })),

@@ -51,7 +51,10 @@ export class PostgresKnowledgeManualReviewRepository implements KnowledgeManualR
     input: KnowledgeManualReviewTarget
   ): Promise<KnowledgeManualReviewOutcome> {
     return this.sql.begin(async (transaction) => {
-      const target = await loadCurrentTarget(transaction, input);
+      const target = await resolveCurrentSourceLink(
+        transaction,
+        await loadCurrentTarget(transaction, input)
+      );
       await assertCurrentSourceRights(transaction, target);
       const taskId = await queueAutomationRun(transaction, target, "initial");
       await audit(transaction, input, "knowledge.automation_review.retry", {
@@ -67,7 +70,7 @@ export class PostgresKnowledgeManualReviewRepository implements KnowledgeManualR
     input: KnowledgeManualResolutionInput
   ): Promise<KnowledgeManualReviewOutcome> {
     return this.sql.begin(async (transaction) => {
-      const target = await loadCurrentTarget(transaction, input);
+      let target = await loadCurrentTarget(transaction, input);
       if (input.action === "archive") {
         await transaction.unsafe(
           `
@@ -91,6 +94,7 @@ export class PostgresKnowledgeManualReviewRepository implements KnowledgeManualR
         return outcome(input.action, target, "archived");
       }
 
+      target = await resolveCurrentSourceLink(transaction, target);
       await assertCurrentSourceRights(transaction, target);
       if (input.action === "manual_approve_with_note") {
         const review = {
@@ -332,6 +336,45 @@ async function assertCurrentSourceRights(
     }
     throw error;
   }
+}
+
+async function resolveCurrentSourceLink(
+  sql: KnowledgeManualReviewSql,
+  target: CurrentTarget
+): Promise<CurrentTarget> {
+  if (target.sourceId) return target;
+  const sourceUrl = stringValue(target.citationMetadata.sourceUrl);
+  if (!sourceUrl) return target;
+
+  const sources = await sql.unsafe(
+    `
+      SELECT id
+      FROM knowledge_source
+      WHERE canonical_url = $1
+        AND enabled = TRUE
+        AND deleted_at IS NULL
+      ORDER BY id
+      LIMIT 2
+      FOR UPDATE
+    `,
+    [sourceUrl]
+  );
+  const sourceId = sources.length === 1 ? stringValue(sources[0]?.id) : null;
+  if (!sourceId) return target;
+
+  const linked = await sql.unsafe(
+    `
+      UPDATE knowledge_document
+      SET source_id = $2, updated_at = NOW()
+      WHERE id = $1
+        AND source_id IS NULL
+        AND current_version_id = $3
+      RETURNING source_id
+    `,
+    [target.documentId, sourceId, target.versionId]
+  );
+  if (stringValue(linked[0]?.source_id) !== sourceId) throw conflict();
+  return { ...target, sourceId };
 }
 
 async function queueAutomationRun(

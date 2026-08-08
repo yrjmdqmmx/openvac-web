@@ -11,6 +11,78 @@ const objectKey = `private/knowledge-originals/${documentId}/${versionId}/manual
 const sha256 = "a".repeat(64);
 
 describe("Postgres knowledge original upload repository", () => {
+  it("links an exact enabled governed source while registering the upload", async () => {
+    const sourceUrl = "https://example.com/manual.pdf";
+    const sql = new RecordingSql((query, parameters) => {
+      if (query.includes("FROM knowledge_source")) {
+        expect(parameters).toEqual([sourceUrl]);
+        return [{ id: "source-1" }];
+      }
+      return [];
+    });
+    const repository = new PostgresKnowledgeOriginalUploadRepository(sql);
+
+    await repository.initiate({
+      documentId,
+      versionId,
+      title: "Manual",
+      sourceUrl,
+      originalFilename: "manual.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 10,
+      sha256,
+      objectKey,
+      uploadedBy: "admin-1",
+      retentionPolicy: "retain_indefinitely"
+    });
+
+    const sourceLookup = sql.find("FROM knowledge_source");
+    expect(sourceLookup.query).toContain("canonical_url = $1");
+    expect(sourceLookup.query).toContain("enabled = TRUE");
+    expect(sourceLookup.query).toContain("deleted_at IS NULL");
+    expect(sourceLookup.query).toContain("FOR SHARE");
+    expect(sql.find("INSERT INTO knowledge_document").parameters?.[1]).toBe(
+      "source-1"
+    );
+    expect(
+      sql.calls.some((call) =>
+        call.query.includes("INSERT INTO knowledge_source")
+      )
+    ).toBe(false);
+  });
+
+  it("keeps an unmatched source URL unlinked without silently creating a source", async () => {
+    const sourceUrl = "https://example.com/not-governed.pdf";
+    const sql = new RecordingSql((query) =>
+      query.includes("FROM knowledge_source") ? [] : []
+    );
+    const repository = new PostgresKnowledgeOriginalUploadRepository(sql);
+
+    await repository.initiate({
+      documentId,
+      versionId,
+      title: "Manual",
+      sourceUrl,
+      originalFilename: "manual.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 10,
+      sha256,
+      objectKey,
+      uploadedBy: "admin-1",
+      retentionPolicy: "retain_indefinitely"
+    });
+
+    expect(sql.find("FROM knowledge_source").parameters).toEqual([sourceUrl]);
+    expect(
+      sql.find("INSERT INTO knowledge_document").parameters?.[1]
+    ).toBeNull();
+    expect(
+      sql.calls.some((call) =>
+        call.query.includes("INSERT INTO knowledge_source")
+      )
+    ).toBe(false);
+  });
+
   it("persists a source-optional processing document, mirrored version key, and indefinite original", async () => {
     const sql = new RecordingSql(() => []);
     const repository = new PostgresKnowledgeOriginalUploadRepository(sql);

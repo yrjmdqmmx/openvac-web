@@ -22,7 +22,7 @@ function storageWithClient(client: Record<string, unknown>): AlibabaOssStorage {
 }
 
 describe("AlibabaOssStorage private uploads", () => {
-  it("prefers OSS V4 and binds content type, length and checksum metadata", async () => {
+  it("prefers OSS V4 and returns only browser-settable required headers", async () => {
     const signatureUrlV4 = vi.fn(async () => "https://oss.test/signed-v4");
     const signatureUrl = vi.fn(() => "https://oss.test/legacy");
     const storage = storageWithClient({ signatureUrlV4, signatureUrl });
@@ -43,7 +43,6 @@ describe("AlibabaOssStorage private uploads", () => {
       {
         headers: expect.objectContaining({
           "Content-Type": "model/step",
-          "Content-Length": "1024",
           "x-oss-object-acl": "private",
           "x-oss-forbid-overwrite": "true",
           "x-oss-meta-sha256": "a".repeat(64),
@@ -52,8 +51,7 @@ describe("AlibabaOssStorage private uploads", () => {
         }),
         queries: {}
       },
-      "modeling/user/project/imports/model.step",
-      ["content-length"]
+      "modeling/user/project/imports/model.step"
     );
     expect(result).toMatchObject({
       key: "modeling/user/project/imports/model.step",
@@ -61,7 +59,6 @@ describe("AlibabaOssStorage private uploads", () => {
       url: "https://oss.test/signed-v4",
       requiredHeaders: {
         "Content-Type": "model/step",
-        "Content-Length": "1024",
         "x-oss-object-acl": "private",
         "x-oss-forbid-overwrite": "true",
         "x-oss-meta-project-id": "project",
@@ -69,6 +66,7 @@ describe("AlibabaOssStorage private uploads", () => {
         "x-oss-meta-size-bytes": "1024"
       }
     });
+    expect(result.requiredHeaders).not.toHaveProperty("Content-Length");
   });
 
   it("binds forbid-overwrite in the legacy signed PUT path", async () => {

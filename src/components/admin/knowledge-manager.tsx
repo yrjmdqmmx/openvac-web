@@ -80,7 +80,7 @@ type UploadStage =
   | "completed"
   | "failed";
 
-const knowledgeUploadAccept = ".pdf,.docx,.xlsx,.csv,.txt,.md,.jpg,.jpeg,.png";
+const knowledgeUploadAccept = ".pdf,.docx,.xlsx,.csv,.txt,.md,.jpg,.png";
 
 const uploadMimeByExtension: Record<string, string> = {
   pdf: "application/pdf",
@@ -90,7 +90,6 @@ const uploadMimeByExtension: Record<string, string> = {
   txt: "text/plain",
   md: "text/markdown",
   jpg: "image/jpeg",
-  jpeg: "image/jpeg",
   png: "image/png"
 };
 
@@ -233,6 +232,29 @@ function formatConfidence(value?: number): string {
 
 function versionLabel(document: KnowledgeDocumentView): string {
   return document.version === undefined ? "未返回" : `v${document.version}`;
+}
+
+function automationStatusLabel(status: string): string {
+  return (
+    {
+      queued: "等待自动审核",
+      leased: "自动审核中",
+      completed: "审核完成",
+      needs_human: "需要人工处理",
+      failed: "自动审核失败"
+    }[status] ?? status
+  );
+}
+
+function automationDecisionLabel(decision?: string): string {
+  if (!decision) return "结论未返回";
+  return (
+    {
+      approved: "通过",
+      rejected: "驳回",
+      needs_human: "转人工"
+    }[decision] ?? decision
+  );
 }
 
 async function responseError(
@@ -490,7 +512,7 @@ export function KnowledgeManager() {
   }, []);
 
   useEffect(() => {
-    if (!selected?.currentVersionId || selected.automationReview) {
+    if (!selected?.currentVersionId) {
       const timer = window.setTimeout(() => setReviewWorkspace(undefined), 0);
       return () => window.clearTimeout(timer);
     }
@@ -499,12 +521,7 @@ export function KnowledgeManager() {
       0
     );
     return () => window.clearTimeout(timer);
-  }, [
-    loadReviewWorkspace,
-    selected?.automationReview,
-    selected?.currentVersionId,
-    selected?.id
-  ]);
+  }, [loadReviewWorkspace, selected?.currentVersionId, selected?.id]);
 
   const currentReviewWorkspace =
     reviewWorkspace?.documentId === selected?.id ? reviewWorkspace : undefined;
@@ -918,6 +935,14 @@ export function KnowledgeManager() {
                       : "风险未返回"}
               </span>
             </div>
+            <div className="mt-4 flex flex-wrap gap-2 text-xs">
+              <span className="rounded-full bg-[var(--surface)] px-3 py-1">
+                {automationStatusLabel(selected.automationReview.status)}
+              </span>
+              <span className="rounded-full bg-[var(--surface)] px-3 py-1">
+                {automationDecisionLabel(selected.automationReview.decision)}
+              </span>
+            </div>
             <p className="mt-5 rounded-xl bg-[var(--surface)] p-4 text-sm leading-6">
               {selected.automationReview.summary ?? "自动审核摘要未返回。"}
             </p>
@@ -947,6 +972,20 @@ export function KnowledgeManager() {
                 </ul>
               </div>
             ) : null}
+            {selected.automationReview.findings.length > 0 ? (
+              <div className="mt-5">
+                <h3 className="text-xs font-semibold text-[var(--muted)]">
+                  审核发现
+                </h3>
+                <ul className="mt-2 space-y-2 text-sm">
+                  {selected.automationReview.findings.map((finding) => (
+                    <li key={`${finding.code}:${finding.message}`}>
+                      {finding.message}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {selected.automationReview.evidence.length > 0 ? (
               <div className="mt-5">
                 <h3 className="text-xs font-semibold text-[var(--muted)]">
@@ -971,7 +1010,9 @@ export function KnowledgeManager() {
               </div>
             ) : null}
           </section>
-        ) : reviewWorkspaceLoading ? (
+        ) : null}
+
+        {reviewWorkspaceLoading ? (
           <div className="mt-8 flex items-center gap-2 text-sm text-[var(--muted)]">
             <LoaderCircle className="h-4 w-4 animate-spin" />
             正在生成稳定审核段落…
