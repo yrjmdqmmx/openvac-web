@@ -435,6 +435,7 @@ import {
   knowledgeAutomationReviewRunSchema
 } from "./src/server/knowledge/review-policy";
 
+void (async () => {
 const rows = await sqlClient.unsafe(
   `SELECT * FROM knowledge_review_run
    WHERE prompt_version = $3
@@ -479,6 +480,7 @@ const results = rows.map((row) => {
 });
 console.log(JSON.stringify({ pairSchemaParse: results }));
 await sqlClient.end();
+})();
 '
       )"
       printf '%s\n' "$schema_diagnostics"
