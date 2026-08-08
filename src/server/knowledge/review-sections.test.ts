@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   assertKnowledgeSectionReviewComplete,
   assertKnowledgeSectionPublicationReady,
+  buildCandidateKnowledgeReviewSections,
   buildKnowledgeReviewSections,
   buildPageAwareKnowledgeReviewSections,
   knowledgeReviewSectionHash
 } from "./review-sections";
+import { PHASE_ONE_CANDIDATE_ENTRIES } from "./phase-one-catalog";
 
 const rights = {
   status: "approved",
@@ -77,6 +79,39 @@ describe("knowledge review sections", () => {
 
     expect(section?.reviewStatus).toBe("required");
     expect(section?.decision).toBeNull();
+  });
+
+  it("maps all governed Phase 1 evidence into 66 explicit pending sections", () => {
+    const sections = PHASE_ONE_CANDIDATE_ENTRIES.flatMap((entry) =>
+      buildCandidateKnowledgeReviewSections({
+        candidate: entry.value,
+        versionId: `version-${entry.value.document.externalKey}`,
+        versionContentHash: "b".repeat(64),
+        rightsSnapshot: {
+          ...rights,
+          appliesToRecordUrl: entry.value.sourceCanonicalUrl,
+          scope: entry.value.citation.ingestionMode
+        }
+      })
+    );
+
+    expect(sections).toHaveLength(66);
+    expect(
+      sections.every((section) => section.reviewStatus === "required")
+    ).toBe(true);
+    expect(sections.every((section) => section.decision === null)).toBe(true);
+    expect(
+      sections.every((section) => section.officialText.trim().length > 0)
+    ).toBe(true);
+    expect(
+      sections.filter((section) => section.pageStart !== null)
+    ).toHaveLength(45);
+    expect(
+      sections.filter((section) => section.pageStart === null)
+    ).toHaveLength(21);
+    expect(sections.every((section) => section.sectionHash.length === 64)).toBe(
+      true
+    );
   });
 
   it("creates clean page-bound review paragraphs immediately after OCR", () => {

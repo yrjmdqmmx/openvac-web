@@ -2,7 +2,6 @@
 
 import {
   Archive,
-  ChevronDown,
   FileSearch,
   LoaderCircle,
   RotateCcw,
@@ -223,6 +222,11 @@ export function KnowledgeManager() {
   const [documents, setDocuments] = useState<KnowledgeDocumentView[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
   const [query, setQuery] = useState("");
+  const [sourceTierFilter, setSourceTierFilter] = useState("");
+  const [licenseFilter, setLicenseFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importMessage, setImportMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [actioning, setActioning] = useState<
@@ -275,18 +279,51 @@ export function KnowledgeManager() {
 
   const visible = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    if (!normalizedQuery) return documents;
-    return documents.filter((document) =>
-      [
-        document.title,
-        document.sourceName,
-        document.sourceTier,
-        document.licensePolicy
-      ].some((value) => value?.toLowerCase().includes(normalizedQuery))
-    );
-  }, [documents, query]);
+    return documents.filter((document) => {
+      const matchesQuery =
+        !normalizedQuery ||
+        [
+          document.title,
+          document.sourceName,
+          document.sourceTier,
+          document.licensePolicy
+        ].some((value) => value?.toLowerCase().includes(normalizedQuery));
+      return (
+        matchesQuery &&
+        (!sourceTierFilter || document.sourceTier === sourceTierFilter) &&
+        (!licenseFilter || document.licensePolicy === licenseFilter) &&
+        (!statusFilter || document.status === statusFilter)
+      );
+    });
+  }, [documents, licenseFilter, query, sourceTierFilter, statusFilter]);
 
-  const selected = documents.find((document) => document.id === selectedId);
+  async function importCandidate(file?: File) {
+    if (!file) return;
+    setImporting(true);
+    setImportMessage("");
+    setActionError("");
+    try {
+      const payload = JSON.parse(await file.text()) as unknown;
+      const response = await fetch("/api/admin/knowledge/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        setActionError(await responseError(response, "待审知识导入失败。"));
+        return;
+      }
+      setImportMessage("导入成功，资料已进入逐段人工复核。");
+      await refresh();
+    } catch {
+      setActionError("请选择符合受治理知识候选格式的有效 JSON 文件。");
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  const selected =
+    visible.find((document) => document.id === selectedId) ?? visible[0];
 
   const loadReviewWorkspace = useCallback(async (documentId: string) => {
     setReviewWorkspaceLoading(true);
@@ -466,13 +503,21 @@ export function KnowledgeManager() {
         </div>
 
         <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-          <button
-            type="button"
-            className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-[var(--ink)] px-4 text-sm font-medium text-white"
-          >
+          <label className="inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-lg bg-[var(--ink)] px-4 text-sm font-medium text-white">
             <Upload className="h-4 w-4" />
-            上传资料
-          </button>
+            {importing ? "导入中…" : "导入待审 JSON"}
+            <input
+              type="file"
+              accept="application/json,.json"
+              aria-label="导入待审知识 JSON"
+              disabled={importing}
+              className="sr-only"
+              onChange={(event) => {
+                void importCandidate(event.target.files?.[0]);
+                event.currentTarget.value = "";
+              }}
+            />
+          </label>
           <label className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-lg border border-[var(--border)] px-3">
             <Search className="h-4 w-4 text-[var(--muted)]" />
             <input
@@ -482,17 +527,56 @@ export function KnowledgeManager() {
               placeholder="搜索文档或来源"
             />
           </label>
-          {["来源层级", "许可状态", "发布状态"].map((label) => (
-            <button
-              key={label}
-              type="button"
-              className="inline-flex h-11 items-center justify-between gap-3 rounded-lg border border-[var(--border)] px-3 text-sm"
-            >
-              {label}
-              <ChevronDown className="h-4 w-4" />
-            </button>
-          ))}
+          <select
+            aria-label="来源层级"
+            value={sourceTierFilter}
+            onChange={(event) => setSourceTierFilter(event.target.value)}
+            className="h-11 rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm"
+          >
+            <option value="">全部来源层级</option>
+            {Object.entries(sourceTierLabel).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="许可状态"
+            value={licenseFilter}
+            onChange={(event) => setLicenseFilter(event.target.value)}
+            className="h-11 rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm"
+          >
+            <option value="">全部许可</option>
+            {[
+              ...new Set(
+                documents.map((item) => item.licensePolicy).filter(Boolean)
+              )
+            ].map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="发布状态"
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+            className="h-11 rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm"
+          >
+            <option value="">全部状态</option>
+            {Object.entries(statusLabel).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
         </div>
+
+        {importMessage ? (
+          <p role="status" className="mt-3 text-sm text-[var(--accent)]">
+            {importMessage}
+          </p>
+        ) : null}
 
         {loading ? (
           <div className="grid min-h-64 place-items-center">
@@ -534,7 +618,7 @@ export function KnowledgeManager() {
                   <tr
                     key={document.id}
                     tabIndex={0}
-                    aria-selected={selectedId === document.id}
+                    aria-selected={selected?.id === document.id}
                     onClick={() => {
                       setSelectedId(document.id);
                       setActionError("");
@@ -547,7 +631,7 @@ export function KnowledgeManager() {
                       }
                     }}
                     className={`cursor-pointer border-b border-[var(--border)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)] ${
-                      selectedId === document.id
+                      selected?.id === document.id
                         ? "border-l-2 border-l-[var(--accent)] bg-[var(--accent-soft)]"
                         : "border-l-2 border-l-transparent hover:bg-[var(--surface)]"
                     }`}
@@ -624,16 +708,18 @@ export function KnowledgeManager() {
             </div>
 
             <div className="mt-5 grid grid-cols-3 gap-2 lg:hidden">
-              {["中文段落", "官方原文", "审核决定"].map((label, index) => (
-                <button
-                  key={label}
-                  type="button"
-                  onClick={() => setMobileReviewStep(index as 0 | 1 | 2)}
-                  className={`h-9 rounded-lg border text-xs ${mobileReviewStep === index ? "border-[var(--accent)] text-[var(--accent)]" : "border-[var(--border)]"}`}
-                >
-                  {index + 1}. {label}
-                </button>
-              ))}
+              {["中文段落", "原文或定位证据", "审核决定"].map(
+                (label, index) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => setMobileReviewStep(index as 0 | 1 | 2)}
+                    className={`h-9 rounded-lg border text-xs ${mobileReviewStep === index ? "border-[var(--accent)] text-[var(--accent)]" : "border-[var(--border)]"}`}
+                  >
+                    {index + 1}. {label}
+                  </button>
+                )
+              )}
             </div>
 
             <div className="mt-5 grid gap-4 lg:grid-cols-3">
@@ -652,7 +738,7 @@ export function KnowledgeManager() {
               >
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs font-semibold text-[var(--muted)]">
-                    官方原文
+                    官方原文或定位证据
                   </p>
                   <p className="text-xs text-[var(--muted)]">
                     {activeReviewSection.pageStart
@@ -665,7 +751,8 @@ export function KnowledgeManager() {
                   </p>
                 </div>
                 <p className="mt-4 text-sm leading-7">
-                  {activeReviewSection.officialText || "未提供官方原文。"}
+                  {activeReviewSection.officialText ||
+                    "未提供官方原文或定位证据。"}
                 </p>
               </article>
               <article

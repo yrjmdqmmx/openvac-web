@@ -12,3 +12,17 @@ export function mergeSeedSourceMetadata(
       : {})
   };
 }
+
+export function existingSeedSourcePatch(input: {
+  existingMetadata: Record<string, unknown>;
+  seededMetadata: Record<string, unknown>;
+  updatedAt: Date;
+}): { metadata: Record<string, unknown>; updatedAt: Date } {
+  return {
+    metadata: mergeSeedSourceMetadata(
+      input.existingMetadata,
+      input.seededMetadata
+    ),
+    updatedAt: input.updatedAt
+  };
+}

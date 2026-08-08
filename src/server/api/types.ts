@@ -1,4 +1,5 @@
 import type { ChatMessage } from "@/types/chat";
+import type { KnowledgeCandidate } from "@/server/knowledge/candidate-schema";
 
 export const ADMIN_ROLES = [
   "owner",
@@ -451,6 +452,10 @@ export type ApiStore = {
   ): Promise<Record<string, unknown> | null>;
   createKnowledgeDraft(
     input: KnowledgeDraftInput,
+    audit: AuditContext
+  ): Promise<Record<string, unknown>>;
+  importKnowledgeCandidate(
+    input: KnowledgeCandidate,
     audit: AuditContext
   ): Promise<Record<string, unknown>>;
   updateKnowledgeDraft(

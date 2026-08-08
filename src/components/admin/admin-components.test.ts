@@ -29,6 +29,81 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 describe("admin components", () => {
+  it("imports governed JSON and applies real knowledge filters", async () => {
+    const candidate = {
+      sourceCanonicalUrl: "https://www.hse.gov.uk/example",
+      document: { externalKey: "hse-example-v1", title: "HSE 导入资料" },
+      citation: { ingestionMode: "full_text", licenseClass: "open" },
+      review: { status: "required", requirements: ["人工复核"] },
+      sections: []
+    };
+    let listCalls = 0;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/admin/knowledge/import" && init?.method === "POST") {
+        return jsonResponse({ data: { id: "imported" } }, 201);
+      }
+      listCalls += 1;
+      return jsonResponse({
+        data: {
+          items: [
+            {
+              id: "review-document",
+              title: "待审 HSE 资料",
+              status: "review",
+              sourceTier: "open_license",
+              licensePolicy: "open",
+              publishReady: false,
+              publishBlockers: ["待人工审核"]
+            },
+            {
+              id: "published-document",
+              title: "已发布内部资料",
+              status: "published",
+              sourceTier: "internal",
+              licensePolicy: "internal-use",
+              publishReady: false,
+              publishBlockers: []
+            }
+          ]
+        }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(createElement(KnowledgeManager));
+    expect(await screen.findAllByText("待审 HSE 资料")).not.toHaveLength(0);
+
+    fireEvent.change(screen.getByLabelText("来源层级"), {
+      target: { value: "internal" }
+    });
+    expect(screen.queryAllByText("待审 HSE 资料")).toHaveLength(0);
+    expect(screen.getAllByText("已发布内部资料")).not.toHaveLength(0);
+
+    const file = Object.assign(
+      new File([JSON.stringify(candidate)], "candidate.json", {
+        type: "application/json"
+      }),
+      { text: async () => JSON.stringify(candidate) }
+    );
+    fireEvent.change(screen.getByLabelText("导入待审知识 JSON"), {
+      target: { files: [file] }
+    });
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/admin/knowledge/import",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify(candidate)
+        })
+      )
+    );
+    await waitFor(() => expect(listCalls).toBeGreaterThan(1));
+    expect(
+      await screen.findByText("导入成功，资料已进入逐段人工复核。")
+    ).toBeInTheDocument();
+  });
+
   it("reviews normalized knowledge sections against the official paragraph", async () => {
     const documentId = "d607d4d6-82df-4f1b-a5d4-7d80277e327d";
     const versionId = "cb71f682-9bdc-4899-b7b3-c459402b192c";

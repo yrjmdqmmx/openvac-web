@@ -2,7 +2,10 @@ import manifest from "../knowledge/source-manifest.json";
 import { eq } from "drizzle-orm";
 import { db } from "../src/server/db";
 import { knowledgeSources } from "../src/server/db/schema";
-import { mergeSeedSourceMetadata } from "../src/server/knowledge/source-metadata";
+import {
+  existingSeedSourcePatch,
+  mergeSeedSourceMetadata
+} from "../src/server/knowledge/source-metadata";
 
 type SourceManifestItem = (typeof manifest)[number];
 type RightsDecision = {
@@ -26,6 +29,16 @@ for (const source of manifest as GovernedSourceManifestItem[]) {
     .where(eq(knowledgeSources.canonicalUrl, source.canonicalUrl))
     .limit(1);
 
+  const seededMetadata = {
+    sourceKey: source.sourceKey,
+    seededBy: "knowledge/source-manifest.json",
+    rightsReviewed: source.rightsReviewed === true,
+    ...("officialPublishedPdfBinaryRequired" in source &&
+    source.officialPublishedPdfBinaryRequired === true
+      ? { officialPublishedPdfBinaryRequired: true }
+      : {}),
+    ...(source.rightsDecision ? { rightsDecision: source.rightsDecision } : {})
+  };
   const values = {
     kind: source.kind,
     name: source.name,
@@ -37,21 +50,20 @@ for (const source of manifest as GovernedSourceManifestItem[]) {
     trustLevel: source.trustLevel,
     enabled: source.enabled,
     notes: source.notes,
-    metadata: mergeSeedSourceMetadata(existing[0]?.metadata, {
-      sourceKey: source.sourceKey,
-      seededBy: "knowledge/source-manifest.json",
-      rightsReviewed: source.rightsReviewed === true,
-      ...(source.rightsDecision
-        ? { rightsDecision: source.rightsDecision }
-        : {})
-    }),
+    metadata: mergeSeedSourceMetadata(existing[0]?.metadata, seededMetadata),
     updatedAt: new Date()
   } as typeof knowledgeSources.$inferInsert;
 
   if (existing[0]) {
     await db
       .update(knowledgeSources)
-      .set(values)
+      .set(
+        existingSeedSourcePatch({
+          existingMetadata: existing[0].metadata,
+          seededMetadata,
+          updatedAt: values.updatedAt ?? new Date()
+        })
+      )
       .where(eq(knowledgeSources.id, existing[0].id));
   } else {
     await db.insert(knowledgeSources).values(values);
