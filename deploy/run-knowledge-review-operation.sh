@@ -392,7 +392,15 @@ SELECT json_build_object(
               'attempts', bt.attempts,
               'maxAttempts', bt.max_attempts,
               'readyNow', bt.run_at <= NOW(),
-              'hasLastError', bt.last_error IS NOT NULL
+              'hasLastError', bt.last_error IS NOT NULL,
+              'leaseStale', bt.status = 'running' AND (
+                bt.locked_at IS NULL
+                OR bt.locked_at < NOW() - INTERVAL '15 minutes'
+              ),
+              'lockedAgeSeconds', CASE
+                WHEN bt.locked_at IS NULL THEN NULL
+                ELSE floor(extract(epoch FROM (NOW() - bt.locked_at)))::integer
+              END
             ) ORDER BY bt.created_at
           )
           FROM background_task bt
@@ -544,6 +552,14 @@ await sqlClient.end();
 '
       )"
       printf '%s\n' "$schema_diagnostics"
+      worker_container="$(compose ps -q worker)"
+      if printf '%s\n' "$worker_container" | grep -Eq '^[0-9a-f]+$'; then
+        docker inspect --format \
+          '{"workerRuntime":{"status":"{{.State.Status}}","running":{{.State.Running}},"restarting":{{.State.Restarting}},"restartCount":{{.RestartCount}}}}' \
+          "$worker_container"
+      else
+        printf '%s\n' '{"workerRuntime":{"status":"unavailable","running":false,"restarting":false,"restartCount":null}}'
+      fi
       exit 0
     fi
     printf '%s\n' "$retry_diagnostics" >&2
