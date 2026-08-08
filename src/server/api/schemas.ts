@@ -19,6 +19,60 @@ export const adminRoleMutationSchema = z.object({
   role: z.enum(ADMIN_ROLES)
 });
 
+export const adminRoleReplaceSchema = z
+  .object({
+    userId: z.string().trim().min(1).max(128),
+    expectedRole: z.enum(ADMIN_ROLES),
+    role: z.enum(ADMIN_ROLES)
+  })
+  .strict()
+  .refine((value) => value.expectedRole !== value.role, {
+    message: "新角色必须与当前角色不同。",
+    path: ["role"]
+  });
+
+export const adminInvitationCreateSchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  role: z.enum(ADMIN_ROLES)
+});
+
+export const adminInvitationDeleteSchema = z.object({
+  invitationId: uuidSchema
+});
+
+export const adminInvitationAcceptSchema = z.object({
+  token: uuidSchema
+});
+
+export const adminTaskStateUpdateSchema = z
+  .object({
+    taskKey: z
+      .string()
+      .trim()
+      .min(3)
+      .max(300)
+      .regex(
+        /^(?:auth:role-conflict|feedback|problem_report|knowledge|system|budget):[^\s:][^\s]*$/u,
+        "任务标识不属于允许的实时业务源。"
+      ),
+    expectedRevision: z.number().int().min(0),
+    assigneeUserId: z.string().trim().min(1).max(128).nullable().optional(),
+    status: z.enum(["open", "in_progress", "done"]).optional(),
+    dueAt: z.iso.datetime().nullable().optional(),
+    snoozedUntil: z.iso.datetime().nullable().optional(),
+    note: z.string().trim().max(2_000).nullable().optional()
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.assigneeUserId !== undefined ||
+      value.status !== undefined ||
+      value.dueAt !== undefined ||
+      value.snoozedUntil !== undefined ||
+      value.note !== undefined,
+    "至少提供一个要更新的任务状态字段。"
+  );
+
 export const conversationSearchSchema = pageSchema.extend({
   q: z.string().trim().min(1).max(120)
 });
@@ -130,6 +184,12 @@ export const userQuotaSchema = z.object({
   reason: z.string().trim().min(3).max(500)
 });
 
+export const userSessionRevokeSchema = z
+  .object({
+    reason: z.string().trim().min(3).max(500)
+  })
+  .strict();
+
 export const feedbackStatusSchema = z.object({
   status: z.enum(["open", "reviewing", "resolved", "dismissed"]),
   note: optionalTrimmed(1000)
@@ -184,6 +244,37 @@ export const knowledgeReviewSchema = z
       });
     }
   });
+
+export const knowledgeSectionDecisionSchema = z
+  .object({
+    expectedSectionHash: z
+      .string()
+      .trim()
+      .regex(/^[a-f0-9]{64}$/u, "段落哈希必须是小写 SHA-256。"),
+    expectedRevision: z.number().int().min(0),
+    decision: z.enum(["approved", "rejected", "changes_requested"]),
+    note: optionalTrimmed(2_000)
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.decision !== "approved" && !value.note) {
+      context.addIssue({
+        code: "custom",
+        path: ["note"],
+        message: "驳回或要求修改段落时必须填写审核备注。"
+      });
+    }
+  });
+
+export const knowledgeSectionReviewCompleteSchema = z
+  .object({
+    versionId: uuidSchema,
+    expectedContentHash: z
+      .string()
+      .trim()
+      .regex(/^[a-f0-9]{64}$/u, "内容哈希必须是小写 SHA-256。")
+  })
+  .strict();
 
 const sourceKindSchema = z.enum([
   "upload",
@@ -281,14 +372,9 @@ export const promptSchema = z.object({
 
 export const promptUpdateSchema = z
   .object({
-    content: z.string().min(1).max(200_000).optional(),
-    notes: optionalTrimmed(2000),
-    status: z.enum(["draft", "active", "archived"]).optional()
+    status: z.enum(["active", "archived"])
   })
-  .refine(
-    (value) => Object.keys(value).length > 0,
-    "至少提供一个要更新的字段。"
-  );
+  .strict();
 
 export const budgetsSchema = z
   .object({

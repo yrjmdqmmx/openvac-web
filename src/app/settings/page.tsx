@@ -23,6 +23,8 @@ export default async function SettingsPage() {
       <AccountSettings
         email={session.user.email}
         userName={session.user.name || "OpenVac 用户"}
+        image={session.user.image ?? null}
+        twoFactorEnabled={Boolean(session.user.twoFactorEnabled)}
       />
     </div>
   );

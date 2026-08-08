@@ -20,6 +20,7 @@ export type AccountSessionSummary = {
   userAgent: string | null;
   ipAddress: string | null;
   createdAt: Date;
+  updatedAt: Date;
   expiresAt: Date;
 };
 
@@ -38,6 +39,7 @@ export const accountSessionRepository: AccountSessionRepository = {
         userAgent: authSession.userAgent,
         ipAddress: authSession.ipAddress,
         createdAt: authSession.createdAt,
+        updatedAt: authSession.updatedAt,
         expiresAt: authSession.expiresAt
       })
       .from(authSession)
@@ -63,13 +65,17 @@ export const handleListAccountSessions = withApiErrors(
     const user = await authenticateRequest(request);
     const sessions = await repository.listOwned(user.id);
     return jsonData(
-      sessions.map(({ id, userAgent, ipAddress, createdAt, expiresAt }) => ({
-        id,
-        userAgent,
-        ipAddress,
-        createdAt,
-        expiresAt
-      }))
+      sessions.map(
+        ({ id, userAgent, ipAddress, createdAt, updatedAt, expiresAt }) => ({
+          id,
+          userAgent,
+          ipAddress,
+          createdAt,
+          updatedAt,
+          expiresAt,
+          isCurrent: id === user.sessionId
+        })
+      )
     );
   }
 );

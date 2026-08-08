@@ -11,6 +11,7 @@ import {
   type GroundingEvidence
 } from "@/server/agent";
 import { auth } from "@/server/auth";
+import { isEffectiveBan } from "@/server/auth/ban-policy";
 import {
   AccountDeletionInProgressError,
   assertAccountWritable
@@ -100,10 +101,7 @@ async function postLegacyChat(request: Request) {
     .from(user)
     .where(eq(user.id, session.user.id))
     .limit(1);
-  if (
-    account?.banned &&
-    (!account.banExpires || account.banExpires > new Date())
-  ) {
+  if (account && isEffectiveBan(account)) {
     return jsonError(
       403,
       "ACCOUNT_SUSPENDED",

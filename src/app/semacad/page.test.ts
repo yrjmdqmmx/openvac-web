@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
+  getAdminRole: vi.fn(),
   ready: false,
   release: {
     status: "preparing",
@@ -35,6 +36,9 @@ vi.mock("next/image", () => ({
 vi.mock("@/server/auth", () => ({
   auth: { api: { getSession: mocks.getSession } }
 }));
+vi.mock("@/server/api/store", () => ({
+  apiStore: { getAdminRole: mocks.getAdminRole }
+}));
 vi.mock("@/components/site-header", () => ({
   SiteHeader: ({
     authenticated,
@@ -59,6 +63,8 @@ import SemacadPage, { metadata } from "./page";
 beforeEach(() => {
   mocks.getSession.mockReset();
   mocks.getSession.mockResolvedValue(null);
+  mocks.getAdminRole.mockReset();
+  mocks.getAdminRole.mockResolvedValue(null);
   mocks.ready = false;
   Object.assign(mocks.release, {
     status: "preparing",
@@ -117,7 +123,7 @@ describe("SemaCAD product page", () => {
     })) {
       expect(sourceLink).toHaveAttribute(
         "href",
-        "https://github.com/zdywrnm/SemaCAD"
+        "https://github.com/yrjmdqmmx/SemaCAD"
       );
     }
     expect(
@@ -134,9 +140,9 @@ describe("SemaCAD product page", () => {
       status: "public-beta",
       assetName: "semaCAD-0.2.0-beta.1-macOS26-arm64.dmg",
       downloadUrl:
-        "https://github.com/zdywrnm/SemaCAD/releases/download/v0.2.0-beta.1/semaCAD-0.2.0-beta.1-macOS26-arm64.dmg",
+        "https://github.com/yrjmdqmmx/SemaCAD/releases/download/v0.2.0-beta.1/semaCAD-0.2.0-beta.1-macOS26-arm64.dmg",
       releaseUrl:
-        "https://github.com/zdywrnm/SemaCAD/releases/tag/v0.2.0-beta.1",
+        "https://github.com/yrjmdqmmx/SemaCAD/releases/tag/v0.2.0-beta.1",
       build: "2026080605",
       sizeBytes: 1_742_524_586,
       sha256:

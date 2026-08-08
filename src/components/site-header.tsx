@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
 
 import { Brand } from "@/components/brand";
+import { safeAccountAvatarUrl } from "@/lib/account-avatar";
+import { authClient } from "@/lib/auth-client";
 
 const publicNavItems = [{ href: "/semacad", label: "SemaCAD" }] as const;
 
@@ -23,27 +25,37 @@ function GitHubMark() {
 
 export function SiteHeader({
   authenticated,
+  user,
+  hasAdminRole = false,
   appearance = "default"
 }: {
   authenticated: boolean;
+  user?: { name?: string | null; image?: string | null };
+  hasAdminRole?: boolean;
   appearance?: "default" | "glass";
 }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const mobileMenuId = useId();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    if (!mobileMenuOpen) return;
+    if (!mobileMenuOpen && !accountMenuOpen) return;
 
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
       setMobileMenuOpen(false);
+      setAccountMenuOpen(false);
       menuButtonRef.current?.focus();
     }
 
     document.addEventListener("keydown", closeOnEscape);
     return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [mobileMenuOpen]);
+  }, [accountMenuOpen, mobileMenuOpen]);
+
+  const displayName = user?.name?.trim() || "OpenVac 用户";
+  const avatarUrl = safeAccountAvatarUrl(user?.image);
+  const avatarFallback = (displayName.charAt(0) || "用").toUpperCase();
 
   function closeMobileMenu() {
     setMobileMenuOpen(false);
@@ -74,7 +86,7 @@ export function SiteHeader({
             </Link>
           ))}
           <a
-            href="https://github.com/zdywrnm/openvac-web"
+            href="https://github.com/yrjmdqmmx/openvac-web"
             target="_blank"
             rel="noreferrer"
             className="hidden items-center gap-1.5 transition-colors hover:text-[var(--muted)] sm:inline-flex"
@@ -82,16 +94,80 @@ export function SiteHeader({
             <GitHubMark />
             开源项目
           </a>
-          <Link
-            href={authenticated ? "/chat" : "/sign-in"}
-            className={
-              authenticated
-                ? "inline-flex min-h-11 items-center rounded-lg bg-[var(--ink)] px-4 !text-white transition-colors hover:bg-[#292b2d] sm:px-5"
-                : "inline-flex min-h-11 items-center rounded-full border border-[var(--border-strong)] px-4 transition-colors hover:border-[var(--ink)]"
-            }
-          >
-            {authenticated ? "继续对话" : "登录"}
-          </Link>
+          {!authenticated ? (
+            <Link
+              href="/sign-in"
+              className="inline-flex min-h-11 items-center rounded-full border border-[var(--border-strong)] px-4 transition-colors hover:border-[var(--ink)]"
+            >
+              登录
+            </Link>
+          ) : null}
+          {authenticated ? (
+            <div className="relative">
+              <button
+                type="button"
+                aria-label={accountMenuOpen ? "关闭账户菜单" : "打开账户菜单"}
+                aria-expanded={accountMenuOpen}
+                onClick={() => setAccountMenuOpen((open) => !open)}
+                className="inline-flex size-11 items-center justify-center overflow-hidden rounded-full border border-[var(--border-strong)] bg-white text-sm font-semibold shadow-sm"
+              >
+                {avatarUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={avatarUrl}
+                    alt=""
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  avatarFallback
+                )}
+              </button>
+              {accountMenuOpen ? (
+                <div
+                  role="menu"
+                  aria-label="账户菜单"
+                  className="absolute top-[calc(100%+10px)] right-0 z-50 w-52 overflow-hidden rounded-xl border border-[var(--border)] bg-white p-2 text-sm shadow-[0_18px_45px_rgba(17,19,21,0.14)]"
+                >
+                  <p className="truncate px-3 py-2 text-xs text-[var(--muted)]">
+                    {displayName}
+                  </p>
+                  <Link
+                    href="/chat"
+                    className="block rounded-lg px-3 py-2 hover:bg-[var(--surface)]"
+                  >
+                    继续对话
+                  </Link>
+                  <Link
+                    href="/settings"
+                    className="block rounded-lg px-3 py-2 hover:bg-[var(--surface)]"
+                  >
+                    账户设置
+                  </Link>
+                  <Link
+                    href="/settings#sessions"
+                    className="block rounded-lg px-3 py-2 hover:bg-[var(--surface)]"
+                  >
+                    设备会话
+                  </Link>
+                  {hasAdminRole ? (
+                    <Link
+                      href="/admin"
+                      className="block rounded-lg px-3 py-2 hover:bg-[var(--surface)]"
+                    >
+                      运营后台
+                    </Link>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => void authClient.signOut()}
+                    className="block w-full rounded-lg px-3 py-2 text-left text-[var(--danger)] hover:bg-[var(--surface)]"
+                  >
+                    退出登录
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <button
             ref={menuButtonRef}
             type="button"
@@ -146,7 +222,7 @@ export function SiteHeader({
               </Link>
             ))}
             <a
-              href="https://github.com/zdywrnm/openvac-web"
+              href="https://github.com/yrjmdqmmx/openvac-web"
               target="_blank"
               rel="noreferrer"
               onClick={closeMobileMenu}

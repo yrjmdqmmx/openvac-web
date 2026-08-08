@@ -26,5 +26,11 @@ describe("buildAuthEmail", () => {
     expect(buildAuthEmail("verify-email", url).text).toContain("邮箱");
     expect(buildAuthEmail("reset-password", url).text).toContain("密码");
     expect(buildAuthEmail("delete-account", url).text).toContain("删除");
+    expect(buildAuthEmail("change-email-confirmation", url).text).toContain(
+      "旧邮箱"
+    );
+    expect(buildAuthEmail("change-email-verification", url).text).toContain(
+      "新邮箱"
+    );
   });
 });

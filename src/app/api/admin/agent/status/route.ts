@@ -38,7 +38,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const updateSchema = z.object({ enabled: z.boolean() });
-const checkSchema = z.object({ check: z.enum(["balance", "responses"]) });
+const checkSchema = z.object({
+  check: z.enum(["balance", "responses"]),
+  confirmation: z.literal("EXECUTE_EXTERNAL_MODEL_CHECK")
+});
 const balanceSchema = z.object({
   is_available: z.boolean(),
   balance_infos: z
@@ -167,7 +170,7 @@ export const PATCH = withApiErrors(async (request: Request) => {
 });
 
 export const POST = withApiErrors(async (request: Request) => {
-  const actor = await requireCapability(request, apiStore, "metrics:read");
+  const actor = await requireCapability(request, apiStore, "models:execute");
   const input = await parseJson(request, checkSchema);
   if (input.check === "balance") {
     return jsonData(await checkDeepSeekBalance());

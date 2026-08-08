@@ -37,6 +37,42 @@ describe("generic administrator table shapes", () => {
     });
   });
 
+  it("marks a rights decision stale when it belongs to another record URL", () => {
+    expect(
+      sourceAdminTableShape({
+        id: "source-2",
+        name: "CERN updated record",
+        publisher: "CERN",
+        baseUrl: "https://cds.cern.ch/",
+        canonicalUrl: "https://cds.cern.ch/record/new",
+        licensePolicy: "record review",
+        sourceTier: "open_license",
+        metadata: {
+          rightsDecision: {
+            status: "approved",
+            scope: "full_text",
+            appliesToRecordUrl: "https://cds.cern.ch/record/old"
+          }
+        }
+      }).rightsStatus
+    ).toBe("stale");
+
+    expect(
+      sourceAdminTableShape({
+        id: "source-legacy",
+        name: "Legacy source",
+        publisher: "Publisher",
+        baseUrl: "https://example.com/",
+        canonicalUrl: "https://example.com/record",
+        licensePolicy: "legacy",
+        sourceTier: "open_license",
+        metadata: {
+          rightsDecision: { status: "approved", scope: "full_text" }
+        }
+      }).rightsStatus
+    ).toBe("stale");
+  });
+
   it("normalizes prompt key and evaluation fields", () => {
     expect(
       promptAdminTableShape({

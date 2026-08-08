@@ -1,7 +1,11 @@
 import { getEmailProvider } from "@/server/providers";
 
 export type AuthEmailKind =
-  "delete-account" | "reset-password" | "verify-email";
+  | "change-email-confirmation"
+  | "change-email-verification"
+  | "delete-account"
+  | "reset-password"
+  | "verify-email";
 
 interface AuthEmailContent {
   subject: string;
@@ -42,6 +46,20 @@ const EMAIL_COPY: Record<
     action: "确认删除账号",
     notice: "如果你没有发起删除请求，请不要点击链接，并尽快修改密码。",
     tag: "auth-delete-account"
+  },
+  "change-email-confirmation": {
+    subject: "确认更换你的 OpenVac 邮箱",
+    heading: "在旧邮箱确认更换",
+    action: "确认更换邮箱",
+    notice: "如果你没有发起邮箱更换，请不要点击链接并立即修改密码。",
+    tag: "auth-change-email-confirmation"
+  },
+  "change-email-verification": {
+    subject: "验证你的 OpenVac 新邮箱",
+    heading: "验证新邮箱",
+    action: "验证新邮箱",
+    notice: "完成验证后，新邮箱将用于登录 OpenVac。",
+    tag: "auth-change-email-verification"
   }
 };
 

@@ -4,7 +4,13 @@ import "@testing-library/jest-dom/vitest";
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const authMocks = vi.hoisted(() => ({ signOut: vi.fn() }));
+
+vi.mock("@/lib/auth-client", () => ({
+  authClient: { signOut: authMocks.signOut }
+}));
 
 import { SiteHeader } from "./site-header";
 
@@ -25,7 +31,7 @@ describe("SiteHeader", () => {
     for (const sourceLink of sourceLinks) {
       expect(sourceLink).toHaveAttribute(
         "href",
-        "https://github.com/zdywrnm/openvac-web"
+        "https://github.com/yrjmdqmmx/openvac-web"
       );
     }
     expect(
@@ -70,12 +76,45 @@ describe("SiteHeader", () => {
   it("renders a server-determined continue link for signed-in users", () => {
     render(createElement(SiteHeader, { authenticated: true }));
 
+    fireEvent.click(screen.getByRole("button", { name: "打开账户菜单" }));
     const continueLink = screen.getByRole("link", { name: "继续对话" });
     expect(continueLink).toHaveAttribute("href", "/chat");
-    expect(continueLink).toHaveClass("!text-white");
     expect(
       screen.queryByRole("link", { name: "登录" })
     ).not.toBeInTheDocument();
+  });
+
+  it("shows an initials avatar and the complete account menu for signed-in users", () => {
+    render(
+      createElement(SiteHeader, {
+        authenticated: true,
+        user: { name: "张三", image: null },
+        hasAdminRole: true
+      })
+    );
+
+    const accountButton = screen.getByRole("button", { name: "打开账户菜单" });
+    expect(accountButton).toHaveTextContent("张");
+    fireEvent.click(accountButton);
+
+    expect(screen.getByRole("link", { name: "继续对话" })).toHaveAttribute(
+      "href",
+      "/chat"
+    );
+    expect(screen.getByRole("link", { name: "账户设置" })).toHaveAttribute(
+      "href",
+      "/settings"
+    );
+    expect(screen.getByRole("link", { name: "设备会话" })).toHaveAttribute(
+      "href",
+      "/settings#sessions"
+    );
+    expect(screen.getByRole("link", { name: "运营后台" })).toHaveAttribute(
+      "href",
+      "/admin"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
+    expect(authMocks.signOut).toHaveBeenCalledTimes(1);
   });
 
   it("links SemaCAD directly and exposes an accessible mobile menu", () => {

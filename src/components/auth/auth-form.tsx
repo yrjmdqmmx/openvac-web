@@ -11,22 +11,50 @@ import { useHydrated } from "@/lib/use-hydrated";
 type Mode = "sign-in" | "sign-up" | "forgot" | "reset";
 
 function friendlyError(error: unknown) {
-  const message =
-    typeof error === "object" &&
-    error &&
-    "message" in error &&
-    typeof error.message === "string"
-      ? error.message
-      : "";
+  const details =
+    typeof error === "object" && error
+      ? (error as {
+          code?: unknown;
+          message?: unknown;
+          status?: unknown;
+        })
+      : {};
+  const code =
+    typeof details.code === "string" ? details.code.toUpperCase() : "";
+  const message = typeof details.message === "string" ? details.message : "";
+  const status =
+    typeof details.status === "number" ? details.status : undefined;
 
-  if (/verify|verification|email.*not/i.test(message)) {
+  if (code === "EMAIL_NOT_VERIFIED" || /email.*not.*verif/i.test(message)) {
     return "请先完成邮箱验证。验证邮件可在登录页重新发送。";
   }
-  if (/password|credential|invalid/i.test(message)) {
+  if (code === "INVALID_ORIGIN" || /invalid origin/i.test(message)) {
+    return "当前页面来源未获授权，请刷新后重试或联系管理员。";
+  }
+  if (
+    code === "TOO_MANY_REQUESTS" ||
+    status === 429 ||
+    /rate|too many|429/i.test(message)
+  ) {
+    return "操作过于频繁，请稍后再试。";
+  }
+  if (code === "BANNED_USER" || /\bban(ned)?\b/i.test(message)) {
+    return "当前账号已被暂停使用。如有疑问，请联系管理员。";
+  }
+  if (
+    code === "INVALID_EMAIL_OR_PASSWORD" ||
+    code === "INVALID_PASSWORD" ||
+    status === 401 ||
+    /password|credential/i.test(message)
+  ) {
     return "邮箱或密码不正确，请重试。";
   }
-  if (/rate|too many|429/i.test(message)) {
-    return "操作过于频繁，请稍后再试。";
+  if (
+    (status !== undefined && status >= 500) ||
+    code === "SERVICE_UNAVAILABLE" ||
+    error instanceof TypeError
+  ) {
+    return "认证服务暂时不可用，请稍后重试。";
   }
   return "暂时无法完成操作，请稍后重试。";
 }
@@ -53,6 +81,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
 
     try {
       if (mode === "sign-in") {
+        window.sessionStorage.setItem("openvac:two-factor:return-to", returnTo);
         const response = await authClient.signIn.email({
           email,
           password,
@@ -60,6 +89,13 @@ export function AuthForm({ mode }: { mode: Mode }) {
           callbackURL: returnTo
         });
         if (response.error) throw response.error;
+        if (
+          (response.data as { twoFactorRedirect?: boolean } | null)
+            ?.twoFactorRedirect
+        ) {
+          return;
+        }
+        window.sessionStorage.removeItem("openvac:two-factor:return-to");
         router.push(returnTo);
         router.refresh();
         return;
@@ -158,7 +194,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
             }
             required
             disabled={!ready}
-            minLength={10}
+            minLength={mode === "sign-in" ? 8 : 10}
             maxLength={128}
             value={password}
             onChange={(event) => setPassword(event.target.value)}

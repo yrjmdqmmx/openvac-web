@@ -20,7 +20,7 @@ describe("account session handlers", () => {
     const response = await handleListAccountSessions(
       new Request("https://openvac.example/api/account/sessions"),
       repository,
-      vi.fn(async () => user)
+      vi.fn(async () => ({ ...user, sessionId: "session-1" }))
     );
     const payload = (await response.json()) as {
       data: Array<Record<string, unknown>>;
@@ -29,7 +29,9 @@ describe("account session handlers", () => {
     expect(response.status).toBe(200);
     expect(payload.data[0]).toMatchObject({
       id: "session-1",
-      userAgent: "Browser"
+      userAgent: "Browser",
+      isCurrent: true,
+      updatedAt: "2026-08-01T00:00:00.000Z"
     });
     expect(payload.data[0]).not.toHaveProperty("token");
   });
@@ -42,7 +44,7 @@ describe("account session handlers", () => {
       }),
       "session-1",
       repository,
-      vi.fn(async () => user)
+      vi.fn(async () => ({ ...user, sessionId: "session-1" }))
     );
 
     expect(response.status).toBe(200);
@@ -84,6 +86,7 @@ function makeRepository(revoked = true) {
         userAgent: "Browser",
         ipAddress: null,
         createdAt: new Date("2026-07-31T00:00:00.000Z"),
+        updatedAt: new Date("2026-08-01T00:00:00.000Z"),
         expiresAt: new Date("2026-08-07T00:00:00.000Z"),
         token: "must-never-reach-browser"
       }

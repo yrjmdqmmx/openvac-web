@@ -29,6 +29,83 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 describe("admin components", () => {
+  it("reviews normalized knowledge sections against the official paragraph", async () => {
+    const documentId = "d607d4d6-82df-4f1b-a5d4-7d80277e327d";
+    const versionId = "cb71f682-9bdc-4899-b7b3-c459402b192c";
+    const sectionId = "ab71f682-9bdc-4899-b7b3-c459402b192c";
+    const sectionHash = "a".repeat(64);
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === `/api/admin/knowledge/${documentId}/review`) {
+        return jsonResponse({
+          data: {
+            documentId,
+            versionId,
+            versionContentHash: "b".repeat(64),
+            versionStatus: "draft",
+            sections: [
+              {
+                id: sectionId,
+                versionId,
+                sectionIndex: 0,
+                contentZh: "真空泵应定期检查。",
+                officialText: "Check the vacuum pump regularly.",
+                pageStart: 4,
+                pageEnd: 4,
+                sectionHash,
+                reviewStatus: "required",
+                decision: null
+              }
+            ]
+          }
+        });
+      }
+      if (url.includes("/decision") && init?.method === "POST") {
+        return jsonResponse({ data: { id: sectionId } });
+      }
+      return jsonResponse({
+        data: {
+          items: [
+            {
+              id: documentId,
+              title: "逐段审核资料",
+              status: "draft",
+              currentVersionId: versionId,
+              versionStatus: "draft",
+              contentHash: "b".repeat(64),
+              reviewStatus: "required",
+              publishReady: false,
+              publishBlockers: ["必须先完成逐段审核。"]
+            }
+          ]
+        }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(createElement(KnowledgeManager));
+
+    expect(await screen.findByText("真空泵应定期检查。")).toBeInTheDocument();
+    expect(
+      screen.getByText("Check the vacuum pump regularly.")
+    ).toBeInTheDocument();
+    expect(screen.getByText("第 4 页")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "通过段落" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/api/admin/knowledge/${documentId}/versions/${versionId}/sections/${sectionId}/decision`,
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            expectedSectionHash: sectionHash,
+            expectedRevision: 0,
+            decision: "approved"
+          })
+        })
+      )
+    );
+  });
+
   it("renders review, embedding and publish readiness from knowledge detail", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
@@ -89,8 +166,7 @@ describe("admin components", () => {
     );
   });
 
-  it("approves the exact current knowledge hash with an optional note", async () => {
-    const contentHash = "b".repeat(64);
+  it("does not expose legacy whole-document approve or reject actions", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         data: {
@@ -101,7 +177,7 @@ describe("admin components", () => {
               status: "draft",
               currentVersionId: "version-approve",
               versionStatus: "draft",
-              contentHash,
+              contentHash: "b".repeat(64),
               reviewStatus: "required",
               publishReady: false,
               publishBlockers: ["必须先完成人工复核。"]
@@ -114,72 +190,16 @@ describe("admin components", () => {
 
     render(createElement(KnowledgeManager));
 
-    const note = await screen.findByRole("textbox", { name: "审核备注" });
-    fireEvent.change(note, { target: { value: "来源与页码已核对。" } });
-    fireEvent.click(screen.getByRole("button", { name: "批准" }));
-
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/admin/knowledge/document-approve/review",
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            versionId: "version-approve",
-            expectedContentHash: contentHash,
-            decision: "approved",
-            note: "来源与页码已核对。"
-          })
-        })
-      )
-    );
-  });
-
-  it("requires a note and submits knowledge rejection", async () => {
-    const contentHash = "c".repeat(64);
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({
-        data: {
-          items: [
-            {
-              id: "document-reject",
-              title: "需要退回的知识",
-              status: "review",
-              currentVersionId: "version-reject",
-              versionStatus: "review",
-              contentHash,
-              reviewStatus: "required",
-              publishReady: false,
-              publishBlockers: []
-            }
-          ]
-        }
-      })
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(createElement(KnowledgeManager));
-
-    const reject = await screen.findByRole("button", { name: "驳回" });
-    expect(reject).toBeDisabled();
-    fireEvent.change(screen.getByRole("textbox", { name: "审核备注" }), {
-      target: { value: "引用缺少具体页码。" }
-    });
-    expect(reject).toBeEnabled();
-    fireEvent.click(reject);
-
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/admin/knowledge/document-reject/review",
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            versionId: "version-reject",
-            expectedContentHash: contentHash,
-            decision: "rejected",
-            note: "引用缺少具体页码。"
-          })
-        })
-      )
+    expect(await screen.findByText(/整份哈希批准已停用/u)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "批准" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "驳回" })
+    ).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/admin/knowledge/document-approve/review",
+      expect.anything()
     );
   });
 

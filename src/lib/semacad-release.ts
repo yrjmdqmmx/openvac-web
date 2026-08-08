@@ -32,7 +32,7 @@ const immutableGithubDownloadUrl = z
     return (
       url.protocol === "https:" &&
       url.hostname === "github.com" &&
-      /^\/zdywrnm\/SemaCAD\/releases\/download\/[^/]+\/[^/]+$/.test(
+      /^\/yrjmdqmmx\/SemaCAD\/releases\/download\/[^/]+\/[^/]+$/.test(
         url.pathname
       ) &&
       !/(?:internal|staging)/i.test(url.pathname)
@@ -57,7 +57,7 @@ const publicBetaReleaseSchema = baseReleaseSchema.extend({
       return (
         url.protocol === "https:" &&
         url.hostname === "github.com" &&
-        /^\/zdywrnm\/SemaCAD\/releases\/tag\/[^/]+$/.test(url.pathname) &&
+        /^\/yrjmdqmmx\/SemaCAD\/releases\/tag\/[^/]+$/.test(url.pathname) &&
         !/(?:internal|staging)/i.test(url.pathname)
       );
     }, "releaseUrl must point to a public, immutable SemaCAD release tag"),
@@ -129,8 +129,8 @@ export const semacadRelease = semacadReleaseManifestSchema.parse({
   build: "2026080605",
   assetName: "semaCAD-0.2.0-beta.1-macOS26-arm64.dmg",
   downloadUrl:
-    "https://github.com/zdywrnm/SemaCAD/releases/download/v0.2.0-beta.1/semaCAD-0.2.0-beta.1-macOS26-arm64.dmg",
-  releaseUrl: "https://github.com/zdywrnm/SemaCAD/releases/tag/v0.2.0-beta.1",
+    "https://github.com/yrjmdqmmx/SemaCAD/releases/download/v0.2.0-beta.1/semaCAD-0.2.0-beta.1-macOS26-arm64.dmg",
+  releaseUrl: "https://github.com/yrjmdqmmx/SemaCAD/releases/tag/v0.2.0-beta.1",
   sizeBytes: 1_742_524_586,
   sha256: "ab4fb2e669422a2fc9407fac1340c01e3a2cc02ae16e08ff7cb89936408fadfb",
   architecture: "arm64",

@@ -9,6 +9,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
   vector
@@ -34,6 +35,11 @@ export const knowledgeStatus = pgEnum("knowledge_status", [
   "failed",
   "archived"
 ]);
+
+export const knowledgeSectionDecisionStatus = pgEnum(
+  "knowledge_section_decision_status",
+  ["approved", "rejected", "changes_requested"]
+);
 
 export const knowledgeSourceTier = pgEnum("knowledge_source_tier", [
   "open_license",
@@ -206,6 +212,106 @@ export const knowledgeVersion = pgTable(
   ]
 );
 
+export const knowledgeReviewSection = pgTable(
+  "knowledge_review_section",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    versionId: uuid("version_id")
+      .notNull()
+      .references(() => knowledgeVersion.id, { onDelete: "cascade" }),
+    sectionIndex: integer("section_index").notNull(),
+    contentZh: text("content_zh").notNull(),
+    officialText: text("official_text").default("").notNull(),
+    pageStart: integer("page_start"),
+    pageEnd: integer("page_end"),
+    rightsSnapshot: jsonb("rights_snapshot")
+      .$type<Record<string, unknown>>()
+      .default({})
+      .notNull(),
+    rightsSnapshotHash: text("rights_snapshot_hash").notNull(),
+    versionContentHash: text("version_content_hash").notNull(),
+    sectionHash: text("section_hash").notNull(),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      withTimezone: true
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      mode: "date",
+      withTimezone: true
+    })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull()
+  },
+  (table) => [
+    unique("knowledge_review_section_version_index_unique").on(
+      table.versionId,
+      table.sectionIndex
+    ),
+    index("knowledge_review_section_version_idx").on(table.versionId),
+    check(
+      "knowledge_review_section_index_valid",
+      sql`${table.sectionIndex} >= 0`
+    ),
+    check(
+      "knowledge_review_section_pages_valid",
+      sql`(${table.pageStart} is null or ${table.pageStart} > 0) and (${table.pageEnd} is null or ${table.pageEnd} >= ${table.pageStart})`
+    ),
+    check(
+      "knowledge_review_section_hash_valid",
+      sql`${table.sectionHash} ~ '^[0-9a-f]{64}$' and ${table.rightsSnapshotHash} ~ '^[0-9a-f]{64}$' and ${table.versionContentHash} ~ '^[0-9a-f]{64}$'`
+    )
+  ]
+);
+
+export const knowledgeSectionDecision = pgTable(
+  "knowledge_section_decision",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    sectionId: uuid("section_id")
+      .notNull()
+      .references(() => knowledgeReviewSection.id, { onDelete: "cascade" }),
+    sectionHash: text("section_hash").notNull(),
+    decision: knowledgeSectionDecisionStatus("decision").notNull(),
+    note: text("note"),
+    reviewerId: text("reviewer_id").references(() => user.id, {
+      onDelete: "set null"
+    }),
+    revision: integer("revision").default(1).notNull(),
+    decidedAt: timestamp("decided_at", {
+      mode: "date",
+      withTimezone: true
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      mode: "date",
+      withTimezone: true
+    })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull()
+  },
+  (table) => [
+    unique("knowledge_section_decision_section_unique").on(table.sectionId),
+    index("knowledge_section_decision_reviewer_idx").on(table.reviewerId),
+    check(
+      "knowledge_section_decision_hash_valid",
+      sql`${table.sectionHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "knowledge_section_decision_revision_valid",
+      sql`${table.revision} > 0`
+    ),
+    check(
+      "knowledge_section_decision_note_required",
+      sql`${table.decision} = 'approved' or length(trim(coalesce(${table.note}, ''))) > 0`
+    )
+  ]
+);
+
 export const knowledgeChunk = pgTable(
   "knowledge_chunk",
   {
@@ -286,7 +392,36 @@ export const knowledgeVersionRelations = relations(
       references: [knowledgeDocument.id],
       relationName: "knowledge_document_versions"
     }),
-    chunks: many(knowledgeChunk)
+    chunks: many(knowledgeChunk),
+    reviewSections: many(knowledgeReviewSection)
+  })
+);
+
+export const knowledgeReviewSectionRelations = relations(
+  knowledgeReviewSection,
+  ({ one }) => ({
+    version: one(knowledgeVersion, {
+      fields: [knowledgeReviewSection.versionId],
+      references: [knowledgeVersion.id]
+    }),
+    decision: one(knowledgeSectionDecision, {
+      fields: [knowledgeReviewSection.id],
+      references: [knowledgeSectionDecision.sectionId]
+    })
+  })
+);
+
+export const knowledgeSectionDecisionRelations = relations(
+  knowledgeSectionDecision,
+  ({ one }) => ({
+    section: one(knowledgeReviewSection, {
+      fields: [knowledgeSectionDecision.sectionId],
+      references: [knowledgeReviewSection.id]
+    }),
+    reviewer: one(user, {
+      fields: [knowledgeSectionDecision.reviewerId],
+      references: [user.id]
+    })
   })
 );
 
@@ -301,3 +436,5 @@ export const knowledgeSources = knowledgeSource;
 export const knowledgeDocuments = knowledgeDocument;
 export const knowledgeVersions = knowledgeVersion;
 export const knowledgeChunks = knowledgeChunk;
+export const knowledgeReviewSections = knowledgeReviewSection;
+export const knowledgeSectionDecisions = knowledgeSectionDecision;

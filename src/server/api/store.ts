@@ -21,11 +21,17 @@ import {
 import { db } from "@/server/db";
 import { recoverStaleAgentRuns } from "@/server/agent/retention";
 import {
+  materializeAdminTasks,
+  type AdminTaskCandidate
+} from "@/server/admin/tasks";
+import {
   serializeStoredCitation,
   serializeStoredMessage
 } from "@/server/chat/stored-message";
 import {
   adminRoles,
+  adminInvitations,
+  adminTaskStates,
   auditLogs,
   backgroundTasks,
   citations,
@@ -33,6 +39,8 @@ import {
   dailyUsage,
   knowledgeChunks,
   knowledgeDocuments,
+  knowledgeReviewSections,
+  knowledgeSectionDecisions,
   knowledgeSources,
   knowledgeVersions,
   messageCitations,
@@ -41,6 +49,7 @@ import {
   promptVersions,
   problemReports,
   systemSettings,
+  session as sessions,
   user as users
 } from "@/server/db/schema";
 import {
@@ -52,6 +61,7 @@ import {
   ACTIVE_REVIEWED,
   isPendingReviewRetrievalActive
 } from "@/server/knowledge/review-policy";
+import { assertKnowledgeSectionPublicationReady } from "@/server/knowledge/review-sections";
 import {
   problemReportClosureTransition,
   problemReportRetentionUntil
@@ -64,13 +74,11 @@ import {
 
 import { ApiError } from "./errors";
 import { auditLogReadPolicy } from "./audit-policy";
-import {
-  assertCurrentOwnerRole,
-  assertOwnerRoleRevocationAllowed
-} from "./role-policy";
+import { assertOwnerRoleRevocationAllowed } from "./role-policy";
 import {
   ADMIN_ROLES,
   type AdminRole,
+  type AccountProfile,
   type ApiStore,
   type AuditContext,
   type ConversationDetail,
@@ -178,7 +186,112 @@ function effectiveAdminRole(
   results: ReadonlyArray<{ role: AdminRole }>
 ): AdminRole | null {
   const assigned = new Set(results.map((result) => result.role));
+  if (assigned.size > 1) {
+    throw new ApiError(
+      409,
+      "ADMIN_ROLE_CONFLICT",
+      "该账号存在多个管理员角色，请先完成迁移后再继续。"
+    );
+  }
   return ADMIN_ROLES.find((role) => assigned.has(role)) ?? null;
+}
+
+function normalizeInvitationEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function invitationExpiresAt(createdAt: Date): Date {
+  return new Date(createdAt.getTime() + 48 * 60 * 60 * 1000);
+}
+
+function assertInvitationRoleAllowed(
+  actorRole: AdminRole | "user",
+  invitationRole: AdminRole
+): void {
+  if (actorRole !== "owner" && actorRole !== "admin") {
+    throw new ApiError(403, "FORBIDDEN", "当前管理员角色无权执行此操作。");
+  }
+
+  if (actorRole === "admin" && invitationRole === "owner") {
+    throw new ApiError(
+      403,
+      "OWNER_PROTECTED",
+      "只有 owner 可以邀请 owner 角色。"
+    );
+  }
+
+  if (actorRole === "admin" && invitationRole === "admin") {
+    throw new ApiError(
+      403,
+      "ADMIN_PROTECTED",
+      "只有 owner 可以邀请 admin 角色。"
+    );
+  }
+}
+
+function serializeAdminInvitation(row: {
+  id: string;
+  email: string;
+  role: AdminRole;
+  createdBy: string | null;
+  acceptedBy: string | null;
+  acceptedAt: Date | null;
+  revokedAt: Date | null;
+  createdAt: Date;
+  expiresAt: Date;
+}) {
+  const status = row.acceptedAt
+    ? "accepted"
+    : row.revokedAt
+      ? "revoked"
+      : invitationIsExpired(row)
+        ? "expired"
+        : "pending";
+  return {
+    id: row.id,
+    email: row.email,
+    role: row.role,
+    createdBy: row.createdBy,
+    acceptedBy: row.acceptedBy,
+    acceptedAt: row.acceptedAt,
+    revokedAt: row.revokedAt,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt,
+    status
+  };
+}
+
+function invitationIsExpired(row: {
+  acceptedAt: Date | null;
+  revokedAt: Date | null;
+  expiresAt: Date;
+}): boolean {
+  return row.expiresAt.getTime() <= Date.now();
+}
+
+function assertAdminRoleMutationAllowed(
+  actorRole: AdminRole,
+  targetRole: AdminRole
+): void {
+  if (actorRole !== "owner" && actorRole !== "admin") {
+    throw new ApiError(403, "FORBIDDEN", "当前管理员角色无权执行此操作。");
+  }
+
+  if (targetRole === "owner" && actorRole !== "owner") {
+    throw new ApiError(
+      403,
+      "OWNER_PROTECTED",
+      "只有 owner 可以管理 owner 角色。"
+    );
+  }
+
+  if (targetRole === "admin" && actorRole !== "owner") {
+    throw new ApiError(
+      403,
+      "ADMIN_PROTECTED",
+      "只有 owner 可以管理 admin 角色。"
+    );
+  }
 }
 
 function assertUserMutationAllowed(input: {
@@ -282,13 +395,21 @@ export function sourceAdminTableShape<
   }
 >(item: T) {
   const rightsDecision = recordValue(item.metadata?.rightsDecision);
+  const hasRightsDecision =
+    item.metadata?.rightsDecision !== null &&
+    item.metadata?.rightsDecision !== undefined;
+  const rightsDecisionMatchesRecord =
+    !hasRightsDecision ||
+    (typeof rightsDecision.appliesToRecordUrl === "string" &&
+      rightsDecision.appliesToRecordUrl === item.canonicalUrl);
   return {
     ...item,
     publisher: item.publisher ?? item.name,
     domain: sourceDomain(item.baseUrl),
     licenseClass: item.licensePolicy ?? item.sourceTier,
-    rightsStatus:
-      typeof rightsDecision.status === "string"
+    rightsStatus: !rightsDecisionMatchesRecord
+      ? "stale"
+      : typeof rightsDecision.status === "string"
         ? rightsDecision.status
         : "not_recorded",
     rightsScope:
@@ -314,6 +435,26 @@ export function promptAdminTableShape<
     name: item.key,
     evaluationScore: null
   };
+}
+
+export function assertPromptVersionTransitionAllowed(input: {
+  currentStatus: string;
+  nextStatus: "active" | "archived";
+}): void {
+  if (input.currentStatus === "archived") {
+    throw new ApiError(
+      409,
+      "PROMPT_VERSION_ARCHIVED",
+      "已归档的提示词版本不可再次变更；请创建新版本。"
+    );
+  }
+  if (input.currentStatus === "active" && input.nextStatus === "active") {
+    throw new ApiError(
+      409,
+      "PROMPT_VERSION_ALREADY_ACTIVE",
+      "该提示词版本已激活，不能原地覆盖或重复激活。"
+    );
+  }
 }
 
 function enumValue<const T extends readonly string[]>(
@@ -600,6 +741,17 @@ function assertReviewedKnowledgeEvidence(
     );
   }
   if (
+    review.mode !== "section" ||
+    !Number.isInteger(review.sectionCount) ||
+    Number(review.sectionCount) < 1
+  ) {
+    throw new ApiError(
+      409,
+      "KNOWLEDGE_SECTION_REVIEW_REQUIRED",
+      "发布前必须完成全部稳定段落的逐段人工审核。"
+    );
+  }
+  if (
     !contentHash ||
     !reviewHash ||
     !/^[a-f0-9]{64}$/u.test(contentHash) ||
@@ -652,6 +804,30 @@ function recordValue(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function publicationRightsSnapshot(
+  source:
+    | (GovernedKnowledgeSource & {
+        id: string;
+      })
+    | undefined
+): Record<string, unknown> {
+  if (!source) {
+    throw new ApiError(
+      409,
+      "KNOWLEDGE_SOURCE_REQUIRED",
+      "知识版本必须关联受治理的来源记录。"
+    );
+  }
+  return {
+    ...recordValue(source.metadata.rightsDecision),
+    status: "approved",
+    sourceId: source.id,
+    canonicalUrl: source.canonicalUrl,
+    sourceTier: source.sourceTier,
+    publisher: source.publisher
+  };
+}
+
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -682,50 +858,85 @@ async function loadKnowledgeDocumentView(
   includeContent: boolean
 ): Promise<Record<string, unknown>> {
   const currentVersionId = document.currentVersionId;
-  const [versionRows, sourceRows, chunkRows, previousRows] = await Promise.all([
-    currentVersionId
-      ? db
-          .select()
-          .from(knowledgeVersions)
-          .where(eq(knowledgeVersions.id, currentVersionId))
-          .limit(1)
-      : Promise.resolve([]),
-    document.sourceId
-      ? db
-          .select()
-          .from(knowledgeSources)
-          .where(
-            and(
-              eq(knowledgeSources.id, document.sourceId),
-              isNull(knowledgeSources.deletedAt)
+  const [versionRows, sourceRows, chunkRows, previousRows, sectionRows] =
+    await Promise.all([
+      currentVersionId
+        ? db
+            .select()
+            .from(knowledgeVersions)
+            .where(eq(knowledgeVersions.id, currentVersionId))
+            .limit(1)
+        : Promise.resolve([]),
+      document.sourceId
+        ? db
+            .select()
+            .from(knowledgeSources)
+            .where(
+              and(
+                eq(knowledgeSources.id, document.sourceId),
+                isNull(knowledgeSources.deletedAt)
+              )
             )
-          )
-          .limit(1)
-      : Promise.resolve([]),
-    currentVersionId
-      ? db
-          .select({ value: count() })
-          .from(knowledgeChunks)
-          .where(eq(knowledgeChunks.versionId, currentVersionId))
-      : Promise.resolve([]),
-    currentVersionId
-      ? db
-          .select({
-            id: knowledgeVersions.id,
-            version: knowledgeVersions.version
-          })
-          .from(knowledgeVersions)
-          .where(
-            and(
-              eq(knowledgeVersions.documentId, document.id),
-              ne(knowledgeVersions.id, currentVersionId),
-              isNotNull(knowledgeVersions.publishedAt)
+            .limit(1)
+        : Promise.resolve([]),
+      currentVersionId
+        ? db
+            .select({ value: count() })
+            .from(knowledgeChunks)
+            .where(eq(knowledgeChunks.versionId, currentVersionId))
+        : Promise.resolve([]),
+      currentVersionId
+        ? db
+            .select({
+              id: knowledgeVersions.id,
+              version: knowledgeVersions.version
+            })
+            .from(knowledgeVersions)
+            .where(
+              and(
+                eq(knowledgeVersions.documentId, document.id),
+                ne(knowledgeVersions.id, currentVersionId),
+                isNotNull(knowledgeVersions.publishedAt)
+              )
             )
-          )
-          .orderBy(desc(knowledgeVersions.publishedAt))
-          .limit(1)
-      : Promise.resolve([])
-  ]);
+            .orderBy(desc(knowledgeVersions.publishedAt))
+            .limit(1)
+        : Promise.resolve([]),
+      currentVersionId
+        ? db
+            .select({
+              section: {
+                id: knowledgeReviewSections.id,
+                versionId: knowledgeReviewSections.versionId,
+                sectionIndex: knowledgeReviewSections.sectionIndex,
+                contentZh: knowledgeReviewSections.contentZh,
+                officialText: knowledgeReviewSections.officialText,
+                pageStart: knowledgeReviewSections.pageStart,
+                pageEnd: knowledgeReviewSections.pageEnd,
+                rightsSnapshot: knowledgeReviewSections.rightsSnapshot,
+                rightsSnapshotHash: knowledgeReviewSections.rightsSnapshotHash,
+                versionContentHash: knowledgeReviewSections.versionContentHash,
+                sectionHash: knowledgeReviewSections.sectionHash
+              },
+              decision: {
+                decision: knowledgeSectionDecisions.decision,
+                sectionHash: knowledgeSectionDecisions.sectionHash,
+                reviewerId: knowledgeSectionDecisions.reviewerId,
+                note: knowledgeSectionDecisions.note
+              }
+            })
+            .from(knowledgeReviewSections)
+            .leftJoin(
+              knowledgeSectionDecisions,
+              eq(
+                knowledgeSectionDecisions.sectionId,
+                knowledgeReviewSections.id
+              )
+            )
+            .where(eq(knowledgeReviewSections.versionId, currentVersionId))
+            .orderBy(asc(knowledgeReviewSections.sectionIndex))
+        : Promise.resolve([])
+    ]);
 
   const version = versionRows[0];
   const source = sourceRows[0];
@@ -752,6 +963,23 @@ async function loadKnowledgeDocumentView(
         version.citationMetadata,
         "发布"
       );
+      assertKnowledgeSectionPublicationReady({
+        versionId: version.id,
+        versionContentHash: version.contentHash ?? "",
+        versionCreatedBy: version.createdBy,
+        currentRightsSnapshot: publicationRightsSnapshot(source),
+        sections: sectionRows.map((row) => ({
+          ...row.section,
+          decision: row.decision?.decision
+            ? {
+                decision: row.decision.decision,
+                sectionHash: row.decision.sectionHash ?? "",
+                reviewerId: row.decision.reviewerId ?? "",
+                note: row.decision.note
+              }
+            : null
+        }))
+      });
       publishReady = true;
     } catch (error) {
       publishReady = false;
@@ -802,6 +1030,48 @@ async function loadKnowledgeDocumentView(
 }
 
 export const apiStore: ApiStore = {
+  async getAccountProfile(userId) {
+    const [profile] = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        emailVerified: users.emailVerified,
+        image: users.image,
+        avatarRevision: users.avatarRevision,
+        twoFactorEnabled: users.twoFactorEnabled
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return (profile as AccountProfile | undefined) ?? null;
+  },
+
+  async updateAccountProfileName(userId, name, audit) {
+    return db.transaction(async (tx) => {
+      const [profile] = await tx
+        .update(users)
+        .set({ name, updatedAt: new Date() })
+        .where(eq(users.id, userId))
+        .returning({
+          id: users.id,
+          name: users.name,
+          email: users.email,
+          emailVerified: users.emailVerified,
+          image: users.image,
+          avatarRevision: users.avatarRevision,
+          twoFactorEnabled: users.twoFactorEnabled
+        });
+      if (!profile) return null;
+      await tx.insert(auditLogs).values(
+        auditValues(audit, "account.profile.name.update", "user", userId, {
+          changedFields: ["name"]
+        })
+      );
+      return profile;
+    });
+  },
+
   async getAdminRole(userId) {
     const results = await db
       .select({ role: adminRoles.role })
@@ -810,6 +1080,676 @@ export const apiStore: ApiStore = {
       .orderBy(desc(adminRoles.createdAt));
 
     return effectiveAdminRole(results);
+  },
+
+  async reportAdminRoleConflicts() {
+    const conflicts = await db
+      .select({
+        userId: adminRoles.userId,
+        roleCount: count()
+      })
+      .from(adminRoles)
+      .groupBy(adminRoles.userId)
+      .having(sql`count(*) > 1`)
+      .orderBy(asc(adminRoles.userId));
+
+    return {
+      count: conflicts.length,
+      userIds: conflicts.map((conflict) => conflict.userId)
+    };
+  },
+
+  async listAdminInvitations(input) {
+    const now = new Date();
+    const statusFilter =
+      input.status === "accepted"
+        ? isNotNull(adminInvitations.acceptedAt)
+        : input.status === "revoked"
+          ? isNotNull(adminInvitations.revokedAt)
+          : input.status === "expired"
+            ? and(
+                isNull(adminInvitations.acceptedAt),
+                isNull(adminInvitations.revokedAt),
+                lte(adminInvitations.expiresAt, now)
+              )
+            : input.status === "pending"
+              ? and(
+                  isNull(adminInvitations.acceptedAt),
+                  isNull(adminInvitations.revokedAt),
+                  gte(adminInvitations.expiresAt, now)
+                )
+              : undefined;
+    const filters = [
+      statusFilter,
+      ...(input.query
+        ? [
+            or(
+              ilike(adminInvitations.email, queryPattern(input.query)),
+              sql`${adminInvitations.role}::text ilike ${queryPattern(input.query)}`
+            )
+          ]
+        : [])
+    ].filter((filter) => filter !== undefined);
+    const where = filters.length > 0 ? and(...filters) : undefined;
+    const [items, totalRows] = await Promise.all([
+      db
+        .select({
+          id: adminInvitations.id,
+          email: adminInvitations.email,
+          role: adminInvitations.role,
+          createdBy: adminInvitations.createdBy,
+          acceptedBy: adminInvitations.acceptedBy,
+          acceptedAt: adminInvitations.acceptedAt,
+          revokedAt: adminInvitations.revokedAt,
+          createdAt: adminInvitations.createdAt,
+          expiresAt: adminInvitations.expiresAt
+        })
+        .from(adminInvitations)
+        .where(where)
+        .orderBy(desc(adminInvitations.createdAt), desc(adminInvitations.id))
+        .limit(input.pageSize)
+        .offset(offset(input)),
+      db.select({ value: count() }).from(adminInvitations).where(where)
+    ]);
+
+    return pageResult(
+      items.map((item) => serializeAdminInvitation(item)),
+      input,
+      Number(totalRows[0]?.value ?? 0)
+    );
+  },
+
+  async createAdminInvitation(input, audit) {
+    assertInvitationRoleAllowed(audit.actor.role, input.role);
+    const createdAt = new Date();
+    const expiresAt = invitationExpiresAt(createdAt);
+    const email = normalizeInvitationEmail(input.email);
+
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(1967086382)`);
+      const [created] = await tx
+        .insert(adminInvitations)
+        .values({
+          email,
+          role: input.role,
+          tokenHash: input.tokenHash,
+          createdBy: audit.actor.id,
+          acceptedBy: null,
+          acceptedAt: null,
+          revokedAt: null,
+          createdAt,
+          expiresAt
+        })
+        .onConflictDoNothing()
+        .returning({
+          id: adminInvitations.id,
+          email: adminInvitations.email,
+          role: adminInvitations.role,
+          createdBy: adminInvitations.createdBy,
+          acceptedBy: adminInvitations.acceptedBy,
+          acceptedAt: adminInvitations.acceptedAt,
+          revokedAt: adminInvitations.revokedAt,
+          createdAt: adminInvitations.createdAt,
+          expiresAt: adminInvitations.expiresAt
+        });
+
+      if (!created) {
+        throw new ApiError(
+          409,
+          "ADMIN_INVITATION_ALREADY_EXISTS",
+          "该邀请已经存在。"
+        );
+      }
+
+      await tx.insert(auditLogs).values({
+        ...auditValues(
+          audit,
+          "admin_invitation.create",
+          "admin_invitation",
+          created.id,
+          { email: created.email, role: created.role }
+        ),
+        before: { created: false },
+        after: {
+          created: true,
+          email: created.email,
+          role: created.role,
+          expiresAt: created.expiresAt.toISOString()
+        }
+      });
+
+      return serializeAdminInvitation(created);
+    });
+  },
+
+  async revokeAdminInvitation(invitationId, audit) {
+    if (audit.actor.role !== "owner" && audit.actor.role !== "admin") {
+      throw new ApiError(403, "FORBIDDEN", "当前管理员角色无权执行此操作。");
+    }
+
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(1967086382)`);
+      const [existing] = await tx
+        .select({
+          id: adminInvitations.id,
+          email: adminInvitations.email,
+          role: adminInvitations.role,
+          createdBy: adminInvitations.createdBy,
+          acceptedBy: adminInvitations.acceptedBy,
+          acceptedAt: adminInvitations.acceptedAt,
+          revokedAt: adminInvitations.revokedAt,
+          createdAt: adminInvitations.createdAt,
+          expiresAt: adminInvitations.expiresAt
+        })
+        .from(adminInvitations)
+        .where(eq(adminInvitations.id, invitationId))
+        .limit(1)
+        .for("update");
+
+      if (!existing) {
+        return null;
+      }
+      assertInvitationRoleAllowed(audit.actor.role, existing.role);
+      if (
+        existing.acceptedAt ||
+        existing.revokedAt ||
+        invitationIsExpired(existing)
+      ) {
+        return null;
+      }
+
+      const [revoked] = await tx
+        .update(adminInvitations)
+        .set({
+          revokedAt: new Date()
+        })
+        .where(eq(adminInvitations.id, invitationId))
+        .returning({
+          id: adminInvitations.id,
+          email: adminInvitations.email,
+          role: adminInvitations.role,
+          createdBy: adminInvitations.createdBy,
+          acceptedBy: adminInvitations.acceptedBy,
+          acceptedAt: adminInvitations.acceptedAt,
+          revokedAt: adminInvitations.revokedAt,
+          createdAt: adminInvitations.createdAt,
+          expiresAt: adminInvitations.expiresAt
+        });
+
+      if (!revoked) {
+        return null;
+      }
+
+      await tx.insert(auditLogs).values({
+        ...auditValues(
+          audit,
+          "admin_invitation.revoke",
+          "admin_invitation",
+          revoked.id,
+          { email: revoked.email, role: revoked.role }
+        ),
+        before: {
+          revokedAt: null,
+          acceptedAt: revoked.acceptedAt
+        },
+        after: {
+          revokedAt: revoked.revokedAt?.toISOString() ?? null
+        }
+      });
+
+      return serializeAdminInvitation(revoked);
+    });
+  },
+
+  async acceptAdminInvitation(input, audit) {
+    const normalizedEmail = normalizeInvitationEmail(input.userEmail);
+    if (!input.emailVerified) {
+      throw new ApiError(
+        403,
+        "EMAIL_NOT_VERIFIED",
+        "邮箱未验证，不能接受管理员邀请。"
+      );
+    }
+
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(1967086382)`);
+      const [invitation] = await tx
+        .select({
+          id: adminInvitations.id,
+          email: adminInvitations.email,
+          role: adminInvitations.role,
+          createdBy: adminInvitations.createdBy,
+          acceptedBy: adminInvitations.acceptedBy,
+          acceptedAt: adminInvitations.acceptedAt,
+          revokedAt: adminInvitations.revokedAt,
+          createdAt: adminInvitations.createdAt,
+          expiresAt: adminInvitations.expiresAt
+        })
+        .from(adminInvitations)
+        .where(eq(adminInvitations.tokenHash, input.tokenHash))
+        .limit(1)
+        .for("update");
+
+      if (
+        !invitation ||
+        invitation.acceptedAt ||
+        invitation.revokedAt ||
+        invitationIsExpired(invitation)
+      ) {
+        return null;
+      }
+
+      if (invitation.email !== normalizedEmail) {
+        throw new ApiError(
+          409,
+          "INVITATION_EMAIL_MISMATCH",
+          "邀请邮箱与当前登录账号不匹配。"
+        );
+      }
+
+      const existingRoles = await tx
+        .select({ role: adminRoles.role })
+        .from(adminRoles)
+        .where(eq(adminRoles.userId, input.userId))
+        .orderBy(desc(adminRoles.createdAt));
+      if (existingRoles.length > 0) {
+        throw new ApiError(
+          409,
+          "ADMIN_ROLE_ALREADY_ASSIGNED",
+          "该账号已经存在管理员角色。"
+        );
+      }
+
+      const [createdRole] = await tx
+        .insert(adminRoles)
+        .values({
+          userId: input.userId,
+          role: invitation.role,
+          createdBy: invitation.createdBy,
+          createdAt: new Date()
+        })
+        .onConflictDoNothing()
+        .returning({
+          userId: adminRoles.userId,
+          role: adminRoles.role,
+          createdBy: adminRoles.createdBy,
+          createdAt: adminRoles.createdAt
+        });
+      if (!createdRole) {
+        throw new ApiError(
+          409,
+          "ADMIN_ROLE_ALREADY_ASSIGNED",
+          "该账号已经存在管理员角色。"
+        );
+      }
+
+      const [accepted] = await tx
+        .update(adminInvitations)
+        .set({
+          acceptedBy: input.userId,
+          acceptedAt: new Date()
+        })
+        .where(eq(adminInvitations.id, invitation.id))
+        .returning({
+          id: adminInvitations.id,
+          email: adminInvitations.email,
+          role: adminInvitations.role,
+          createdBy: adminInvitations.createdBy,
+          acceptedBy: adminInvitations.acceptedBy,
+          acceptedAt: adminInvitations.acceptedAt,
+          revokedAt: adminInvitations.revokedAt,
+          createdAt: adminInvitations.createdAt,
+          expiresAt: adminInvitations.expiresAt
+        });
+
+      if (!accepted) {
+        throw new ApiError(
+          409,
+          "ADMIN_INVITATION_ALREADY_USED",
+          "该管理员邀请已经失效。"
+        );
+      }
+
+      await tx.insert(auditLogs).values({
+        ...auditValues(
+          audit,
+          "admin_invitation.accept",
+          "admin_invitation",
+          accepted.id,
+          {
+            email: accepted.email,
+            role: accepted.role,
+            acceptedBy: input.userId
+          }
+        ),
+        before: {
+          acceptedAt: null,
+          acceptedBy: null
+        },
+        after: {
+          acceptedAt: accepted.acceptedAt?.toISOString() ?? null,
+          acceptedBy: accepted.acceptedBy
+        }
+      });
+
+      return serializeAdminInvitation(accepted);
+    });
+  },
+
+  async listAdminTasks(input) {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [
+      conflicts,
+      feedbackRows,
+      problemRows,
+      knowledgeRows,
+      failedTaskRows,
+      budgets,
+      usageRows
+    ] = await Promise.all([
+      apiStore.reportAdminRoleConflicts(),
+      db
+        .select({
+          id: messageFeedback.id,
+          rating: messageFeedback.rating,
+          status: messageFeedback.status,
+          reason: messageFeedback.reason,
+          updatedAt: messageFeedback.updatedAt
+        })
+        .from(messageFeedback)
+        .where(inArray(messageFeedback.status, ["open", "reviewing"]))
+        .limit(200),
+      db
+        .select({
+          id: problemReports.id,
+          category: problemReports.category,
+          status: problemReports.status,
+          description: problemReports.description,
+          createdAt: problemReports.createdAt
+        })
+        .from(problemReports)
+        .where(inArray(problemReports.status, ["new", "reviewing"]))
+        .limit(200),
+      db
+        .select({
+          id: knowledgeDocuments.id,
+          title: knowledgeDocuments.title,
+          status: knowledgeDocuments.status,
+          updatedAt: knowledgeDocuments.updatedAt
+        })
+        .from(knowledgeDocuments)
+        .where(inArray(knowledgeDocuments.status, ["review", "failed"]))
+        .limit(200),
+      db
+        .select({
+          id: backgroundTasks.id,
+          type: backgroundTasks.type,
+          status: backgroundTasks.status,
+          lastError: backgroundTasks.lastError,
+          updatedAt: backgroundTasks.updatedAt
+        })
+        .from(backgroundTasks)
+        .where(eq(backgroundTasks.status, "failed"))
+        .limit(100),
+      apiStore.getBudgets(),
+      db
+        .select({
+          model: dailyUsage.model,
+          costCents: dailyUsage.costCents
+        })
+        .from(dailyUsage)
+        .where(gte(dailyUsage.date, since))
+    ]);
+
+    const now = new Date();
+    const candidates: AdminTaskCandidate[] = [];
+    for (const userId of conflicts.userIds) {
+      candidates.push({
+        key: `auth:role-conflict:${userId}`,
+        sourceType: "auth",
+        sourceId: userId,
+        sourceStatus: "conflict",
+        title: "管理员角色冲突",
+        summary: "该账号存在多个后台角色，迁移和授权操作已暂停。",
+        href: "/admin/admins",
+        severity: "critical",
+        occurredAt: now
+      });
+    }
+    for (const row of feedbackRows) {
+      candidates.push({
+        key: `feedback:${row.id}`,
+        sourceType: "feedback",
+        sourceId: row.id,
+        sourceStatus: row.status,
+        title: row.rating === "not_helpful" ? "负向回答反馈" : "用户反馈待处理",
+        summary: row.reason || "需要领取并记录处理结果。",
+        href: `/admin/conversations?feedback=${row.id}`,
+        severity: row.rating === "not_helpful" ? "medium" : "low",
+        occurredAt: row.updatedAt
+      });
+    }
+    for (const row of problemRows) {
+      const highRisk =
+        row.category === "unsafe_answer" || row.category === "system_error";
+      candidates.push({
+        key: `problem_report:${row.id}`,
+        sourceType: "problem_report",
+        sourceId: row.id,
+        sourceStatus: row.status,
+        title: highRisk ? "高风险问题报告" : "问题报告待处理",
+        summary: row.description,
+        href: `/admin/problem-reports?report=${row.id}`,
+        severity: highRisk ? "high" : "medium",
+        occurredAt: row.createdAt
+      });
+    }
+    for (const row of knowledgeRows) {
+      candidates.push({
+        key: `knowledge:${row.id}`,
+        sourceType: "knowledge",
+        sourceId: row.id,
+        sourceStatus: row.status,
+        title: row.status === "failed" ? "知识处理失败" : "知识等待人工审核",
+        summary: row.title,
+        href: `/admin/knowledge?document=${row.id}`,
+        severity: row.status === "failed" ? "critical" : "high",
+        occurredAt: row.updatedAt
+      });
+    }
+    for (const row of failedTaskRows) {
+      candidates.push({
+        key: `system:${row.id}`,
+        sourceType: "system",
+        sourceId: row.id,
+        sourceStatus: row.status,
+        title: "后台任务失败",
+        summary: row.lastError || row.type,
+        href: "/admin/audit",
+        severity: "critical",
+        occurredAt: row.updatedAt
+      });
+    }
+
+    const usageByModel = new Map<string, number>();
+    for (const row of usageRows) {
+      usageByModel.set(
+        row.model,
+        (usageByModel.get(row.model) ?? 0) + row.costCents
+      );
+    }
+    for (const budget of budgets) {
+      if (!budget.enabled || budget.dailyLimitCents <= 0) continue;
+      const used = usageByModel.get(budget.model) ?? 0;
+      const ratio = used / budget.dailyLimitCents;
+      if (ratio < 0.8) continue;
+      candidates.push({
+        key: `budget:${budget.model}`,
+        sourceType: "budget",
+        sourceId: budget.model,
+        sourceStatus: ratio >= 1 ? "limit_reached" : "near_limit",
+        title: ratio >= 1 ? "模型预算已触发限额" : "模型预算接近限额",
+        summary: `${budget.model} 近 24 小时消耗 ${used} 分，日限额 ${budget.dailyLimitCents} 分。`,
+        href: "/admin/models",
+        severity: ratio >= 1 ? "critical" : "high",
+        occurredAt: now
+      });
+    }
+
+    const taskKeys = candidates.map((candidate) => candidate.key);
+    const storedStates =
+      taskKeys.length === 0
+        ? []
+        : await db
+            .select({
+              taskKey: adminTaskStates.taskKey,
+              assigneeUserId: adminTaskStates.assigneeUserId,
+              status: adminTaskStates.status,
+              dueAt: adminTaskStates.dueAt,
+              snoozedUntil: adminTaskStates.snoozedUntil,
+              note: adminTaskStates.note,
+              revision: adminTaskStates.revision
+            })
+            .from(adminTaskStates)
+            .where(inArray(adminTaskStates.taskKey, taskKeys));
+    let tasks = materializeAdminTasks(
+      candidates,
+      storedStates.map((state) => ({
+        ...state,
+        status: state.status as "open" | "in_progress" | "done"
+      }))
+    );
+    if (input.status) {
+      tasks = tasks.filter(
+        (task) =>
+          task.state.status === input.status || task.severity === input.status
+      );
+    }
+    if (input.query) {
+      const query = input.query.toLocaleLowerCase("zh-CN");
+      tasks = tasks.filter((task) =>
+        `${task.title} ${task.summary} ${task.sourceId}`
+          .toLocaleLowerCase("zh-CN")
+          .includes(query)
+      );
+    }
+
+    const total = tasks.length;
+    return pageResult(
+      tasks.slice(offset(input), offset(input) + input.pageSize),
+      input,
+      total
+    );
+  },
+
+  async updateAdminTaskState(taskKey, input, audit) {
+    return db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select()
+        .from(adminTaskStates)
+        .where(eq(adminTaskStates.taskKey, taskKey))
+        .limit(1)
+        .for("update");
+
+      const now = new Date();
+      if (!existing) {
+        if (input.expectedRevision !== 0) {
+          throw new ApiError(
+            409,
+            "TASK_REVISION_CONFLICT",
+            "任务状态已被其他管理员更新，请刷新后重试。"
+          );
+        }
+        const [created] = await tx
+          .insert(adminTaskStates)
+          .values({
+            taskKey,
+            assigneeUserId: input.assigneeUserId ?? null,
+            status: input.status ?? "open",
+            dueAt: input.dueAt ?? null,
+            snoozedUntil: input.snoozedUntil ?? null,
+            note: input.note ?? null,
+            revision: 1,
+            updatedBy: audit.actor.id,
+            createdAt: now,
+            updatedAt: now
+          })
+          .onConflictDoNothing()
+          .returning();
+        if (!created) {
+          throw new ApiError(
+            409,
+            "TASK_REVISION_CONFLICT",
+            "任务状态已被其他管理员更新，请刷新后重试。"
+          );
+        }
+        await tx.insert(auditLogs).values(
+          auditValues(audit, "admin_task_state.create", "admin_task", taskKey, {
+            revision: created.revision
+          })
+        );
+        return {
+          assigneeUserId: created.assigneeUserId,
+          status: created.status as "open" | "in_progress" | "done",
+          dueAt: created.dueAt,
+          snoozedUntil: created.snoozedUntil,
+          note: created.note,
+          revision: created.revision
+        };
+      }
+
+      if (existing.revision !== input.expectedRevision) {
+        throw new ApiError(
+          409,
+          "TASK_REVISION_CONFLICT",
+          "任务状态已被其他管理员更新，请刷新后重试。"
+        );
+      }
+      const patch: Partial<typeof adminTaskStates.$inferInsert> = {
+        revision: existing.revision + 1,
+        updatedBy: audit.actor.id,
+        updatedAt: now
+      };
+      if (input.assigneeUserId !== undefined)
+        patch.assigneeUserId = input.assigneeUserId;
+      if (input.status !== undefined) patch.status = input.status;
+      if (input.dueAt !== undefined) patch.dueAt = input.dueAt;
+      if (input.snoozedUntil !== undefined)
+        patch.snoozedUntil = input.snoozedUntil;
+      if (input.note !== undefined) patch.note = input.note;
+
+      const [updated] = await tx
+        .update(adminTaskStates)
+        .set(patch)
+        .where(
+          and(
+            eq(adminTaskStates.taskKey, taskKey),
+            eq(adminTaskStates.revision, input.expectedRevision)
+          )
+        )
+        .returning();
+      if (!updated) {
+        throw new ApiError(
+          409,
+          "TASK_REVISION_CONFLICT",
+          "任务状态已被其他管理员更新，请刷新后重试。"
+        );
+      }
+      await tx.insert(auditLogs).values(
+        auditValues(audit, "admin_task_state.update", "admin_task", taskKey, {
+          previousRevision: existing.revision,
+          revision: updated.revision
+        })
+      );
+      return {
+        assigneeUserId: updated.assigneeUserId,
+        status: updated.status as "open" | "in_progress" | "done",
+        dueAt: updated.dueAt,
+        snoozedUntil: updated.snoozedUntil,
+        note: updated.note,
+        revision: updated.revision
+      };
+    });
   },
 
   async listAdminConversations(input) {
@@ -861,6 +1801,58 @@ export const apiStore: ApiStore = {
     return pageResult(items, input, Number(totalRows[0]?.value ?? 0));
   },
 
+  async getAdminConversation(conversationId) {
+    const [conversation] = await db
+      .select({
+        id: conversations.id,
+        userId: conversations.userId,
+        userName: users.name,
+        userEmail: users.email,
+        title: conversations.title,
+        summary: conversations.summary,
+        status: conversations.status,
+        model: conversations.model,
+        createdAt: conversations.createdAt,
+        updatedAt: conversations.updatedAt
+      })
+      .from(conversations)
+      .innerJoin(users, eq(conversations.userId, users.id))
+      .where(
+        and(
+          eq(conversations.id, conversationId),
+          ne(conversations.status, "deleted"),
+          isNull(conversations.deletedAt)
+        )
+      )
+      .limit(1);
+    if (!conversation) return null;
+
+    const visibleMessages = await db
+      .select({
+        id: messages.id,
+        role: messages.role,
+        status: messages.status,
+        content: messages.content,
+        sequence: messages.sequence,
+        createdAt: messages.createdAt,
+        completedAt: messages.completedAt
+      })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, conversationId),
+          inArray(messages.role, ["user", "assistant"])
+        )
+      )
+      .orderBy(asc(messages.sequence));
+
+    return {
+      ...conversation,
+      title: conversation.title ?? "新对话",
+      messages: visibleMessages
+    };
+  },
+
   async listAdmins(input) {
     const role = enumValue(ADMIN_ROLES, input.status);
     const filters = [
@@ -907,17 +1899,16 @@ export const apiStore: ApiStore = {
   async grantAdminRole(userId, role, audit) {
     return db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(1967086382)`);
-      const [currentActorRole] = await tx
+      const actorRoles = await tx
         .select({ role: adminRoles.role })
         .from(adminRoles)
-        .where(
-          and(
-            eq(adminRoles.userId, audit.actor.id),
-            eq(adminRoles.role, "owner")
-          )
-        )
-        .limit(1);
-      assertCurrentOwnerRole(currentActorRole);
+        .where(eq(adminRoles.userId, audit.actor.id))
+        .orderBy(desc(adminRoles.createdAt));
+      const currentActorRole = effectiveAdminRole(actorRoles);
+      if (!currentActorRole) {
+        throw new ApiError(403, "FORBIDDEN", "当前管理员角色无权执行此操作。");
+      }
+      assertAdminRoleMutationAllowed(currentActorRole, role);
 
       const [target] = await tx
         .select({
@@ -982,17 +1973,16 @@ export const apiStore: ApiStore = {
   async revokeAdminRole(userId, role, audit) {
     return db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(1967086382)`);
-      const [currentActorRole] = await tx
+      const actorRoles = await tx
         .select({ role: adminRoles.role })
         .from(adminRoles)
-        .where(
-          and(
-            eq(adminRoles.userId, audit.actor.id),
-            eq(adminRoles.role, "owner")
-          )
-        )
-        .limit(1);
-      assertCurrentOwnerRole(currentActorRole);
+        .where(eq(adminRoles.userId, audit.actor.id))
+        .orderBy(desc(adminRoles.createdAt));
+      const currentActorRole = effectiveAdminRole(actorRoles);
+      if (!currentActorRole) {
+        throw new ApiError(403, "FORBIDDEN", "当前管理员角色无权执行此操作。");
+      }
+      assertAdminRoleMutationAllowed(currentActorRole, role);
 
       const [existing] = await tx
         .select({
@@ -1047,6 +2037,96 @@ export const apiStore: ApiStore = {
       });
 
       return removed;
+    });
+  },
+
+  async replaceAdminRole(userId, expectedRole, role, audit) {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(1967086382)`);
+      const actorRoles = await tx
+        .select({ role: adminRoles.role })
+        .from(adminRoles)
+        .where(eq(adminRoles.userId, audit.actor.id))
+        .orderBy(desc(adminRoles.createdAt));
+      const currentActorRole = effectiveAdminRole(actorRoles);
+      if (!currentActorRole) {
+        throw new ApiError(403, "FORBIDDEN", "当前管理员角色无权执行此操作。");
+      }
+      assertAdminRoleMutationAllowed(currentActorRole, expectedRole);
+      assertAdminRoleMutationAllowed(currentActorRole, role);
+
+      const targetRoles = await tx
+        .select({
+          userId: adminRoles.userId,
+          role: adminRoles.role,
+          createdBy: adminRoles.createdBy,
+          createdAt: adminRoles.createdAt
+        })
+        .from(adminRoles)
+        .where(eq(adminRoles.userId, userId))
+        .orderBy(desc(adminRoles.createdAt))
+        .for("update");
+      const currentTargetRole = effectiveAdminRole(targetRoles);
+      if (!currentTargetRole) return null;
+      if (currentTargetRole !== expectedRole) {
+        throw new ApiError(
+          409,
+          "ADMIN_ROLE_CHANGED",
+          "管理员角色已变化，请刷新后重试。"
+        );
+      }
+
+      if (expectedRole === "owner" && role !== "owner") {
+        const [ownerTotal] = await tx
+          .select({ value: count() })
+          .from(adminRoles)
+          .where(eq(adminRoles.role, "owner"));
+        assertOwnerRoleRevocationAllowed({
+          role: expectedRole,
+          ownerCount: Number(ownerTotal?.value ?? 0),
+          targetUserId: userId,
+          actorUserId: audit.actor.id
+        });
+      }
+
+      const changedAt = new Date();
+      const [updated] = await tx
+        .update(adminRoles)
+        .set({
+          role,
+          createdBy: audit.actor.id,
+          createdAt: changedAt
+        })
+        .where(
+          and(eq(adminRoles.userId, userId), eq(adminRoles.role, expectedRole))
+        )
+        .returning({
+          userId: adminRoles.userId,
+          role: adminRoles.role,
+          createdBy: adminRoles.createdBy,
+          createdAt: adminRoles.createdAt
+        });
+      if (!updated) {
+        throw new ApiError(
+          409,
+          "ADMIN_ROLE_CHANGED",
+          "管理员角色已变化，请刷新后重试。"
+        );
+      }
+
+      await tx.insert(auditLogs).values({
+        ...auditValues(
+          { ...audit, actor: { ...audit.actor, role: currentActorRole } },
+          "admin_role.replace",
+          "admin_role",
+          userId,
+          { targetUserId: userId }
+        ),
+        before: { role: expectedRole },
+        after: { role }
+      });
+
+      return updated;
     });
   },
 
@@ -1712,6 +2792,13 @@ export const apiStore: ApiStore = {
         return null;
       }
 
+      const revokedSessions = input.banned
+        ? await tx
+            .delete(sessions)
+            .where(eq(sessions.userId, userId))
+            .returning({ id: sessions.id })
+        : [];
+
       await tx.insert(auditLogs).values(
         auditValues(
           currentAudit,
@@ -1720,7 +2807,8 @@ export const apiStore: ApiStore = {
           userId,
           {
             reason: input.reason ?? null,
-            expiresAt: input.expiresAt?.toISOString() ?? null
+            expiresAt: input.expiresAt?.toISOString() ?? null,
+            sessionsRevoked: revokedSessions.length
           }
         )
       );
@@ -1771,6 +2859,52 @@ export const apiStore: ApiStore = {
         })
       );
       return updated;
+    });
+  },
+
+  async revokeUserSessions(userId, reason, audit) {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(1967086382)`);
+      const actorRoles = await tx
+        .select({ role: adminRoles.role })
+        .from(adminRoles)
+        .where(eq(adminRoles.userId, audit.actor.id));
+      const targetRoles = await tx
+        .select({ role: adminRoles.role })
+        .from(adminRoles)
+        .where(eq(adminRoles.userId, userId));
+      const actorRole = assertUserMutationAllowed({
+        actorUserId: audit.actor.id,
+        actorRole: effectiveAdminRole(actorRoles),
+        targetUserId: userId,
+        targetRole: effectiveAdminRole(targetRoles),
+        destructive: true
+      });
+
+      const [target] = await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1)
+        .for("key share");
+      if (!target) return null;
+
+      const revoked = await tx
+        .delete(sessions)
+        .where(eq(sessions.userId, userId))
+        .returning({ id: sessions.id });
+      await tx
+        .insert(auditLogs)
+        .values(
+          auditValues(
+            { ...audit, actor: { ...audit.actor, role: actorRole } },
+            "user.sessions.revoke_all",
+            "user",
+            userId,
+            { reason, sessionsRevoked: revoked.length }
+          )
+        );
+      return { userId, revokedSessions: revoked.length };
     });
   },
 
@@ -2476,11 +3610,13 @@ export const apiStore: ApiStore = {
       const now = new Date();
       const [version] = await tx
         .select({
+          id: knowledgeVersions.id,
           status: knowledgeVersions.status,
           content: knowledgeVersions.content,
           contentHash: knowledgeVersions.contentHash,
           citationMetadata: knowledgeVersions.citationMetadata,
-          metadata: knowledgeVersions.metadata
+          metadata: knowledgeVersions.metadata,
+          createdBy: knowledgeVersions.createdBy
         })
         .from(knowledgeVersions)
         .where(eq(knowledgeVersions.id, document.currentVersionId))
@@ -2508,6 +3644,7 @@ export const apiStore: ApiStore = {
       const [source] = document.sourceId
         ? await tx
             .select({
+              id: knowledgeSources.id,
               sourceTier: knowledgeSources.sourceTier,
               enabled: knowledgeSources.enabled,
               deletedAt: knowledgeSources.deletedAt,
@@ -2524,6 +3661,52 @@ export const apiStore: ApiStore = {
         version.citationMetadata,
         "发布"
       );
+      const sectionRows = await tx
+        .select({
+          section: {
+            id: knowledgeReviewSections.id,
+            versionId: knowledgeReviewSections.versionId,
+            sectionIndex: knowledgeReviewSections.sectionIndex,
+            contentZh: knowledgeReviewSections.contentZh,
+            officialText: knowledgeReviewSections.officialText,
+            pageStart: knowledgeReviewSections.pageStart,
+            pageEnd: knowledgeReviewSections.pageEnd,
+            rightsSnapshot: knowledgeReviewSections.rightsSnapshot,
+            rightsSnapshotHash: knowledgeReviewSections.rightsSnapshotHash,
+            versionContentHash: knowledgeReviewSections.versionContentHash,
+            sectionHash: knowledgeReviewSections.sectionHash
+          },
+          decision: {
+            decision: knowledgeSectionDecisions.decision,
+            sectionHash: knowledgeSectionDecisions.sectionHash,
+            reviewerId: knowledgeSectionDecisions.reviewerId,
+            note: knowledgeSectionDecisions.note
+          }
+        })
+        .from(knowledgeReviewSections)
+        .leftJoin(
+          knowledgeSectionDecisions,
+          eq(knowledgeSectionDecisions.sectionId, knowledgeReviewSections.id)
+        )
+        .where(eq(knowledgeReviewSections.versionId, version.id))
+        .orderBy(asc(knowledgeReviewSections.sectionIndex));
+      assertKnowledgeSectionPublicationReady({
+        versionId: version.id,
+        versionContentHash: version.contentHash ?? "",
+        versionCreatedBy: version.createdBy,
+        currentRightsSnapshot: publicationRightsSnapshot(source),
+        sections: sectionRows.map((row) => ({
+          ...row.section,
+          decision: row.decision?.decision
+            ? {
+                decision: row.decision.decision,
+                sectionHash: row.decision.sectionHash ?? "",
+                reviewerId: row.decision.reviewerId ?? "",
+                note: row.decision.note
+              }
+            : null
+        }))
+      });
 
       const [publishedVersion] = await tx
         .update(knowledgeVersions)
@@ -3058,6 +4241,9 @@ export const apiStore: ApiStore = {
 
   async createPromptVersion(input, audit) {
     return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`openvac:prompt:${input.key}`}))`
+      );
       const [maxVersion] = await tx
         .select({
           value: sql<number>`coalesce(max(${promptVersions.version}), 0)`
@@ -3093,15 +4279,30 @@ export const apiStore: ApiStore = {
 
   async updatePromptVersion(promptId, input, audit) {
     return db.transaction(async (tx) => {
-      const [current] = await tx
-        .select()
+      const [candidate] = await tx
+        .select({ key: promptVersions.key })
         .from(promptVersions)
         .where(eq(promptVersions.id, promptId))
         .limit(1);
 
-      if (!current) {
+      if (!candidate) {
         return null;
       }
+
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`openvac:prompt:${candidate.key}`}))`
+      );
+      const [current] = await tx
+        .select()
+        .from(promptVersions)
+        .where(eq(promptVersions.id, promptId))
+        .limit(1)
+        .for("update");
+      if (!current) return null;
+      assertPromptVersionTransitionAllowed({
+        currentStatus: current.status,
+        nextStatus: input.status
+      });
 
       if (input.status === "active") {
         await tx
@@ -3116,14 +4317,10 @@ export const apiStore: ApiStore = {
       }
 
       const patch: Partial<typeof promptVersions.$inferInsert> = {
-        updatedAt: new Date()
+        status: input.status,
+        updatedAt: new Date(),
+        ...(input.status === "active" ? { publishedAt: new Date() } : {})
       };
-      if (input.content !== undefined) patch.content = input.content;
-      if (input.notes !== undefined) patch.notes = input.notes;
-      if (input.status !== undefined) {
-        patch.status = input.status;
-        patch.publishedAt = input.status === "active" ? new Date() : null;
-      }
 
       const [updated] = await tx
         .update(promptVersions)
@@ -3134,13 +4331,15 @@ export const apiStore: ApiStore = {
       await tx.insert(auditLogs).values(
         auditValues(
           audit,
-          "prompt_version.update",
+          input.status === "active"
+            ? "prompt_version.activate"
+            : "prompt_version.archive",
           "prompt_version",
           promptId,
           {
             key: current.key,
-            status: input.status ?? current.status,
-            changedFields: Object.keys(input)
+            status: input.status,
+            changedFields: ["status"]
           }
         )
       );
@@ -3158,6 +4357,68 @@ export const apiStore: ApiStore = {
     return Array.isArray(setting?.value)
       ? (setting.value as ModelBudgetInput[])
       : [];
+  },
+
+  async getBudgetOverview(now) {
+    const budgets = await apiStore.getBudgets();
+    const dayStart = new Date(now);
+    dayStart.setUTCHours(0, 0, 0, 0);
+    const monthStart = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+    );
+    const usage = await db
+      .select({
+        model: dailyUsage.model,
+        dailyUsedCents: sql<number>`coalesce(sum(case when ${dailyUsage.date} >= ${dayStart} then ${dailyUsage.costCents} else 0 end), 0)`,
+        monthlyUsedCents: sql<number>`coalesce(sum(${dailyUsage.costCents}), 0)`
+      })
+      .from(dailyUsage)
+      .where(gte(dailyUsage.date, monthStart))
+      .groupBy(dailyUsage.model);
+    const byModel = new Map(
+      usage.map((row) => [
+        row.model,
+        {
+          dailyUsedCents: Number(row.dailyUsedCents ?? 0),
+          monthlyUsedCents: Number(row.monthlyUsedCents ?? 0)
+        }
+      ])
+    );
+    const daysElapsed = Math.max(1, now.getUTCDate());
+    const daysInMonth = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)
+    ).getUTCDate();
+
+    return budgets.map((budget) => {
+      const used = byModel.get(budget.model) ?? {
+        dailyUsedCents: 0,
+        monthlyUsedCents: 0
+      };
+      const projectedMonthlyCents = Math.round(
+        (used.monthlyUsedCents / daysElapsed) * daysInMonth
+      );
+      const dailyRatio =
+        budget.dailyLimitCents > 0
+          ? used.dailyUsedCents / budget.dailyLimitCents
+          : 0;
+      const monthlyRatio =
+        budget.monthlyLimitCents > 0
+          ? used.monthlyUsedCents / budget.monthlyLimitCents
+          : 0;
+      const circuitStatus = !budget.enabled
+        ? "disabled"
+        : dailyRatio >= 1 || monthlyRatio >= 1
+          ? "tripped"
+          : dailyRatio >= 0.8 || monthlyRatio >= 0.8
+            ? "warning"
+            : "ok";
+      return {
+        ...budget,
+        ...used,
+        projectedMonthlyCents,
+        circuitStatus
+      };
+    });
   },
 
   async updateBudgets(input, audit) {

@@ -7,7 +7,8 @@ import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  getSession: vi.fn()
+  getSession: vi.fn(),
+  getAdminRole: vi.fn()
 }));
 
 vi.mock("next/headers", () => ({
@@ -15,6 +16,9 @@ vi.mock("next/headers", () => ({
 }));
 vi.mock("@/server/auth", () => ({
   auth: { api: { getSession: mocks.getSession } }
+}));
+vi.mock("@/server/api/store", () => ({
+  apiStore: { getAdminRole: mocks.getAdminRole }
 }));
 vi.mock("@/components/home-prompt", () => ({
   HomePrompt: ({ currentUserId }: { currentUserId?: string }) =>
@@ -26,14 +30,17 @@ vi.mock("@/components/home-prompt", () => ({
 vi.mock("@/components/site-header", () => ({
   SiteHeader: ({
     authenticated,
+    hasAdminRole,
     appearance
   }: {
     authenticated: boolean;
+    hasAdminRole?: boolean;
     appearance?: string;
   }) =>
     createElement("div", {
       "data-testid": "site-header",
       "data-authenticated": String(authenticated),
+      "data-has-admin-role": String(Boolean(hasAdminRole)),
       "data-appearance": appearance ?? "default"
     })
 }));
@@ -46,6 +53,8 @@ import HomePage, { dynamic } from "./page";
 
 beforeEach(() => {
   mocks.getSession.mockReset();
+  mocks.getAdminRole.mockReset();
+  mocks.getAdminRole.mockResolvedValue(null);
 });
 
 afterEach(cleanup);
@@ -124,11 +133,16 @@ describe("home page", () => {
       user: { id: "user-a", name: "用户 A" },
       session: { id: "session-a" }
     });
+    mocks.getAdminRole.mockResolvedValue("owner");
 
     render(await HomePage());
 
     expect(screen.getByTestId("site-header")).toHaveAttribute(
       "data-authenticated",
+      "true"
+    );
+    expect(screen.getByTestId("site-header")).toHaveAttribute(
+      "data-has-admin-role",
       "true"
     );
     expect(screen.getByTestId("home-prompt")).toHaveAttribute(

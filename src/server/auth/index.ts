@@ -1,6 +1,7 @@
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { betterAuth } from "better-auth";
 import { APIError } from "better-auth/api";
+import { twoFactor } from "better-auth/plugins";
 
 import { db } from "@/server/db";
 import * as schema from "@/server/db/schema";
@@ -10,6 +11,7 @@ import {
   cleanupDeletedUser,
   prepareUserDeletion
 } from "./account-cleanup";
+import { banDisposition } from "./ban-policy";
 import { sendAuthEmail } from "./email";
 
 function trustedOrigins() {
@@ -29,8 +31,40 @@ export const auth = betterAuth({
     schema,
     transaction: true
   }),
+  databaseHooks: {
+    session: {
+      create: {
+        before: async (session, context) => {
+          if (!context) return;
+          const sessionUser =
+            await context.context.internalAdapter.findUserById(session.userId);
+          const disposition = banDisposition(
+            (sessionUser ?? {}) as {
+              banned?: boolean | null;
+              banExpires?: Date | string | null;
+            }
+          );
+          if (disposition === "allow") return;
+          if (disposition === "clear") {
+            await context.context.internalAdapter.updateUser(session.userId, {
+              banned: false,
+              banReason: null,
+              banExpires: null
+            });
+            return;
+          }
+          throw APIError.from("FORBIDDEN", {
+            code: "BANNED_USER",
+            message: "当前账号已被暂停使用。"
+          });
+        }
+      }
+    }
+  },
   emailAndPassword: {
     enabled: true,
+    minPasswordLength: 10,
+    maxPasswordLength: 128,
     requireEmailVerification: true,
     revokeSessionsOnPasswordReset: true,
     sendResetPassword: async ({ user: authUser, url }) => {
@@ -47,6 +81,7 @@ export const auth = betterAuth({
       banExpires: null,
       deletionRequestedAt: null,
       dailyQuotaBonus: 0,
+      twoFactorEnabled: false,
       ...additionalFields,
       id
     })
@@ -57,13 +92,26 @@ export const auth = betterAuth({
     autoSignInAfterVerification: true,
     sendVerificationEmail: async ({ user: authUser, url }) => {
       await sendAuthEmail({
-        kind: "verify-email",
+        kind:
+          authUser.emailVerified === true
+            ? "change-email-verification"
+            : "verify-email",
         to: authUser.email,
         url
       });
     }
   },
   user: {
+    changeEmail: {
+      enabled: true,
+      sendChangeEmailConfirmation: async ({ user: authUser, url }) => {
+        await sendAuthEmail({
+          kind: "change-email-confirmation",
+          to: authUser.email,
+          url
+        });
+      }
+    },
     additionalFields: {
       banned: {
         type: "boolean",
@@ -136,5 +184,22 @@ export const auth = betterAuth({
       "/send-verification-email": { window: 60, max: 3 },
       "/delete-user": { window: 60, max: 3 }
     }
-  }
+  },
+  plugins: [
+    twoFactor({
+      issuer: "OpenVac",
+      twoFactorCookieMaxAge: 10 * 60,
+      trustDeviceMaxAge: 30 * 24 * 60 * 60,
+      accountLockout: {
+        enabled: true,
+        maxFailedAttempts: 10,
+        durationSeconds: 15 * 60
+      },
+      backupCodeOptions: {
+        amount: 10,
+        length: 10,
+        storeBackupCodes: "encrypted"
+      }
+    })
+  ]
 });

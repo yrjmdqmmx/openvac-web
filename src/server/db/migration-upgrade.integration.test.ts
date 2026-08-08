@@ -150,6 +150,54 @@ describeDatabase("migration upgrade compatibility", () => {
         )
       `;
       await applyMigration(target, "0009_modeling_permanent_purge.sql");
+      await applyMigration(target, "0010_admin_invitations.sql");
+      await applyMigration(target, "0011_admin_task_state.sql");
+      await applyMigration(
+        target,
+        "0012_account_mfa_knowledge_review_sections.sql"
+      );
+
+      const fastTrackTables = await target<Array<{ table_name: string }>>`
+        select table_name
+        from information_schema.tables
+        where table_schema = 'public'
+          and table_name in (
+            'admin_invitation', 'admin_task_state', 'two_factor',
+            'knowledge_review_section', 'knowledge_section_decision'
+          )
+        order by table_name
+      `;
+      expect(fastTrackTables.map((row) => row.table_name)).toEqual([
+        "admin_invitation",
+        "admin_task_state",
+        "knowledge_review_section",
+        "knowledge_section_decision",
+        "two_factor"
+      ]);
+
+      const fastTrackUserColumns = await target<Array<{ column_name: string }>>`
+        select column_name
+        from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'user'
+          and column_name in (
+            'avatar_object_key', 'avatar_revision', 'two_factor_enabled'
+          )
+        order by column_name
+      `;
+      expect(fastTrackUserColumns.map((row) => row.column_name)).toEqual([
+        "avatar_object_key",
+        "avatar_revision",
+        "two_factor_enabled"
+      ]);
+
+      const [singleRoleIndex] = await target<Array<{ unique: boolean }>>`
+        select indisunique as unique
+        from pg_index
+        join pg_class on pg_class.oid = pg_index.indexrelid
+        where pg_class.relname = 'admin_role_user_id_unique'
+      `;
+      expect(singleRoleIndex?.unique).toBe(true);
 
       const agentV2Tables = await target<Array<{ table_name: string }>>`
         select table_name
@@ -837,6 +885,9 @@ async function verifyConsultationRollbackCompatibility(
 async function createPre0002Schema(database: Sql) {
   await database.unsafe(`
     CREATE TYPE quota_resource AS ENUM ('answer', 'web_search');
+    CREATE TYPE admin_role_name AS ENUM (
+      'owner', 'admin', 'knowledge_editor', 'support', 'analyst'
+    );
     CREATE TYPE message_status AS ENUM (
       'pending', 'streaming', 'completed', 'failed', 'cancelled'
     );
@@ -844,6 +895,18 @@ async function createPre0002Schema(database: Sql) {
     CREATE TABLE "user" (
       id text PRIMARY KEY,
       updated_at timestamp with time zone DEFAULT now() NOT NULL
+    );
+
+    CREATE TABLE admin_role (
+      user_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      role admin_role_name NOT NULL,
+      created_by text REFERENCES "user"(id) ON DELETE SET NULL,
+      created_at timestamp with time zone DEFAULT now() NOT NULL,
+      CONSTRAINT admin_role_primary PRIMARY KEY (user_id, role)
+    );
+
+    CREATE TABLE knowledge_version (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid()
     );
 
     CREATE TABLE conversation (

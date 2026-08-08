@@ -69,6 +69,14 @@ function installTransactionHarness({
         }))
       }))
     })),
+    delete: vi.fn(() => ({
+      where: vi.fn(() => ({
+        returning: vi.fn(async () => {
+          events.push("revoke-sessions");
+          return [{ id: "session-1" }, { id: "session-2" }];
+        })
+      }))
+    })),
     insert: vi.fn(() => ({
       values: vi.fn(async (value: unknown) => {
         auditRows.push(value);
@@ -168,9 +176,9 @@ describe("apiStore protected-user mutation final authorization", () => {
     expect(tx.insert).not.toHaveBeenCalled();
   });
 
-  it("allows an effective owner to manage an owner and audits after update", async () => {
+  it("allows the current single owner to manage an owner and audits after update", async () => {
     const { auditRows, events, tx } = installTransactionHarness({
-      actorRoles: ["admin", "owner"],
+      actorRoles: ["owner"],
       targetRoles: ["owner"],
       updated: { id: "target-1", banned: false }
     });
@@ -218,6 +226,37 @@ describe("apiStore protected-user mutation final authorization", () => {
       "target-role",
       "update",
       "audit"
+    ]);
+  });
+
+  it("revokes every existing session when a regular user is banned", async () => {
+    const { auditRows, events, tx } = installTransactionHarness({
+      actorRoles: ["admin"],
+      targetRoles: [],
+      updated: { id: "target-1", banned: true }
+    });
+
+    await expect(
+      apiStore.setUserBan(
+        "target-1",
+        { banned: true, reason: "policy" },
+        audit("admin")
+      )
+    ).resolves.toMatchObject({ id: "target-1", banned: true });
+
+    expect(events).toEqual([
+      "lock",
+      "actor-role",
+      "target-role",
+      "update",
+      "revoke-sessions",
+      "audit"
+    ]);
+    expect(tx.delete).toHaveBeenCalledTimes(1);
+    expect(auditRows).toEqual([
+      expect.objectContaining({
+        metadata: expect.objectContaining({ sessionsRevoked: 2 })
+      })
     ]);
   });
 });

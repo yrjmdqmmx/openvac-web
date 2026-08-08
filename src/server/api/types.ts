@@ -12,6 +12,8 @@ export type AdminRole = (typeof ADMIN_ROLES)[number];
 
 export const ADMIN_CAPABILITIES = [
   "conversations:read",
+  "tasks:read",
+  "tasks:write",
   "admins:read",
   "admins:write",
   "users:read",
@@ -20,8 +22,12 @@ export const ADMIN_CAPABILITIES = [
   "feedback:write",
   "problem_reports:read",
   "problem_reports:write",
+  "models:execute",
   "knowledge:read",
-  "knowledge:write",
+  "knowledge:draft",
+  "knowledge:review",
+  "knowledge:publish",
+  "knowledge:rollback",
   "sources:read",
   "sources:write",
   "prompts:read",
@@ -38,10 +44,23 @@ export type AdminCapability = (typeof ADMIN_CAPABILITIES)[number];
 
 export type AuthenticatedUser = {
   id: string;
+  sessionId?: string;
   email: string | null;
+  emailVerified?: boolean;
   name: string | null;
+  image?: string | null;
   banned: boolean;
   roleHint: AdminRole | null;
+};
+
+export type AccountProfile = {
+  id: string;
+  name: string;
+  email: string;
+  emailVerified: boolean;
+  image: string | null;
+  avatarRevision: number;
+  twoFactorEnabled: boolean;
 };
 
 export type Actor = AuthenticatedUser & {
@@ -50,6 +69,17 @@ export type Actor = AuthenticatedUser & {
 
 export type AdminActor = AuthenticatedUser & {
   role: AdminRole;
+};
+
+export type AdminContext = {
+  user: {
+    id: string;
+    name: string | null;
+    email: string | null;
+    image: string | null;
+  };
+  role: AdminRole;
+  capabilities: AdminCapability[];
 };
 
 export type AuditContext = {
@@ -71,6 +101,62 @@ export type PageResult<T> = {
   page: number;
   pageSize: number;
   total: number;
+};
+
+export type AdminPage<T> = PageResult<T>;
+
+export type AdminError = {
+  code: string;
+  message: string;
+  requestId: string;
+  details?: unknown;
+};
+
+export type AdminInvitation = {
+  id: string;
+  email: string;
+  role: AdminRole;
+  createdBy: string | null;
+  acceptedBy: string | null;
+  acceptedAt: Date | null;
+  revokedAt: Date | null;
+  createdAt: Date;
+  expiresAt: Date;
+};
+
+export type AdminTaskSeverity = "critical" | "high" | "medium" | "low";
+export type AdminTaskWorkflowStatus = "open" | "in_progress" | "done";
+
+export type AdminTaskState = {
+  assigneeUserId: string | null;
+  status: AdminTaskWorkflowStatus;
+  dueAt: Date | null;
+  snoozedUntil: Date | null;
+  note: string | null;
+  revision: number;
+};
+
+export type AdminTask = {
+  key: string;
+  sourceType:
+    "auth" | "budget" | "knowledge" | "feedback" | "problem_report" | "system";
+  sourceId: string;
+  sourceStatus: string;
+  title: string;
+  summary: string;
+  href: string;
+  severity: AdminTaskSeverity;
+  occurredAt: Date;
+  state: AdminTaskState;
+};
+
+export type AdminTaskStateUpdate = {
+  expectedRevision: number;
+  assigneeUserId?: string | null;
+  status?: AdminTaskWorkflowStatus;
+  dueAt?: Date | null;
+  snoozedUntil?: Date | null;
+  note?: string | null;
 };
 
 export type ConversationSummary = {
@@ -125,6 +211,33 @@ export type KnowledgeReviewInput = {
   note?: string;
 };
 
+export type KnowledgeSectionDecisionValue =
+  "approved" | "rejected" | "changes_requested";
+
+export type KnowledgeSectionDecision = {
+  decision: KnowledgeSectionDecisionValue;
+  sectionHash: string;
+  reviewerId: string;
+  note: string | null;
+  revision: number;
+};
+
+export type KnowledgeReviewSection = {
+  id: string;
+  versionId: string;
+  versionContentHash: string;
+  sectionIndex: number;
+  contentZh: string;
+  officialText: string;
+  pageStart: number | null;
+  pageEnd: number | null;
+  rightsSnapshot: Record<string, unknown>;
+  rightsSnapshotHash: string;
+  sectionHash: string;
+  reviewStatus: "required" | KnowledgeSectionDecisionValue;
+  decision: KnowledgeSectionDecision | null;
+};
+
 export type SourceRightsDecisionInput = {
   status: "approved" | "pending" | "rejected";
   scope: "full_text" | "metadata_only";
@@ -165,11 +278,48 @@ export type ModelBudgetInput = {
 };
 
 export type ApiStore = {
+  getAccountProfile(userId: string): Promise<AccountProfile | null>;
+  updateAccountProfileName(
+    userId: string,
+    name: string,
+    audit: AuditContext
+  ): Promise<AccountProfile | null>;
   getAdminRole(userId: string): Promise<AdminRole | null>;
+  reportAdminRoleConflicts(): Promise<{
+    count: number;
+    userIds: string[];
+  }>;
   listAdminConversations(
     input: PageInput
   ): Promise<PageResult<Record<string, unknown>>>;
+  getAdminConversation(
+    conversationId: string
+  ): Promise<Record<string, unknown> | null>;
   listAdmins(input: PageInput): Promise<PageResult<Record<string, unknown>>>;
+  listAdminInvitations(input: PageInput): Promise<PageResult<AdminInvitation>>;
+  createAdminInvitation(
+    input: { email: string; role: AdminRole; tokenHash: string },
+    audit: AuditContext
+  ): Promise<AdminInvitation | null>;
+  revokeAdminInvitation(
+    invitationId: string,
+    audit: AuditContext
+  ): Promise<AdminInvitation | null>;
+  acceptAdminInvitation(
+    input: {
+      tokenHash: string;
+      userId: string;
+      userEmail: string;
+      emailVerified: boolean;
+    },
+    audit: AuditContext
+  ): Promise<AdminInvitation | null>;
+  listAdminTasks(input: PageInput): Promise<PageResult<AdminTask>>;
+  updateAdminTaskState(
+    taskKey: string,
+    input: AdminTaskStateUpdate,
+    audit: AuditContext
+  ): Promise<AdminTaskState>;
   grantAdminRole(
     userId: string,
     role: AdminRole,
@@ -177,6 +327,12 @@ export type ApiStore = {
   ): Promise<Record<string, unknown> | null>;
   revokeAdminRole(
     userId: string,
+    role: AdminRole,
+    audit: AuditContext
+  ): Promise<Record<string, unknown> | null>;
+  replaceAdminRole(
+    userId: string,
+    expectedRole: AdminRole,
     role: AdminRole,
     audit: AuditContext
   ): Promise<Record<string, unknown> | null>;
@@ -259,6 +415,11 @@ export type ApiStore = {
     input: { dailyBonus: number; reason: string },
     audit: AuditContext
   ): Promise<Record<string, unknown> | null>;
+  revokeUserSessions(
+    userId: string,
+    reason: string,
+    audit: AuditContext
+  ): Promise<{ userId: string; revokedSessions: number } | null>;
 
   listFeedback(input: PageInput): Promise<PageResult<Record<string, unknown>>>;
   setFeedbackStatus(
@@ -335,15 +496,21 @@ export type ApiStore = {
   ): Promise<Record<string, unknown>>;
   updatePromptVersion(
     promptId: string,
-    input: {
-      content?: string;
-      notes?: string;
-      status?: "draft" | "active" | "archived";
-    },
+    input: { status: "active" | "archived" },
     audit: AuditContext
   ): Promise<Record<string, unknown> | null>;
 
   getBudgets(): Promise<ModelBudgetInput[]>;
+  getBudgetOverview(now: Date): Promise<
+    Array<
+      ModelBudgetInput & {
+        dailyUsedCents: number;
+        monthlyUsedCents: number;
+        projectedMonthlyCents: number;
+        circuitStatus: "ok" | "warning" | "tripped" | "disabled";
+      }
+    >
+  >;
   updateBudgets(
     input: ModelBudgetInput[],
     audit: AuditContext

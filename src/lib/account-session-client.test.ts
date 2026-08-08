@@ -14,7 +14,9 @@ describe("account session client", () => {
         userAgent: "Browser",
         ipAddress: "127.0.0.1",
         createdAt: "2026-07-31T00:00:00.000Z",
-        expiresAt: "2026-08-07T00:00:00.000Z"
+        updatedAt: "2026-08-01T00:00:00.000Z",
+        expiresAt: "2026-08-07T00:00:00.000Z",
+        isCurrent: true
       }
     ]);
 
@@ -24,7 +26,9 @@ describe("account session client", () => {
         userAgent: "Browser",
         ipAddress: "127.0.0.1",
         createdAt: "2026-07-31T00:00:00.000Z",
-        expiresAt: "2026-08-07T00:00:00.000Z"
+        updatedAt: "2026-08-01T00:00:00.000Z",
+        expiresAt: "2026-08-07T00:00:00.000Z",
+        isCurrent: true
       }
     ]);
     expect(sessions[0]).not.toHaveProperty("token");

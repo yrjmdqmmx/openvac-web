@@ -218,7 +218,7 @@ describe("append-only migration history", () => {
     ];
 
     expect(purged.prevId).toBe(agentV2.id);
-    expect(journal.entries.at(-1)).toMatchObject({
+    expect(journal.entries.find((entry) => entry.idx === 9)).toMatchObject({
       idx: 9,
       tag: "0009_modeling_permanent_purge"
     });
@@ -263,5 +263,78 @@ describe("append-only migration history", () => {
     );
     expect(existsSync("src/server/db/schema/modeling.ts")).toBe(false);
     expect(existsSync("src/server/db/schema/modeling.test.ts")).toBe(false);
+  });
+
+  it("adds the invitation workflow only after a read-only conflict report and before the user_id unique constraint", () => {
+    const migration = source("drizzle/0010_admin_invitations.sql");
+
+    expect(migration).toContain('CREATE TABLE "admin_invitation"');
+    expect(migration).toContain("admin:report-role-conflicts");
+    expect(migration).toContain("SELECT user_id");
+    expect(migration).toContain("GROUP BY user_id");
+    expect(migration).toContain(
+      'CREATE UNIQUE INDEX "admin_role_user_id_unique"'
+    );
+    expect(migration).not.toMatch(/\bDROP\s+(?:TABLE|COLUMN|TYPE)\b/iu);
+
+    const reportIndex = migration.indexOf("admin:report-role-conflicts");
+    const uniqueIndex = migration.indexOf(
+      'CREATE UNIQUE INDEX "admin_role_user_id_unique"'
+    );
+    expect(reportIndex).toBeGreaterThanOrEqual(0);
+    expect(uniqueIndex).toBeGreaterThan(reportIndex);
+  });
+
+  it("adds task workflow state without copying business-source severity or deleting data", () => {
+    const migration = source("drizzle/0011_admin_task_state.sql");
+    const journal = JSON.parse(source("drizzle/meta/_journal.json")) as Journal;
+
+    expect(journal.entries.find((entry) => entry.idx === 11)).toMatchObject({
+      idx: 11,
+      tag: "0011_admin_task_state"
+    });
+    expect(migration).toContain('CREATE TABLE "admin_task_state"');
+    for (const column of [
+      "assignee_user_id",
+      "status",
+      "due_at",
+      "snoozed_until",
+      "note",
+      "revision"
+    ]) {
+      expect(migration).toContain(`"${column}"`);
+    }
+    expect(migration).not.toContain('"severity"');
+    expect(migration).not.toMatch(/\bDROP\s+(?:TABLE|COLUMN|TYPE)\b/iu);
+  });
+
+  it("adds account MFA, avatars and normalized section review without approving legacy knowledge", () => {
+    const previous = snapshot(11);
+    const expanded = snapshot(12);
+    const migration = source(
+      "drizzle/0012_account_mfa_knowledge_review_sections.sql"
+    );
+    const journal = JSON.parse(source("drizzle/meta/_journal.json")) as Journal;
+
+    expect(expanded.prevId).toBe(previous.id);
+    expect(journal.entries.find((entry) => entry.idx === 12)).toMatchObject({
+      idx: 12,
+      tag: "0012_account_mfa_knowledge_review_sections"
+    });
+    expect(expanded.tables).toHaveProperty("public.two_factor");
+    expect(expanded.tables).toHaveProperty("public.knowledge_review_section");
+    expect(expanded.tables).toHaveProperty("public.knowledge_section_decision");
+    expect(expanded.tables["public.user"]?.columns).toHaveProperty(
+      "avatar_object_key"
+    );
+    expect(expanded.tables["public.user"]?.columns).toHaveProperty(
+      "two_factor_enabled"
+    );
+    expect(migration).toContain(
+      '"two_factor_enabled" boolean DEFAULT false NOT NULL'
+    );
+    expect(migration).not.toMatch(/\bDROP\s+(?:TABLE|COLUMN|TYPE)\b/iu);
+    expect(migration).not.toMatch(/^\s*(?:DELETE|TRUNCATE)\b/imu);
+    expect(migration).not.toMatch(/\b(?:INSERT|UPDATE)\b[\s\S]*approved/iu);
   });
 });

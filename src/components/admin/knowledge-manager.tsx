@@ -2,14 +2,12 @@
 
 import {
   Archive,
-  Check,
   ChevronDown,
   FileSearch,
   LoaderCircle,
   RotateCcw,
   Search,
-  Upload,
-  X
+  Upload
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -45,6 +43,33 @@ type StateTone = "positive" | "warning" | "negative" | "neutral";
 type DisplayState = {
   label: string;
   tone: StateTone;
+};
+
+type ReviewSectionDecision = {
+  decision: "approved" | "rejected" | "changes_requested";
+  note?: string | null;
+  revision: number;
+};
+
+type ReviewSection = {
+  id: string;
+  versionId: string;
+  sectionIndex: number;
+  contentZh: string;
+  officialText: string;
+  pageStart: number | null;
+  pageEnd: number | null;
+  sectionHash: string;
+  reviewStatus: "required" | ReviewSectionDecision["decision"];
+  decision: ReviewSectionDecision | null;
+};
+
+type ReviewWorkspace = {
+  documentId: string;
+  versionId: string;
+  versionContentHash: string;
+  versionStatus: string;
+  sections: ReviewSection[];
 };
 
 const toneClass: Record<StateTone, string> = {
@@ -201,10 +226,17 @@ export function KnowledgeManager() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [actioning, setActioning] = useState<
-    "approve" | "reject" | "publish" | "archive" | "rollback"
+    "publish" | "archive" | "rollback"
   >();
   const [actionError, setActionError] = useState("");
-  const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
+  const [reviewWorkspace, setReviewWorkspace] = useState<ReviewWorkspace>();
+  const [reviewWorkspaceLoading, setReviewWorkspaceLoading] = useState(false);
+  const [reviewSectionIndex, setReviewSectionIndex] = useState(0);
+  const [reviewSectionNotes, setReviewSectionNotes] = useState<
+    Record<string, string>
+  >({});
+  const [reviewSectionActioning, setReviewSectionActioning] = useState(false);
+  const [mobileReviewStep, setMobileReviewStep] = useState<0 | 1 | 2>(0);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -255,13 +287,116 @@ export function KnowledgeManager() {
   }, [documents, query]);
 
   const selected = documents.find((document) => document.id === selectedId);
-  const reviewNote = selected
-    ? (reviewNotes[selected.id] ?? selected.reviewNote ?? "")
-    : "";
 
-  async function action(
-    name: "approve" | "reject" | "publish" | "archive" | "rollback"
+  const loadReviewWorkspace = useCallback(async (documentId: string) => {
+    setReviewWorkspaceLoading(true);
+    try {
+      const response = await fetch(
+        `/api/admin/knowledge/${documentId}/review`,
+        { cache: "no-store" }
+      );
+      if (!response.ok) {
+        setReviewWorkspace(undefined);
+        return;
+      }
+      const payload = (await response.json()) as { data?: unknown };
+      const data = payload.data as Partial<ReviewWorkspace> | undefined;
+      setReviewWorkspace(
+        data &&
+          typeof data.versionId === "string" &&
+          Array.isArray(data.sections)
+          ? (data as ReviewWorkspace)
+          : undefined
+      );
+      setReviewSectionIndex(0);
+      setMobileReviewStep(0);
+    } catch {
+      setReviewWorkspace(undefined);
+    } finally {
+      setReviewWorkspaceLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!selected?.currentVersionId) return;
+    const timer = window.setTimeout(
+      () => void loadReviewWorkspace(selected.id),
+      0
+    );
+    return () => window.clearTimeout(timer);
+  }, [loadReviewWorkspace, selected?.currentVersionId, selected?.id]);
+
+  const currentReviewWorkspace =
+    reviewWorkspace?.documentId === selected?.id ? reviewWorkspace : undefined;
+  const activeReviewSection =
+    currentReviewWorkspace?.sections[reviewSectionIndex];
+
+  async function decideReviewSection(
+    decision: "approved" | "rejected" | "changes_requested"
   ) {
+    if (!selected || !currentReviewWorkspace || !activeReviewSection) return;
+    const note = reviewSectionNotes[activeReviewSection.id]?.trim();
+    if (decision !== "approved" && !note) {
+      setActionError("驳回或要求修改段落时必须填写审核备注。");
+      return;
+    }
+    setReviewSectionActioning(true);
+    setActionError("");
+    try {
+      const response = await fetch(
+        `/api/admin/knowledge/${selected.id}/versions/${currentReviewWorkspace.versionId}/sections/${activeReviewSection.id}/decision`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            expectedSectionHash: activeReviewSection.sectionHash,
+            expectedRevision: activeReviewSection.decision?.revision ?? 0,
+            decision,
+            ...(note ? { note } : {})
+          })
+        }
+      );
+      if (!response.ok) {
+        setActionError(await responseError(response, "段落决定保存失败。"));
+        return;
+      }
+      await loadReviewWorkspace(selected.id);
+    } catch {
+      setActionError("段落决定保存失败。");
+    } finally {
+      setReviewSectionActioning(false);
+    }
+  }
+
+  async function completeSectionReview() {
+    if (!selected || !currentReviewWorkspace) return;
+    setReviewSectionActioning(true);
+    setActionError("");
+    try {
+      const response = await fetch(
+        `/api/admin/knowledge/${selected.id}/versions/${currentReviewWorkspace.versionId}/complete-review`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            versionId: currentReviewWorkspace.versionId,
+            expectedContentHash: currentReviewWorkspace.versionContentHash
+          })
+        }
+      );
+      if (!response.ok) {
+        setActionError(await responseError(response, "完成逐段审核失败。"));
+        return;
+      }
+      await Promise.all([refresh(), loadReviewWorkspace(selected.id)]);
+    } catch {
+      setActionError("完成逐段审核失败。");
+    } finally {
+      setReviewSectionActioning(false);
+    }
+  }
+
+  async function action(name: "publish" | "archive" | "rollback") {
     if (!selected) return;
     if (name === "publish" && selected.publishReady !== true) return;
     if (
@@ -271,38 +406,18 @@ export function KnowledgeManager() {
       return;
     }
     if (name === "archive" && selected.status === "archived") return;
-    if (
-      (name === "approve" || name === "reject") &&
-      (!selected.currentVersionId || !selected.contentHash)
-    ) {
-      return;
-    }
-    if (name === "reject" && !reviewNote.trim()) {
-      setActionError("驳回知识时必须填写审核备注。");
-      return;
-    }
-
     setActioning(name);
     setActionError("");
     try {
       const response = await fetch(
-        `/api/admin/knowledge/${selected.id}/${
-          name === "approve" || name === "reject" ? "review" : name
-        }`,
+        `/api/admin/knowledge/${selected.id}/${name}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(
             name === "rollback"
               ? { versionId: selected.previousPublishedVersionId }
-              : name === "approve" || name === "reject"
-                ? {
-                    versionId: selected.currentVersionId,
-                    expectedContentHash: selected.contentHash,
-                    decision: name === "approve" ? "approved" : "rejected",
-                    ...(reviewNote.trim() ? { note: reviewNote.trim() } : {})
-                  }
-                : {}
+              : {}
           )
         }
       );
@@ -310,37 +425,23 @@ export function KnowledgeManager() {
         setActionError(
           await responseError(
             response,
-            name === "approve"
-              ? "批准失败，请重试。"
-              : name === "reject"
-                ? "驳回失败，请重试。"
-                : name === "publish"
-                  ? "发布失败，请重试。"
-                  : name === "archive"
-                    ? "归档失败，请重试。"
-                    : "回滚失败，请重试。"
-          )
-        );
-        return;
-      }
-      setReviewNotes((current) => {
-        if (!(selected.id in current)) return current;
-        const next = { ...current };
-        delete next[selected.id];
-        return next;
-      });
-      await refresh();
-    } catch {
-      setActionError(
-        name === "approve"
-          ? "批准失败，请重试。"
-          : name === "reject"
-            ? "驳回失败，请重试。"
-            : name === "publish"
+            name === "publish"
               ? "发布失败，请重试。"
               : name === "archive"
                 ? "归档失败，请重试。"
                 : "回滚失败，请重试。"
+          )
+        );
+        return;
+      }
+      await refresh();
+    } catch {
+      setActionError(
+        name === "publish"
+          ? "发布失败，请重试。"
+          : name === "archive"
+            ? "归档失败，请重试。"
+            : "回滚失败，请重试。"
       );
     } finally {
       setActioning(undefined);
@@ -354,16 +455,6 @@ export function KnowledgeManager() {
         ? (selected.publishBlockers[0] ?? "尚未满足发布门禁。")
         : undefined
     : undefined;
-  const reviewable = Boolean(
-    selected &&
-    (selected.status === "draft" ||
-      selected.status === "review" ||
-      (selected.status === "published" &&
-        selected.reviewStatus === "required")) &&
-    selected.currentVersionId &&
-    selected.contentHash
-  );
-
   return (
     <div className="grid min-h-[calc(100vh-60px)] xl:grid-cols-[minmax(0,1fr)_390px]">
       <section className="min-w-0 p-5 sm:p-8">
@@ -501,6 +592,156 @@ export function KnowledgeManager() {
             </table>
           </div>
         )}
+
+        {reviewWorkspaceLoading ? (
+          <div className="mt-8 flex items-center gap-2 text-sm text-[var(--muted)]">
+            <LoaderCircle className="h-4 w-4 animate-spin" />
+            正在生成稳定审核段落…
+          </div>
+        ) : currentReviewWorkspace && activeReviewSection ? (
+          <section className="mt-10 border-t border-[var(--border)] pt-7">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">逐段知识审核</h2>
+                <p className="mt-1 text-xs text-[var(--muted)]">
+                  第 {activeReviewSection.sectionIndex + 1} /{" "}
+                  {currentReviewWorkspace.sections.length} 段
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={
+                  reviewSectionActioning ||
+                  !currentReviewWorkspace.sections.every(
+                    (section) => section.reviewStatus === "approved"
+                  )
+                }
+                onClick={() => void completeSectionReview()}
+                className="h-10 rounded-lg bg-[var(--ink)] px-4 text-sm font-medium text-white disabled:opacity-30"
+              >
+                完成逐段审核
+              </button>
+            </div>
+
+            <div className="mt-5 grid grid-cols-3 gap-2 lg:hidden">
+              {["中文段落", "官方原文", "审核决定"].map((label, index) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => setMobileReviewStep(index as 0 | 1 | 2)}
+                  className={`h-9 rounded-lg border text-xs ${mobileReviewStep === index ? "border-[var(--accent)] text-[var(--accent)]" : "border-[var(--border)]"}`}
+                >
+                  {index + 1}. {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-5 grid gap-4 lg:grid-cols-3">
+              <article
+                className={`${mobileReviewStep === 0 ? "block" : "hidden"} rounded-xl border border-[var(--border)] p-5 lg:block`}
+              >
+                <p className="text-xs font-semibold text-[var(--muted)]">
+                  中文段落
+                </p>
+                <p className="mt-4 text-sm leading-7">
+                  {activeReviewSection.contentZh}
+                </p>
+              </article>
+              <article
+                className={`${mobileReviewStep === 1 ? "block" : "hidden"} rounded-xl border border-[var(--border)] p-5 lg:block`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-semibold text-[var(--muted)]">
+                    官方原文
+                  </p>
+                  <p className="text-xs text-[var(--muted)]">
+                    {activeReviewSection.pageStart
+                      ? activeReviewSection.pageEnd &&
+                        activeReviewSection.pageEnd !==
+                          activeReviewSection.pageStart
+                        ? `第 ${activeReviewSection.pageStart}–${activeReviewSection.pageEnd} 页`
+                        : `第 ${activeReviewSection.pageStart} 页`
+                      : "页码未提供"}
+                  </p>
+                </div>
+                <p className="mt-4 text-sm leading-7">
+                  {activeReviewSection.officialText || "未提供官方原文。"}
+                </p>
+              </article>
+              <article
+                className={`${mobileReviewStep === 2 ? "block" : "hidden"} rounded-xl border border-[var(--border)] p-5 lg:block`}
+              >
+                <p className="text-xs font-semibold text-[var(--muted)]">
+                  审核决定
+                </p>
+                <textarea
+                  aria-label="段落审核备注"
+                  value={reviewSectionNotes[activeReviewSection.id] ?? ""}
+                  onChange={(event) =>
+                    setReviewSectionNotes((current) => ({
+                      ...current,
+                      [activeReviewSection.id]: event.target.value
+                    }))
+                  }
+                  rows={4}
+                  maxLength={2000}
+                  placeholder="驳回或需修改时必须说明原因"
+                  className="mt-4 w-full resize-y rounded-lg border border-[var(--border)] bg-transparent p-3 text-sm outline-none"
+                />
+                <div className="mt-4 grid gap-2">
+                  <button
+                    type="button"
+                    disabled={reviewSectionActioning}
+                    onClick={() => void decideReviewSection("approved")}
+                    className="h-9 rounded-lg border border-[var(--accent)] text-sm text-[var(--accent)] disabled:opacity-30"
+                  >
+                    通过段落
+                  </button>
+                  <button
+                    type="button"
+                    disabled={reviewSectionActioning}
+                    onClick={() =>
+                      void decideReviewSection("changes_requested")
+                    }
+                    className="h-9 rounded-lg border border-[var(--warning)] text-sm text-[var(--warning)] disabled:opacity-30"
+                  >
+                    需修改
+                  </button>
+                  <button
+                    type="button"
+                    disabled={reviewSectionActioning}
+                    onClick={() => void decideReviewSection("rejected")}
+                    className="h-9 rounded-lg border border-[var(--danger)] text-sm text-[var(--danger)] disabled:opacity-30"
+                  >
+                    驳回段落
+                  </button>
+                </div>
+              </article>
+            </div>
+
+            <div className="mt-5 flex items-center justify-between">
+              <button
+                type="button"
+                disabled={reviewSectionIndex === 0}
+                onClick={() => setReviewSectionIndex((index) => index - 1)}
+                className="text-sm disabled:opacity-30"
+              >
+                上一段
+              </button>
+              <button
+                type="button"
+                disabled={
+                  reviewSectionIndex >=
+                  currentReviewWorkspace.sections.length - 1
+                }
+                onClick={() => setReviewSectionIndex((index) => index + 1)}
+                className="text-sm disabled:opacity-30"
+              >
+                下一段
+              </button>
+            </div>
+          </section>
+        ) : null}
       </section>
 
       <aside className="border-l border-[var(--border)] p-6">
@@ -592,53 +833,9 @@ export function KnowledgeManager() {
                   value={formatDateTime(selected.reviewInvalidatedAt)}
                 />
               </dl>
-              <label className="mt-5 block text-xs font-medium text-[var(--muted)]">
-                审核备注
-                <textarea
-                  value={reviewNote}
-                  onChange={(event) =>
-                    setReviewNotes((current) => ({
-                      ...current,
-                      [selected.id]: event.target.value
-                    }))
-                  }
-                  maxLength={2000}
-                  rows={4}
-                  disabled={actioning !== undefined}
-                  placeholder="记录批准依据；驳回时必须填写原因"
-                  className="mt-2 w-full resize-y rounded-lg border border-[var(--border)] bg-transparent p-3 text-sm leading-6 text-[var(--ink)] outline-none focus:border-[var(--accent)] disabled:opacity-50"
-                />
-              </label>
-              <div className="mt-4 grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => void action("approve")}
-                  disabled={!reviewable || actioning !== undefined}
-                  className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[var(--accent)] text-sm font-medium text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-30"
-                >
-                  {actioning === "approve" ? (
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Check className="h-4 w-4" />
-                  )}
-                  {actioning === "approve" ? "批准中…" : "批准"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void action("reject")}
-                  disabled={
-                    !reviewable || !reviewNote.trim() || actioning !== undefined
-                  }
-                  className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[var(--danger)] text-sm font-medium text-[var(--danger)] disabled:cursor-not-allowed disabled:opacity-30"
-                >
-                  {actioning === "reject" ? (
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <X className="h-4 w-4" />
-                  )}
-                  {actioning === "reject" ? "驳回中…" : "驳回"}
-                </button>
-              </div>
+              <p className="mt-5 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 text-sm text-[var(--muted)]">
+                整份哈希批准已停用。请在逐段审核工作台为每一段记录通过、驳回或需修改决定。
+              </p>
             </section>
 
             <section className="mt-7 border-t border-[var(--border)] pt-6">

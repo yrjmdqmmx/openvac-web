@@ -18,7 +18,7 @@ The released Q&A product boundary is intentionally narrow:
   problem reports, and audit logs.
 
 CAD work now lives in the separate native macOS application
-[SemaCAD](https://github.com/zdywrnm/SemaCAD). This repository only publishes
+[SemaCAD](https://github.com/yrjmdqmmx/SemaCAD). This repository only publishes
 the product/download page; it does not run a browser CAD kernel or modeling
 worker.
 

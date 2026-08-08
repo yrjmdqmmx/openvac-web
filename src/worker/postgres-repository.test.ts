@@ -10,11 +10,15 @@ import type { EmbeddedKnowledgeChunk, KnowledgeIngestionJob } from "./types";
 
 describe("Postgres knowledge ingestion review lifecycle", () => {
   it("moves OCR output and its document into review with a SHA-256 hash", async () => {
-    const sql = new RecordingSql((query) =>
-      query.includes("RETURNING id") || query.includes("FROM background_task")
+    const sql = new RecordingSql((query) => {
+      if (query.includes("SELECT") && query.includes("knowledge_source")) {
+        return [reviewTargetRow()];
+      }
+      return query.includes("RETURNING id") ||
+        query.includes("FROM background_task")
         ? [{ id: "updated" }]
-        : []
-    );
+        : [];
+    });
     const repository = new PostgresKnowledgeIngestionRepository(sql);
     const content = "# OCR result\n1.0 mbar";
 
@@ -29,6 +33,7 @@ describe("Postgres knowledge ingestion review lifecycle", () => {
 
     const versionUpdate = sql.find("UPDATE knowledge_version");
     const documentUpdate = sql.find("UPDATE knowledge_document");
+    const sectionInsert = sql.find("INSERT INTO knowledge_review_section");
     const taskUpdate = sql.find("UPDATE background_task");
     const expectedHash = createHash("sha256")
       .update(content, "utf8")
@@ -38,9 +43,14 @@ describe("Postgres knowledge ingestion review lifecycle", () => {
     expect(versionUpdate.query).toContain("content_hash = $5");
     expect(versionUpdate.parameters?.[4]).toBe(expectedHash);
     expect(documentUpdate.query).toContain("status = 'review'");
+    expect(sectionInsert.parameters?.[0]).toBe("version-1");
+    expect(sectionInsert.parameters?.[3]).toBe(content);
+    expect(sectionInsert.parameters?.[4]).toBe(1);
+    expect(sectionInsert.parameters?.[5]).toBe(1);
     expect(JSON.parse(String(taskUpdate.parameters?.[1]))).toMatchObject({
       stage: "review_required",
       contentHash: expectedHash,
+      reviewSectionCount: 1,
       manualReviewRequired: true
     });
   });
@@ -250,5 +260,24 @@ function embeddedChunk(): EmbeddedKnowledgeChunk {
     embedding: [0],
     embeddingModel: "text-embedding-v4",
     metadata: {}
+  };
+}
+
+function reviewTargetRow() {
+  return {
+    citation_metadata: { ingestionMode: "full_text" },
+    source_id: "source-1",
+    source_tier: "open_license",
+    source_enabled: true,
+    source_deleted_at: null,
+    canonical_url: "https://example.com/manual.pdf",
+    publisher: "Example Publisher",
+    source_metadata: {
+      rightsDecision: {
+        status: "approved",
+        scope: "full_text",
+        appliesToRecordUrl: "https://example.com/manual.pdf"
+      }
+    }
   };
 }

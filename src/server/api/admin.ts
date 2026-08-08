@@ -1,4 +1,12 @@
-import { auditContext, requireCapability } from "./auth";
+import { createHash } from "node:crypto";
+
+import {
+  asUserActor,
+  authenticate,
+  auditContext,
+  buildAdminContext,
+  requireCapability
+} from "./auth";
 import {
   ApiError,
   jsonData,
@@ -9,11 +17,15 @@ import {
 } from "./errors";
 import {
   adminRoleMutationSchema,
+  adminRoleReplaceSchema,
+  adminInvitationAcceptSchema,
+  adminInvitationCreateSchema,
+  adminInvitationDeleteSchema,
+  adminTaskStateUpdateSchema,
   budgetsSchema,
   feedbackStatusSchema,
   knowledgeDraftSchema,
   knowledgeDraftUpdateSchema,
-  knowledgeReviewSchema,
   metricsSchema,
   pageSchema,
   problemReportStatusSchema,
@@ -25,6 +37,7 @@ import {
   sourceUpdateSchema,
   userBanSchema,
   userQuotaSchema,
+  userSessionRevokeSchema,
   uuidSchema
 } from "./schemas";
 import { apiStore } from "./store";
@@ -86,6 +99,21 @@ async function assertCanManageUser(
   }
 }
 
+function hashAdminInvitationToken(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+async function parseAdminInvitationToken(request: Request): Promise<string> {
+  const url = new URL(request.url);
+  const searchToken = url.searchParams.get("token");
+  if (searchToken) {
+    return adminInvitationAcceptSchema.parse({ token: searchToken }).token;
+  }
+
+  const input = await parseJson(request, adminInvitationAcceptSchema);
+  return input.token;
+}
+
 export const handleListAdminConversations = withApiErrors(
   async (request: Request, store: ApiStore = apiStore) => {
     await requireCapability(request, store, "conversations:read");
@@ -94,11 +122,92 @@ export const handleListAdminConversations = withApiErrors(
   }
 );
 
+export const handleGetAdminConversation = withApiErrors(
+  async (
+    request: Request,
+    conversationId: string,
+    store: ApiStore = apiStore
+  ) => {
+    await requireCapability(request, store, "conversations:read");
+    const id = uuidSchema.parse(conversationId);
+    const conversation = await store.getAdminConversation(id);
+    if (!conversation) throw notFound("对话");
+    return jsonData(conversation);
+  }
+);
+
 export const handleListAdmins = withApiErrors(
   async (request: Request, store: ApiStore = apiStore) => {
     await requireCapability(request, store, "admins:read");
     const input = parseSearchParams(request, pageSchema);
     return jsonData(await store.listAdmins(pageInput(input)));
+  }
+);
+
+export const handleListAdminInvitations = withApiErrors(
+  async (request: Request, store: ApiStore = apiStore) => {
+    await requireCapability(request, store, "admins:read");
+    const input = parseSearchParams(request, pageSchema);
+    return jsonData(await store.listAdminInvitations(pageInput(input)));
+  }
+);
+
+export const handleListAdminTasks = withApiErrors(
+  async (request: Request, store: ApiStore = apiStore) => {
+    await requireCapability(request, store, "tasks:read");
+    const input = parseSearchParams(request, pageSchema);
+    return jsonData(await store.listAdminTasks(pageInput(input)));
+  }
+);
+
+export const handleUpdateAdminTaskState = withApiErrors(
+  async (request: Request, store: ApiStore = apiStore) => {
+    const actor = await requireCapability(request, store, "tasks:write");
+    const input = await parseJson(request, adminTaskStateUpdateSchema);
+    const state = await store.updateAdminTaskState(
+      input.taskKey,
+      {
+        expectedRevision: input.expectedRevision,
+        ...(input.assigneeUserId === undefined
+          ? {}
+          : { assigneeUserId: input.assigneeUserId }),
+        ...(input.status === undefined ? {} : { status: input.status }),
+        ...(input.dueAt === undefined
+          ? {}
+          : { dueAt: input.dueAt === null ? null : new Date(input.dueAt) }),
+        ...(input.snoozedUntil === undefined
+          ? {}
+          : {
+              snoozedUntil:
+                input.snoozedUntil === null
+                  ? null
+                  : new Date(input.snoozedUntil)
+            }),
+        ...(input.note === undefined ? {} : { note: input.note })
+      },
+      auditContext(request, actor)
+    );
+    return jsonData(state);
+  }
+);
+
+export const handleGetAdminContext = withApiErrors(
+  async (request: Request, store: ApiStore = apiStore) => {
+    const user = await authenticate(request);
+    const role = await store.getAdminRole(user.id);
+    if (!role) {
+      throw new ApiError(403, "FORBIDDEN", "当前账号没有运营后台权限。");
+    }
+
+    const actor = { ...user, role };
+    const context = buildAdminContext(actor);
+    const { requestId } = auditContext(request, actor);
+    return new Response(JSON.stringify({ data: context, requestId }), {
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store"
+      }
+    });
   }
 );
 
@@ -117,6 +226,69 @@ export const handleGrantAdminRole = withApiErrors(
   }
 );
 
+export const handleCreateAdminInvitation = withApiErrors(
+  async (request: Request, store: ApiStore = apiStore) => {
+    const actor = await requireCapability(request, store, "admins:write");
+    const input = await parseJson(request, adminInvitationCreateSchema);
+    const token = crypto.randomUUID();
+    const created = await store.createAdminInvitation(
+      {
+        email: input.email,
+        role: input.role,
+        tokenHash: hashAdminInvitationToken(token)
+      },
+      auditContext(request, actor)
+    );
+
+    if (!created) throw notFound("管理员邀请");
+    return jsonData(
+      {
+        invitation: created,
+        token,
+        acceptUrl: new URL(
+          `/accept-admin-invitation?token=${token}`,
+          request.url
+        ).toString()
+      },
+      { status: 201 }
+    );
+  }
+);
+
+export const handleDeleteAdminInvitation = withApiErrors(
+  async (request: Request, store: ApiStore = apiStore) => {
+    const actor = await requireCapability(request, store, "admins:write");
+    const input = await parseJson(request, adminInvitationDeleteSchema);
+    const removed = await store.revokeAdminInvitation(
+      input.invitationId,
+      auditContext(request, actor)
+    );
+
+    if (!removed) throw notFound("管理员邀请");
+    return jsonData(removed);
+  }
+);
+
+export const handleAcceptAdminInvitation = withApiErrors(
+  async (request: Request, store: ApiStore = apiStore) => {
+    const user = await authenticate(request);
+    const actor = asUserActor(user);
+    const token = await parseAdminInvitationToken(request);
+    const accepted = await store.acceptAdminInvitation(
+      {
+        tokenHash: hashAdminInvitationToken(token),
+        userId: user.id,
+        userEmail: user.email ?? "",
+        emailVerified: Boolean(user.emailVerified)
+      },
+      auditContext(request, actor)
+    );
+
+    if (!accepted) throw notFound("管理员邀请");
+    return jsonData(accepted);
+  }
+);
+
 export const handleRevokeAdminRole = withApiErrors(
   async (request: Request, store: ApiStore = apiStore) => {
     const actor = await requireCapability(request, store, "admins:write");
@@ -129,6 +301,22 @@ export const handleRevokeAdminRole = withApiErrors(
 
     if (!removed) throw notFound("管理员角色");
     return jsonData(removed);
+  }
+);
+
+export const handleReplaceAdminRole = withApiErrors(
+  async (request: Request, store: ApiStore = apiStore) => {
+    const actor = await requireCapability(request, store, "admins:write");
+    const input = await parseJson(request, adminRoleReplaceSchema);
+    const updated = await store.replaceAdminRole(
+      input.userId,
+      input.expectedRole,
+      input.role,
+      auditContext(request, actor)
+    );
+
+    if (!updated) throw notFound("管理员角色");
+    return jsonData(updated);
   }
 );
 
@@ -173,6 +361,22 @@ export const handleSetUserQuota = withApiErrors(
 
     if (!updated) throw notFound("用户");
     return jsonData(updated);
+  }
+);
+
+export const handleRevokeUserSessions = withApiErrors(
+  async (request: Request, userId: string, store: ApiStore = apiStore) => {
+    const actor = await requireCapability(request, store, "users:write");
+    await assertCanManageUser(actor, userId, store, true);
+    const input = await parseJson(request, userSessionRevokeSchema);
+    const revoked = await store.revokeUserSessions(
+      userId,
+      input.reason,
+      auditContext(request, actor)
+    );
+
+    if (!revoked) throw notFound("用户");
+    return jsonData(revoked);
   }
 );
 
@@ -261,7 +465,7 @@ export const handleGetKnowledgeDocument = withApiErrors(
 
 export const handleCreateKnowledgeDraft = withApiErrors(
   async (request: Request, store: ApiStore = apiStore) => {
-    const actor = await requireCapability(request, store, "knowledge:write");
+    const actor = await requireCapability(request, store, "knowledge:draft");
     const input = await parseJson(request, knowledgeDraftSchema);
     const created = await store.createKnowledgeDraft(
       input,
@@ -273,7 +477,7 @@ export const handleCreateKnowledgeDraft = withApiErrors(
 
 export const handleUpdateKnowledgeDraft = withApiErrors(
   async (request: Request, documentId: string, store: ApiStore = apiStore) => {
-    const actor = await requireCapability(request, store, "knowledge:write");
+    const actor = await requireCapability(request, store, "knowledge:draft");
     const id = uuidSchema.parse(documentId);
     const input = await parseJson(request, knowledgeDraftUpdateSchema);
     const updated = await store.updateKnowledgeDraft(
@@ -289,22 +493,19 @@ export const handleUpdateKnowledgeDraft = withApiErrors(
 
 export const handleReviewKnowledgeDocument = withApiErrors(
   async (request: Request, documentId: string, store: ApiStore = apiStore) => {
-    const actor = await requireCapability(request, store, "knowledge:write");
-    const id = uuidSchema.parse(documentId);
-    const input = await parseJson(request, knowledgeReviewSchema);
-    const reviewed = await store.reviewKnowledgeDocument(
-      id,
-      input,
-      auditContext(request, actor)
+    await requireCapability(request, store, "knowledge:review");
+    uuidSchema.parse(documentId);
+    throw new ApiError(
+      409,
+      "KNOWLEDGE_SECTION_REVIEW_REQUIRED",
+      "整份哈希批准已停用，请在逐段审核工作台完成全部段落审核。"
     );
-    if (!reviewed) throw notFound("知识文档");
-    return jsonData(reviewed);
   }
 );
 
 export const handlePublishKnowledge = withApiErrors(
   async (request: Request, documentId: string, store: ApiStore = apiStore) => {
-    const actor = await requireCapability(request, store, "knowledge:write");
+    const actor = await requireCapability(request, store, "knowledge:publish");
     const id = uuidSchema.parse(documentId);
     const published = await store.publishKnowledgeDraft(
       id,
@@ -318,7 +519,7 @@ export const handlePublishKnowledge = withApiErrors(
 
 export const handleArchiveKnowledge = withApiErrors(
   async (request: Request, documentId: string, store: ApiStore = apiStore) => {
-    const actor = await requireCapability(request, store, "knowledge:write");
+    const actor = await requireCapability(request, store, "knowledge:rollback");
     const id = uuidSchema.parse(documentId);
     const archived = await store.archiveKnowledgeDocument(
       id,
@@ -332,7 +533,7 @@ export const handleArchiveKnowledge = withApiErrors(
 
 export const handleRollbackKnowledge = withApiErrors(
   async (request: Request, documentId: string, store: ApiStore = apiStore) => {
-    const actor = await requireCapability(request, store, "knowledge:write");
+    const actor = await requireCapability(request, store, "knowledge:rollback");
     const id = uuidSchema.parse(documentId);
     const input = await parseJson(request, rollbackKnowledgeSchema);
     const updated = await store.rollbackKnowledgeDocument(
@@ -431,7 +632,7 @@ export const handleUpdatePrompt = withApiErrors(
 export const handleGetBudgets = withApiErrors(
   async (request: Request, store: ApiStore = apiStore) => {
     await requireCapability(request, store, "budgets:read");
-    const budgets = await store.getBudgets();
+    const budgets = await store.getBudgetOverview(new Date());
     return jsonData({ budgets, items: budgetTableItems(budgets) });
   }
 );
@@ -440,11 +641,9 @@ export const handleUpdateBudgets = withApiErrors(
   async (request: Request, store: ApiStore = apiStore) => {
     const actor = await requireCapability(request, store, "budgets:write");
     const input = await parseJson(request, budgetsSchema);
-    const budgets = await store.updateBudgets(
-      input.budgets,
-      auditContext(request, actor)
-    );
-    return jsonData({ budgets, items: budgetTableItems(budgets) });
+    await store.updateBudgets(input.budgets, auditContext(request, actor));
+    const overview = await store.getBudgetOverview(new Date());
+    return jsonData({ budgets: overview, items: budgetTableItems(overview) });
   }
 );
 
@@ -464,6 +663,17 @@ export const handleUpdateSettings = withApiErrors(
         422,
         "RESERVED_SETTING_KEY",
         "模型预算必须通过预算接口修改。"
+      );
+    }
+    const allowedKeys = new Set(["agent_responses_v2_enabled"]);
+    const forbiddenKeys = Object.keys(input.settings).filter(
+      (key) => !allowedKeys.has(key)
+    );
+    if (forbiddenKeys.length > 0) {
+      throw new ApiError(
+        422,
+        "SETTING_KEY_NOT_ALLOWED",
+        "通用设置接口只允许修改经过审核的非敏感配置项。"
       );
     }
     const settings = await store.updateSettings(

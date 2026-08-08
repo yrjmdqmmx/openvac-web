@@ -34,6 +34,8 @@ import {
   handleReviewKnowledgeDocument,
   handleSetProblemReportStatus,
   handleGetBudgets,
+  handleUpdateSettings,
+  handleUpdatePrompt,
   handleUpdateBudgets
 } from "./admin";
 import { handleClearConversationData } from "./account";
@@ -62,6 +64,7 @@ describe("API handlers", () => {
     accountCleanupMocks.isUserDeletionInProgress.mockReset();
     accountCleanupMocks.isUserDeletionInProgress.mockResolvedValue(false);
     authMocks.getSession.mockResolvedValue({
+      session: { id: "session-1" },
       user: {
         id: "user-1",
         name: "测试用户",
@@ -401,6 +404,26 @@ describe("API handlers", () => {
     expect(updateBudgets).not.toHaveBeenCalled();
   });
 
+  it("rejects in-place prompt content changes before the store boundary", async () => {
+    const updatePromptVersion = vi.fn();
+    const store = partialStore({
+      getAdminRole: vi.fn().mockResolvedValue("owner"),
+      updatePromptVersion
+    });
+    const response = await handleUpdatePrompt(
+      jsonRequest(
+        "/api/admin/prompts/d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+        { content: "不得覆盖现有版本" },
+        "PATCH"
+      ),
+      "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
+      store
+    );
+
+    expect(response.status).toBe(422);
+    expect(updatePromptVersion).not.toHaveBeenCalled();
+  });
+
   it("passes the current role to the audit-log DTO boundary", async () => {
     const listAuditLogs = vi.fn().mockResolvedValue({
       items: [],
@@ -430,15 +453,19 @@ describe("API handlers", () => {
     );
   });
 
-  it("returns generic-table budget items as key and value records", async () => {
+  it("returns budget usage, projection and circuit status without masking absence", async () => {
     const store = partialStore({
       getAdminRole: vi.fn().mockResolvedValue("analyst"),
-      getBudgets: vi.fn().mockResolvedValue([
+      getBudgetOverview: vi.fn().mockResolvedValue([
         {
           model: "deepseek-v4-pro",
           dailyLimitCents: 1000,
           monthlyLimitCents: 20_000,
-          enabled: true
+          enabled: true,
+          dailyUsedCents: 800,
+          monthlyUsedCents: 10_000,
+          projectedMonthlyCents: 18_000,
+          circuitStatus: "warning"
         }
       ])
     });
@@ -448,7 +475,10 @@ describe("API handlers", () => {
       store
     );
     const body = (await response.json()) as {
-      data: { items: Array<Record<string, unknown>> };
+      data: {
+        items: Array<Record<string, unknown>>;
+        budgets: Array<Record<string, unknown>>;
+      };
     };
 
     expect(body.data.items).toEqual([
@@ -463,9 +493,37 @@ describe("API handlers", () => {
         updatedAt: null
       }
     ]);
+    expect(body.data).toMatchObject({
+      budgets: [
+        expect.objectContaining({
+          dailyUsedCents: 800,
+          monthlyUsedCents: 10_000,
+          projectedMonthlyCents: 18_000,
+          circuitStatus: "warning"
+        })
+      ]
+    });
   });
 
-  it("takes the knowledge reviewer from the authenticated actor", async () => {
+  it("rejects unknown or secret-shaped keys at the generic settings boundary", async () => {
+    const updateSettings = vi.fn();
+    const response = await handleUpdateSettings(
+      jsonRequest(
+        "/api/admin/settings",
+        { settings: { provider_api_key: "must-not-enter-db" } },
+        "PATCH"
+      ),
+      partialStore({
+        getAdminRole: vi.fn().mockResolvedValue("owner"),
+        updateSettings
+      })
+    );
+
+    expect(response.status).toBe(422);
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("rejects the legacy whole-document hash review endpoint", async () => {
     const reviewKnowledgeDocument = vi.fn().mockResolvedValue({
       id: "d607d4d6-82df-4f1b-a5d4-7d80277e327d"
     });
@@ -487,21 +545,11 @@ describe("API handlers", () => {
       store
     );
 
-    expect(response.status).toBe(200);
-    expect(reviewKnowledgeDocument).toHaveBeenCalledWith(
-      "d607d4d6-82df-4f1b-a5d4-7d80277e327d",
-      {
-        versionId: "cb71f682-9bdc-4899-b7b3-c459402b192c",
-        expectedContentHash: contentHash,
-        decision: "approved"
-      },
-      expect.objectContaining({
-        actor: expect.objectContaining({
-          id: "user-1",
-          role: "knowledge_editor"
-        })
-      })
-    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: { code: "KNOWLEDGE_SECTION_REVIEW_REQUIRED" }
+    });
+    expect(reviewKnowledgeDocument).not.toHaveBeenCalled();
   });
 
   it("archives knowledge through the authenticated audit context", async () => {
@@ -510,7 +558,7 @@ describe("API handlers", () => {
       status: "archived"
     });
     const store = partialStore({
-      getAdminRole: vi.fn().mockResolvedValue("knowledge_editor"),
+      getAdminRole: vi.fn().mockResolvedValue("admin"),
       archiveKnowledgeDocument
     });
 
@@ -530,7 +578,7 @@ describe("API handlers", () => {
         path: "/api/admin/knowledge/d607d4d6-82df-4f1b-a5d4-7d80277e327d/archive",
         actor: expect.objectContaining({
           id: "user-1",
-          role: "knowledge_editor"
+          role: "admin"
         })
       })
     );
@@ -590,8 +638,11 @@ describe("API handlers", () => {
     });
   });
 
-  it("blocks admin from granting administrator roles", async () => {
-    const grantAdminRole = vi.fn();
+  it("lets admin grant a professional role through the audited route", async () => {
+    const grantAdminRole = vi.fn().mockResolvedValue({
+      userId: "user-2",
+      role: "support"
+    });
     const store = partialStore({
       getAdminRole: vi.fn().mockResolvedValue("admin"),
       grantAdminRole
@@ -605,8 +656,16 @@ describe("API handlers", () => {
       store
     );
 
-    expect(response.status).toBe(403);
-    expect(grantAdminRole).not.toHaveBeenCalled();
+    expect(response.status).toBe(201);
+    expect(grantAdminRole).toHaveBeenCalledWith(
+      "user-2",
+      "support",
+      expect.objectContaining({
+        path: "/api/admin/admins",
+        method: "POST",
+        actor: expect.objectContaining({ role: "admin" })
+      })
+    );
   });
 
   it("lets owner grant and revoke roles with audit context", async () => {

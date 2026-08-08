@@ -9,11 +9,18 @@ export const adminModuleConfigs = {
     columns: ["email", "name", "banned", "dailyQuotaBonus", "createdAt"]
   },
   conversations: {
-    title: "对话与反馈",
-    description: "按状态和模型复核对话，不展示模型思维过程。",
+    title: "对话",
+    description: "只读复核用户与助手可见消息，不允许改写用户内容。",
     endpoint: "/api/admin/conversations",
     responseKeys: ["conversations"],
     columns: ["title", "userEmail", "status", "model", "updatedAt"]
+  },
+  feedback: {
+    title: "用户反馈",
+    description: "领取回答反馈、更新处理状态并记录内部备注。",
+    endpoint: "/api/admin/feedback",
+    responseKeys: ["feedback"],
+    columns: ["rating", "reason", "status", "updatedAt"]
   },
   "problem-reports": {
     title: "问题反馈",
