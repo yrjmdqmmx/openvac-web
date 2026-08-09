@@ -117,10 +117,12 @@ describe("DeepSeek native web evidence", () => {
   it.each([
     ["zero", [finish]],
     [
-      "multiple",
+      "too many",
       [
-        { type: "web-search-status", status: "completed" } as const,
-        { type: "web-search-status", status: "completed" } as const,
+        ...Array.from(
+          { length: 9 },
+          () => ({ type: "web-search-status", status: "completed" }) as const
+        ),
         finish
       ]
     ]
@@ -128,6 +130,19 @@ describe("DeepSeek native web evidence", () => {
     await expect(discover(events)).rejects.toThrow(
       "NATIVE_WEB_SEARCH_COUNT_INVALID"
     );
+  });
+
+  it("accepts multiple completed search subcalls in one provider response", async () => {
+    await expect(
+      discover([
+        { type: "web-search-status", status: "completed" },
+        { type: "web-search-status", status: "completed" },
+        finish
+      ])
+    ).resolves.toMatchObject({
+      searched: true,
+      provider: "deepseek-native"
+    });
   });
 
   it("does not report a search when the native call contract failed", async () => {
@@ -231,6 +246,7 @@ describe("DeepSeek native web evidence", () => {
 
   it("binds a safely fetched authority page and tells DeepSeek the approved domains", async () => {
     let capturedInstructions = "";
+    let capturedTextFormat: unknown;
     const registry = new EvidenceRegistry();
     fetchMocks.fetch.mockResolvedValue({
       url: "https://docs.example-a.com/pump",
@@ -254,6 +270,7 @@ describe("DeepSeek native web evidence", () => {
       registry,
       async function* (request) {
         capturedInstructions = request.instructions ?? "";
+        capturedTextFormat = request.textFormat;
         yield { type: "web-search-status", status: "completed" };
         yield candidateFinish;
       },
@@ -274,6 +291,7 @@ describe("DeepSeek native web evidence", () => {
     });
 
     expect(capturedInstructions).toContain("example-a.com");
+    expect(capturedTextFormat).toBeUndefined();
     expect(result).toMatchObject({
       searched: true,
       provider: "deepseek-native",
@@ -293,5 +311,54 @@ describe("DeepSeek native web evidence", () => {
         linkHostname: "docs.example-a.com"
       })
     ]);
+  });
+
+  it.each(["incomplete", "failed"] as const)(
+    "rejects a %s terminal discovery response",
+    async (status) => {
+      await expect(
+        discover([
+          { type: "web-search-status", status: "completed" },
+          { ...finish, status }
+        ])
+      ).rejects.toThrow("NATIVE_WEB_DISCOVERY_FAILED");
+    }
+  );
+
+  it("uses terminal URL citations when structured output is empty", async () => {
+    fetchMocks.fetch.mockResolvedValue({
+      url: "https://docs.example-a.com/pump",
+      body: "Manufacturer foreline-pressure guidance. ".repeat(4),
+      fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+    });
+    const emptyFinish = { ...finish, outputText: "" };
+
+    await expect(
+      discover(
+        [
+          { type: "web-search-status", status: "completed" },
+          {
+            type: "web-search-sources",
+            sources: [
+              {
+                url: "https://docs.example-a.com/pump",
+                title: "Pump manual"
+              }
+            ]
+          },
+          emptyFinish
+        ],
+        [
+          {
+            domain: "example-a.com",
+            trustTier: "tier_a",
+            licenseClass: "open"
+          }
+        ]
+      )
+    ).resolves.toMatchObject({
+      evidenceIds: ["E1"],
+      verifiedLinks: [{ linkId: "W1", evidenceIds: ["E1"] }]
+    });
   });
 });

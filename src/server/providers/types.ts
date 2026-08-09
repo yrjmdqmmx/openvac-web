@@ -174,6 +174,10 @@ export type ResponsesStreamEvent =
       status: "in_progress" | "searching" | "completed";
     }
   | {
+      type: "web-search-sources";
+      sources: Array<{ url: string; title: string }>;
+    }
+  | {
       type: "finish";
       status: "completed" | "incomplete" | "failed";
       responseId: string;
