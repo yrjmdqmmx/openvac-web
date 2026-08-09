@@ -1,5 +1,6 @@
 import { answerV3Schema } from "@/server/chat-v3/contracts";
 import { renderArtifactFiles } from "@/server/artifacts";
+import { webLinkBindingDigest } from "@/server/agent/web-link-binding";
 import { ANSWER_V3_CASE_VERSION, ANSWER_V3_EVAL_CASES } from "./cases";
 import type {
   AnswerV3CandidateOutput,
@@ -238,15 +239,44 @@ function checkGate(
       const referenced = output.answer.blocks.flatMap((block) =>
         "evidenceIds" in block ? block.evidenceIds : []
       );
+      const minimum = testCase.expected.minimumEvidenceCount ?? 0;
+      const exactEvidenceMatches =
+        minimum > 0
+          ? output.answer.usedEvidenceIds.length >= minimum
+          : sameSet(
+              output.answer.usedEvidenceIds,
+              testCase.expected.evidenceIds
+            );
       return (
-        sameSet(output.answer.usedEvidenceIds, testCase.expected.evidenceIds) &&
+        exactEvidenceMatches &&
         referenced.every((id) => output.answer.usedEvidenceIds.includes(id)) &&
-        testCase.expected.evidenceIds.every((id) => referenced.includes(id))
+        output.answer.usedEvidenceIds.every((id) => referenced.includes(id))
       );
     }
     case "link": {
       const references = output.answer.blocks.flatMap((block) =>
         block.type === "link_reference" ? [block.linkId] : []
+      );
+      const bindingRequired =
+        testCase.expected.requireLinkEvidenceBinding === true;
+      const allowedDomains = testCase.expected.allowedLinkDomains ?? [];
+      const boundEvidence = (output.linkAudit ?? []).filter(
+        (audit) =>
+          testCase.expected.linkIds.includes(audit.linkId) &&
+          audit.status === "verified" &&
+          output.answer.usedEvidenceIds.includes(audit.evidenceId)
+      );
+      const webCitationIds = output.toolAudit.find(
+        (audit) =>
+          audit.name === "web_search" &&
+          audit.executed &&
+          audit.status === "completed"
+      )?.citationIds;
+      const bindingProofs = output.toolAudit.filter(
+        (audit) =>
+          audit.name === "web_link_binding" &&
+          audit.executed &&
+          audit.status === "completed"
       );
       return (
         sameSet(output.answer.usedLinkIds, testCase.expected.linkIds) &&
@@ -256,8 +286,41 @@ function checkGate(
           (link) =>
             link.status === "verified" &&
             link.url.startsWith("https://") &&
-            testCase.expected.linkIds.includes(link.linkId)
-        )
+            testCase.expected.linkIds.includes(link.linkId) &&
+            (allowedDomains.length === 0 ||
+              allowedDomains.some((domain) =>
+                hostnameWithin(link.hostname, domain)
+              )) &&
+            (!bindingRequired ||
+              ((link.evidenceIds?.length ?? 0) > 0 &&
+                link.evidenceIds!.every((id) =>
+                  output.answer.usedEvidenceIds.includes(id)
+                )))
+        ) &&
+        (!bindingRequired ||
+          (testCase.expected.linkIds.every((linkId) =>
+            boundEvidence.some((audit) => audit.linkId === linkId)
+          ) &&
+            Array.isArray(webCitationIds) &&
+            isNonEmptySubset(
+              [...new Set(boundEvidence.map((audit) => audit.evidenceId))],
+              webCitationIds
+            ) &&
+            boundEvidence.every((binding) => {
+              const link = output.verifiedLinks.find(
+                (candidate) => candidate.linkId === binding.linkId
+              );
+              if (!link) return false;
+              const expectedDigest = webLinkBindingDigest({
+                evidenceId: binding.evidenceId,
+                link
+              });
+              return bindingProofs.some(
+                (proof) =>
+                  proof.resultDigest === expectedDigest &&
+                  sameSet(proof.citationIds ?? [], [binding.evidenceId])
+              );
+            })))
       );
     }
     case "permission":
@@ -265,6 +328,20 @@ function checkGate(
     case "tool_protocol":
       return browserProtocolSafe(output.browserEvents);
   }
+}
+
+function hostnameWithin(hostname: string, domain: string): boolean {
+  const normalizedHostname = hostname.toLowerCase();
+  const normalizedDomain = domain.toLowerCase();
+  return (
+    normalizedHostname === normalizedDomain ||
+    normalizedHostname.endsWith(`.${normalizedDomain}`)
+  );
+}
+
+function isNonEmptySubset(values: string[], allowed: string[]): boolean {
+  const allowedSet = new Set(allowed);
+  return values.length > 0 && values.every((value) => allowedSet.has(value));
 }
 
 function permissionAuditMatches(

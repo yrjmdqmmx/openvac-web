@@ -75,6 +75,7 @@ const SMOKE_DIAGNOSTIC_STAGES = [
   "chat_terminal",
   "database_evidence",
   "artifact_validation",
+  "tool_validation",
   "case_cleanup",
   "principal_cleanup",
   "report_write"
@@ -561,6 +562,7 @@ async function captureCase(
 
   markSmokeDiagnostic("artifact_validation", { caseId: testCase.id });
   const artifactSpec = await validateRuntimeArtifacts(input, result, testCase);
+  markSmokeDiagnostic("tool_validation", { caseId: testCase.id });
   assertRequiredToolEvidence(testCase, database.toolAudit);
   const authorizationAudit = authorizationAudits(
     testCase,
@@ -578,6 +580,14 @@ async function captureCase(
     model,
     answer: result.answer,
     verifiedLinks: result.verifiedLinks,
+    linkAudit: result.verifiedLinks.flatMap((link) =>
+      (link.evidenceIds ?? []).map((evidenceId) => ({
+        evidenceId,
+        linkId: link.linkId,
+        hostname: link.hostname,
+        status: link.status
+      }))
+    ),
     browserEvents: result.events,
     toolAudit: database.toolAudit,
     authorizationAudit,
@@ -642,7 +652,9 @@ async function loadRunEvidence(userId: string, runId: string) {
       id: agentToolCalls.id,
       providerCallId: agentToolCalls.providerCallId,
       name: agentToolCalls.toolName,
-      status: agentToolCalls.status
+      status: agentToolCalls.status,
+      citationIds: agentToolCalls.citationIds,
+      resultDigest: agentToolCalls.resultDigest
     })
     .from(agentToolCalls)
     .where(eq(agentToolCalls.runId, runId))
@@ -658,6 +670,8 @@ async function loadRunEvidence(userId: string, runId: string) {
       permission: "allowed" as const,
       executed: true as const,
       status: call.status,
+      citationIds: Array.isArray(call.citationIds) ? call.citationIds : [],
+      resultDigest: call.resultDigest,
       source: "postgres_agent_tool_call" as const
     };
   });

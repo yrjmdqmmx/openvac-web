@@ -1,4 +1,5 @@
 import type { AnswerBlock, AnswerV3, ArtifactSpec } from "@/types/chat-v3";
+import { webLinkBindingDigest } from "@/server/agent/web-link-binding";
 import type {
   AnswerV3CandidateExecutor,
   AnswerV3CandidateOutput,
@@ -32,7 +33,13 @@ export function createFixtureEvalDependencies() {
 }
 
 function fixtureOutput(testCase: AnswerV3EvalCase): AnswerV3CandidateOutput {
-  const evidenceIds = testCase.expected.evidenceIds;
+  const evidenceIds =
+    (testCase.expected.minimumEvidenceCount ?? 0) > 0
+      ? Array.from(
+          { length: testCase.expected.minimumEvidenceCount ?? 1 },
+          (_, index) => `E${index + 1}`
+        )
+      : testCase.expected.evidenceIds;
   const firstBlock: AnswerBlock =
     testCase.expected.answerKind === "safe_refusal"
       ? {
@@ -73,6 +80,9 @@ function fixtureOutput(testCase: AnswerV3EvalCase): AnswerV3CandidateOutput {
     usedEvidenceIds: evidenceIds,
     usedLinkIds: testCase.expected.linkIds
   };
+  const linkHostname = testCase.expected.allowedLinkDomains?.[0]
+    ? `www.${testCase.expected.allowedLinkDomains[0]}`
+    : "www.example.com";
   return {
     provider: testCase.outputProvider,
     model:
@@ -83,11 +93,22 @@ function fixtureOutput(testCase: AnswerV3EvalCase): AnswerV3CandidateOutput {
     verifiedLinks: testCase.expected.linkIds.map((linkId) => ({
       type: "verified_link",
       linkId,
-      url: "https://www.example.com/manual",
+      url: `https://${linkHostname}/manual`,
       label: "厂家手册",
-      hostname: "www.example.com",
-      status: "verified"
+      hostname: linkHostname,
+      status: "verified",
+      ...(testCase.expected.requireLinkEvidenceBinding ? { evidenceIds } : {})
     })),
+    linkAudit: testCase.expected.requireLinkEvidenceBinding
+      ? testCase.expected.linkIds.flatMap((linkId) =>
+          evidenceIds.map((evidenceId) => ({
+            evidenceId,
+            linkId,
+            hostname: linkHostname,
+            status: "verified" as const
+          }))
+        )
+      : [],
     browserEvents: [
       ...blocks.map((block, index) => ({
         type: "answer.block.committed",
@@ -96,9 +117,33 @@ function fixtureOutput(testCase: AnswerV3EvalCase): AnswerV3CandidateOutput {
       })),
       { type: "answer.completed", answer }
     ],
-    toolAudit: (testCase.expected.permissionAudit ?? []).filter(
-      (audit) => audit.permission === "allowed"
-    ),
+    toolAudit: [
+      ...(testCase.expected.permissionAudit ?? [])
+        .filter((audit) => audit.permission === "allowed")
+        .map((audit) => ({
+          ...audit,
+          ...(audit.name === "web_search" ? { citationIds: evidenceIds } : {})
+        })),
+      ...(testCase.expected.requireLinkEvidenceBinding
+        ? testCase.expected.linkIds.flatMap((linkId) =>
+            evidenceIds.map((evidenceId) => {
+              const link = {
+                linkId,
+                url: `https://${linkHostname}/manual`,
+                hostname: linkHostname
+              };
+              return {
+                name: "web_link_binding",
+                permission: "allowed" as const,
+                executed: true,
+                status: "completed" as const,
+                citationIds: [evidenceId],
+                resultDigest: webLinkBindingDigest({ evidenceId, link })
+              };
+            })
+          )
+        : [])
+    ],
     authorizationAudit: (testCase.expected.permissionAudit ?? []).flatMap(
       (audit) =>
         audit.permission === "denied"

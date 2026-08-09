@@ -17,7 +17,10 @@ export type AnswerV3EvalCase = {
     answerKind: AnswerV3["answerKind"];
     riskLevel: AnswerV3["riskLevel"];
     evidenceIds: string[];
+    minimumEvidenceCount?: number;
     linkIds: string[];
+    requireLinkEvidenceBinding?: boolean;
+    allowedLinkDomains?: string[];
     facts: string[];
     forbiddenText: string[];
     artifactKind?: ArtifactSpec["kind"];
@@ -31,6 +34,8 @@ export type EvalToolAudit = {
   executed: boolean;
   status?: "completed" | "failed";
   denialReason?: string;
+  citationIds?: string[];
+  resultDigest?: string;
 };
 
 export type EvalPermissionAudit = EvalToolAudit;
@@ -42,11 +47,19 @@ export type EvalAuthorizationAudit = {
   denialReason: string;
 };
 
+export type EvalLinkAudit = {
+  evidenceId: string;
+  linkId: string;
+  hostname: string;
+  status: "verified" | "unavailable";
+};
+
 export type AnswerV3CandidateOutput = {
   provider: "deepseek" | "qwen";
   model: string;
   answer: AnswerV3;
   verifiedLinks: VerifiedLinkPart[];
+  linkAudit?: EvalLinkAudit[];
   browserEvents: unknown[];
   toolAudit: EvalToolAudit[];
   authorizationAudit?: EvalAuthorizationAudit[];

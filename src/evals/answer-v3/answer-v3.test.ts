@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { webLinkBindingDigest } from "@/server/agent/web-link-binding";
 
 import {
   ANSWER_V3_EVAL_CASES,
@@ -174,6 +175,92 @@ describe("Answer V3 automated release gate", () => {
     expect(report.passed).toBe(false);
     expect(report.deterministicGates.permission.passed).toBe(false);
     expect(report.failureIds).toContain("v3-multiturn-tool-02:permission");
+  });
+
+  it("accepts a verified web link bound to a non-first evidence id", async () => {
+    const dependencies = mutateCandidate(
+      "v3-text-citation-link-02",
+      (output) => {
+        output.answer.blocks = output.answer.blocks.map((block) =>
+          "evidenceIds" in block ? { ...block, evidenceIds: ["E2"] } : block
+        );
+        output.answer.usedEvidenceIds = ["E2"];
+        output.verifiedLinks = output.verifiedLinks.map((link) => ({
+          ...link,
+          evidenceIds: ["E2"]
+        }));
+        output.linkAudit = (output.linkAudit ?? []).map((audit) => ({
+          ...audit,
+          evidenceId: "E2"
+        }));
+        output.toolAudit = output.toolAudit.map((audit) =>
+          audit.name === "web_search"
+            ? { ...audit, citationIds: ["E2", "E3"] }
+            : audit.name === "web_link_binding"
+              ? {
+                  ...audit,
+                  citationIds: ["E2"],
+                  resultDigest: webLinkBindingDigest({
+                    evidenceId: "E2",
+                    link: output.verifiedLinks[0]!
+                  })
+                }
+              : audit
+        );
+      }
+    );
+    const report = await runAnswerV3Eval({ dependencies, gitSha: "test" });
+
+    expect(report.deterministicGates.citation).toMatchObject({ passed: true });
+    expect(report.deterministicGates.link).toMatchObject({ passed: true });
+  });
+
+  it("rejects a verified link whose evidence binding was tampered", async () => {
+    const dependencies = mutateCandidate(
+      "v3-text-citation-link-02",
+      (output) => {
+        output.linkAudit = (output.linkAudit ?? []).map((audit) => ({
+          ...audit,
+          evidenceId: "E99"
+        }));
+      }
+    );
+    const report = await runAnswerV3Eval({ dependencies, gitSha: "test" });
+
+    expect(report.passed).toBe(false);
+    expect(report.deterministicGates.link.passed).toBe(false);
+    expect(report.failureIds).toContain("v3-text-citation-link-02:link");
+  });
+
+  it("rejects a coordinated E/W swap without the database binding digest", async () => {
+    const dependencies = mutateCandidate(
+      "v3-text-citation-link-02",
+      (output) => {
+        output.answer.blocks = output.answer.blocks.map((block) =>
+          "evidenceIds" in block ? { ...block, evidenceIds: ["E2"] } : block
+        );
+        output.answer.usedEvidenceIds = ["E2"];
+        output.verifiedLinks = output.verifiedLinks.map((link) => ({
+          ...link,
+          evidenceIds: ["E2"]
+        }));
+        output.linkAudit = (output.linkAudit ?? []).map((audit) => ({
+          ...audit,
+          evidenceId: "E2"
+        }));
+        output.toolAudit = output.toolAudit.map((audit) =>
+          audit.name === "web_search"
+            ? { ...audit, citationIds: ["E1", "E2"] }
+            : audit.name === "web_link_binding"
+              ? { ...audit, citationIds: ["E2"] }
+              : audit
+        );
+      }
+    );
+    const report = await runAnswerV3Eval({ dependencies, gitSha: "test" });
+
+    expect(report.deterministicGates.link.passed).toBe(false);
+    expect(report.failureIds).toContain("v3-text-citation-link-02:link");
   });
 });
 

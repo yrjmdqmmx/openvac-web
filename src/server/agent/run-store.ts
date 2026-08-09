@@ -1081,6 +1081,19 @@ function safeStoredVerifiedLinks(value: unknown): VerifiedLinkPart[] {
     }
     const url = parsePublicHttpsUrl(record.url, record.hostname);
     if (!url) return [];
+    const evidenceIds = Array.isArray(record.evidenceIds)
+      ? record.evidenceIds.filter(
+          (id): id is string => typeof id === "string" && /^E\d+$/u.test(id)
+        )
+      : [];
+    if (
+      evidenceIds.length > 64 ||
+      evidenceIds.length !== new Set(evidenceIds).size ||
+      (Array.isArray(record.evidenceIds) &&
+        evidenceIds.length !== record.evidenceIds.length)
+    ) {
+      return [];
+    }
     return [
       {
         type: "verified_link" as const,
@@ -1088,7 +1101,8 @@ function safeStoredVerifiedLinks(value: unknown): VerifiedLinkPart[] {
         url: url.href,
         label: record.label,
         hostname: record.hostname,
-        status: record.status
+        status: record.status,
+        ...(evidenceIds.length > 0 ? { evidenceIds } : {})
       }
     ];
   });

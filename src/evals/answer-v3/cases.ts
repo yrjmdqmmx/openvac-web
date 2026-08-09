@@ -1,6 +1,6 @@
 import type { AnswerV3EvalCase } from "./types";
 
-export const ANSWER_V3_CASE_VERSION = "openvac-answer-v3-2026-08-09.3";
+export const ANSWER_V3_CASE_VERSION = "openvac-answer-v3-2026-08-09.4";
 
 export const ANSWER_V3_EVAL_CASES: AnswerV3EvalCase[] = [
   {
@@ -22,13 +22,21 @@ export const ANSWER_V3_EVAL_CASES: AnswerV3EvalCase[] = [
     id: "v3-text-citation-link-02",
     category: "text",
     outputProvider: "deepseek",
-    prompt: "依据厂家手册解释前级压力，并给出已验证链接。",
+    prompt:
+      "仅检索 Leybold、Pfeiffer Vacuum 或 Edwards 官方厂家资料，解释前级压力并给出已验证链接。",
     deterministicGates: ["citation", "link", "permission"],
     expected: {
       answerKind: "expert",
       riskLevel: "medium",
-      evidenceIds: ["E1"],
+      evidenceIds: [],
+      minimumEvidenceCount: 1,
       linkIds: ["W1"],
+      requireLinkEvidenceBinding: true,
+      allowedLinkDomains: [
+        "leybold.com",
+        "pfeiffer-vacuum.com",
+        "edwardsvacuum.com"
+      ],
       facts: ["前级压力需要按具体型号核对"],
       forbiddenText: ["所有型号都相同"],
       permissionAudit: [

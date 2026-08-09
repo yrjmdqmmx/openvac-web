@@ -170,6 +170,11 @@ export class WebEvidenceService {
     signal?: AbortSignal;
     policies: WebDomainPolicy[];
   }): Promise<WebEvidenceResult> {
+    const allowedDomains = [
+      ...new Set(input.policies.map((policy) => policy.domain))
+    ]
+      .sort()
+      .slice(0, 64);
     let outputText = "";
     let invocation: WebProviderInvocation | undefined;
     let completedSearchCalls = 0;
@@ -177,7 +182,8 @@ export class WebEvidenceService {
       instructions: [
         "Use web search only to discover candidate sources for the user's question.",
         "Return only URL, title, and a short neutral summary. Do not answer the question.",
-        "Prefer governments, regulators, standards bodies, original manufacturers, and authoritative research institutions."
+        "Prefer governments, regulators, standards bodies, original manufacturers, and authoritative research institutions.",
+        `Only return HTTPS candidate URLs hosted on these approved authority domains: ${allowedDomains.join(", ")}.`
       ].join("\n"),
       input: input.question,
       tools: [{ type: "web_search" }],
@@ -306,7 +312,8 @@ export class WebEvidenceService {
             label:
               this.evidence.get(id)?.evidence.citation.title ?? candidate.title,
             hostname,
-            status: "verified"
+            status: "verified",
+            evidenceIds: [id]
           });
         }
       } catch {

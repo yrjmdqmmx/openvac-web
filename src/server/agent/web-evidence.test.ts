@@ -228,4 +228,70 @@ describe("DeepSeek native web evidence", () => {
       )
     ).resolves.toMatchObject({ evidenceIds: [], verifiedLinks: [] });
   });
+
+  it("binds a safely fetched authority page and tells DeepSeek the approved domains", async () => {
+    let capturedInstructions = "";
+    const registry = new EvidenceRegistry();
+    fetchMocks.fetch.mockResolvedValue({
+      url: "https://docs.example-a.com/pump",
+      body: "Manufacturer foreline-pressure guidance. ".repeat(4),
+      fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+    });
+    const candidateFinish: Extract<ResponsesStreamEvent, { type: "finish" }> = {
+      ...finish,
+      outputText: JSON.stringify({
+        candidates: [
+          {
+            url: "https://docs.example-a.com/pump",
+            title: "Pump manual",
+            summary: "Manufacturer source"
+          }
+        ]
+      })
+    };
+    const service = new WebEvidenceService(
+      provider,
+      registry,
+      async function* (request) {
+        capturedInstructions = request.instructions ?? "";
+        yield { type: "web-search-status", status: "completed" };
+        yield candidateFinish;
+      },
+      async () => [
+        {
+          domain: "example-a.com",
+          trustTier: "tier_a",
+          licenseClass: "open"
+        }
+      ]
+    );
+
+    const result = await service.search({
+      question: "查找厂家前级压力资料",
+      userId: "user-1",
+      userPartition: "partition-1",
+      clientRequestId: "request-1"
+    });
+
+    expect(capturedInstructions).toContain("example-a.com");
+    expect(result).toMatchObject({
+      searched: true,
+      provider: "deepseek-native",
+      evidenceIds: ["E1"],
+      verifiedLinks: [
+        {
+          linkId: "W1",
+          evidenceIds: ["E1"],
+          hostname: "docs.example-a.com"
+        }
+      ]
+    });
+    expect(registry.modelIndex()).toEqual([
+      expect.objectContaining({
+        evidenceId: "E1",
+        linkId: "W1",
+        linkHostname: "docs.example-a.com"
+      })
+    ]);
+  });
 });
