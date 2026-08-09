@@ -114,9 +114,12 @@ describeDatabase("chat attachment repository integration", () => {
     const workerRepository = new PostgresChatStorageWorkerRepository(
       sqlClient as never
     );
-    expect(
-      await workerRepository.claimAttachmentParse("worker-before-bind")
-    ).toBeNull();
+    const parseJob =
+      await workerRepository.claimAttachmentParse("worker-before-bind");
+    expect(parseJob).toMatchObject({
+      id: attachmentId,
+      workerId: "worker-before-bind"
+    });
 
     const messageId = randomUUID();
     await db.insert(messages).values({
@@ -127,6 +130,28 @@ describeDatabase("chat attachment repository integration", () => {
       role: "user",
       content: "See attachment"
     });
+    await expect(
+      repository.bindToMessage({
+        attachmentIds: [attachmentId],
+        conversationId,
+        messageId,
+        userId: ownerId
+      })
+    ).rejects.toMatchObject({ code: "ATTACHMENT_BIND_CONFLICT" });
+    if (!parseJob) throw new Error("Expected the document parse job.");
+    await workerRepository.saveChunksAndComplete(
+      parseJob,
+      [
+        {
+          ordinal: 0,
+          content: "Manual content",
+          contentHash: "c".repeat(64),
+          locator: { page: 1 },
+          metadata: {}
+        }
+      ],
+      "integration-parser"
+    );
     const bound = await repository.bindToMessage({
       attachmentIds: [attachmentId],
       conversationId,
@@ -134,9 +159,10 @@ describeDatabase("chat attachment repository integration", () => {
       userId: ownerId
     });
     expect(bound[0]?.messageId).toBe(messageId);
+    expect(bound[0]).toMatchObject({ status: "ready", parseStatus: "ready" });
     expect(
       await workerRepository.claimAttachmentParse("worker-after-bind")
-    ).toMatchObject({ id: attachmentId, workerId: "worker-after-bind" });
+    ).toBeNull();
 
     const deletion = await db.transaction((transaction) =>
       enqueueConversationStorageDeletion(transaction, {

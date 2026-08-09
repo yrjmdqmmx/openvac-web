@@ -381,7 +381,8 @@ export class PostgresChatAttachmentRepository implements ChatAttachmentRepositor
           WHERE id = ANY($1::uuid[])
             AND user_id = $2 AND conversation_id = $3
             AND quota_state = 'committed' AND deletion_status = 'active'
-            AND status NOT IN ('failed', 'deleted')
+            AND status = 'ready'
+            AND parse_status IN ('ready', 'not_required')
             AND (message_id IS NULL OR message_id = $4)
           FOR UPDATE
         `,
@@ -396,7 +397,7 @@ export class PostgresChatAttachmentRepository implements ChatAttachmentRepositor
         throw new ApiError(
           409,
           "ATTACHMENT_BIND_CONFLICT",
-          "附件未完成上传、已绑定其他消息或不属于当前会话。"
+          "附件尚未解析就绪、已绑定其他消息或不属于当前会话。"
         );
       }
       const rows = await transaction.unsafe(
