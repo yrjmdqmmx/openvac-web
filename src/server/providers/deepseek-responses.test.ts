@@ -199,6 +199,94 @@ describe("DeepSeekResponsesProvider", () => {
     ).toHaveLength(1);
   });
 
+  it("maps a forced function to one required tool without structured text", async () => {
+    let sentBody: Record<string, unknown> = {};
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(
+          streamFromStrings([
+            event("response.created", 0, {
+              response: { id: "resp-forced" }
+            }),
+            event("response.completed", 1, {
+              response: { id: "resp-forced", output: [] }
+            })
+          ])
+        );
+      })
+    });
+
+    await collect(
+      provider.stream({
+        input: "Calculate",
+        tools: [
+          {
+            type: "function",
+            name: "estimate_pumpdown_time",
+            description: "Calculate pumpdown time",
+            parameters: { type: "object" },
+            strict: true
+          },
+          {
+            type: "function",
+            name: "search_knowledge",
+            description: "Search",
+            parameters: { type: "object" },
+            strict: true
+          }
+        ],
+        toolChoice: { type: "function", name: "estimate_pumpdown_time" },
+        reasoningEffort: "high",
+        textFormat: {
+          type: "json_schema",
+          name: "answer_v3",
+          schema: { type: "object" },
+          strict: true
+        },
+        user: "ov1_safe-user"
+      })
+    );
+
+    expect(sentBody).toMatchObject({
+      tool_choice: "required",
+      tools: [
+        {
+          type: "function",
+          name: "estimate_pumpdown_time",
+          parameters: { type: "object" }
+        }
+      ],
+      reasoning: { effort: "high" }
+    });
+    expect(sentBody).not.toHaveProperty("text");
+    expect(sentBody).not.toHaveProperty("tools.0.strict");
+  });
+
+  it("rejects an unresolved forced function before fetch", async () => {
+    const fetchMock = vi.fn();
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: fetchMock
+    });
+
+    await expect(
+      collect(
+        provider.stream({
+          input: "Calculate",
+          tools: [],
+          toolChoice: { type: "function", name: "missing_tool" },
+          user: "ov1_safe-user"
+        })
+      )
+    ).rejects.toMatchObject({
+      name: "ProviderResponseError",
+      retryable: false
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     [
       "response.incomplete",

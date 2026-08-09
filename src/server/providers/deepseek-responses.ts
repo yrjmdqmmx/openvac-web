@@ -20,6 +20,7 @@ import type {
   ResponsesStreamRequest,
   ResponsesTextFormat,
   ResponsesTool,
+  ResponsesToolChoice,
   ResponsesUsage
 } from "./types";
 
@@ -104,6 +105,7 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
       throw new TypeError("maxOutputTokens must be a positive integer.");
     }
     assertFunctionCallPairing(request.input);
+    const portableRequest = portableToolRequest(request);
 
     const deadline = createProviderDeadline(
       PROVIDER_ID,
@@ -125,15 +127,17 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
           ...(request.instructions
             ? { instructions: request.instructions }
             : {}),
-          ...(request.tools?.length
-            ? { tools: serializeTools(request.tools) }
+          ...(portableRequest.tools?.length
+            ? { tools: portableRequest.tools }
             : {}),
-          ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
+          ...(portableRequest.toolChoice
+            ? { tool_choice: portableRequest.toolChoice }
+            : {}),
           ...(request.reasoningEffort
             ? { reasoning: { effort: request.reasoningEffort } }
             : {}),
-          ...(request.textFormat
-            ? { text: { format: serializeTextFormat(request.textFormat) } }
+          ...(portableRequest.textFormat
+            ? { text: { format: portableRequest.textFormat } }
             : {}),
           max_output_tokens: maxOutputTokens,
           user: request.user,
@@ -447,6 +451,43 @@ function serializeTools(tools: ResponsesTool[]): ResponsesTool[] {
     delete portable.strict;
     return portable as ResponsesFunctionTool;
   });
+}
+
+function portableToolRequest(request: ResponsesStreamRequest): {
+  tools?: ResponsesTool[];
+  toolChoice?: ResponsesToolChoice;
+  textFormat?: ResponsesTextFormat;
+} {
+  if (
+    typeof request.toolChoice === "object" &&
+    request.toolChoice.type === "function"
+  ) {
+    const forcedName = request.toolChoice.name;
+    const matches = (request.tools ?? []).filter(
+      (tool) => tool.type === "function" && tool.name === forcedName
+    );
+    if (matches.length !== 1) {
+      throw invalidContinuation(
+        "A forced Responses function must resolve to exactly one tool."
+      );
+    }
+    // DeepSeek documents named function choice and structured text
+    // independently, but its forced-tool path has rejected the combined wire
+    // shape in live staging. With exactly one declared tool, `required`
+    // preserves the same semantics while keeping the first leg tool-only. The
+    // final leg restores structured AnswerV3 output after the local result.
+    return {
+      tools: serializeTools(matches),
+      toolChoice: "required"
+    };
+  }
+  return {
+    ...(request.tools?.length ? { tools: serializeTools(request.tools) } : {}),
+    ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
+    ...(request.textFormat
+      ? { textFormat: serializeTextFormat(request.textFormat) }
+      : {})
+  };
 }
 
 function serializeTextFormat(format: ResponsesTextFormat): ResponsesTextFormat {
