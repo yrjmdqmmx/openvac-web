@@ -217,37 +217,103 @@ export const answerV3Schema = z.object({
   usedLinkIds: z.array(z.string()).max(64)
 });
 
-const artifactTableSchema = z.object({
-  title: z.string().trim().max(240).optional(),
-  columns: z.array(z.string()).min(1).max(32),
-  rows: z.array(z.array(z.string()).max(32)).max(2_000)
-});
+const artifactTableSchema = z
+  .object({
+    title: z.string().trim().min(1).max(240).optional(),
+    columns: z.array(z.string().trim().min(1).max(240)).min(1).max(32),
+    rows: z
+      .array(z.array(z.string().max(10_000)).min(1).max(32))
+      .min(1)
+      .max(2_000)
+  })
+  .strict();
 
-export const artifactSpecSchema = z.object({
-  schemaVersion: z.literal("openvac.artifact.v1"),
-  kind: z.enum([
-    "diagnosis_report",
-    "selection_report",
-    "inspection_checklist",
-    "parameter_table"
-  ]),
-  title: z.string().trim().min(1).max(240),
-  formats: z
-    .array(z.enum(["md", "docx", "pdf", "csv"]))
-    .min(1)
-    .max(4),
-  summary: z.string().trim().min(1).max(2_000),
-  sections: z
-    .array(
-      z.object({
-        heading: z.string().trim().min(1).max(240),
-        paragraphs: z.array(z.string()).max(100)
-      })
-    )
-    .max(64),
-  tables: z.array(artifactTableSchema).max(32),
-  sourceTurnId: z.string().uuid()
-});
+export const artifactSpecSchema = z
+  .object({
+    schemaVersion: z.literal("openvac.artifact.v1"),
+    kind: z.enum([
+      "diagnosis_report",
+      "selection_report",
+      "inspection_checklist",
+      "parameter_table"
+    ]),
+    title: z.string().trim().min(1).max(240),
+    formats: z
+      .array(z.enum(["md", "docx", "pdf", "csv"]))
+      .min(1)
+      .max(4),
+    summary: z.string().trim().min(1).max(2_000),
+    sections: z
+      .array(
+        z
+          .object({
+            heading: z.string().trim().min(1).max(240),
+            paragraphs: z
+              .array(z.string().trim().min(1).max(10_000))
+              .min(1)
+              .max(100)
+          })
+          .strict()
+      )
+      .max(64),
+    tables: z.array(artifactTableSchema).max(32),
+    sourceTurnId: z.string().uuid()
+  })
+  .strict()
+  .superRefine((spec, context) => {
+    if (new Set(spec.formats).size !== spec.formats.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["formats"],
+        message: "Artifact formats must be unique."
+      });
+    }
+
+    if (spec.sections.length === 0 && spec.tables.length === 0) {
+      context.addIssue({
+        code: "custom",
+        message: "Artifact must contain at least one section or table."
+      });
+    }
+
+    if (spec.formats.includes("csv") && spec.tables.length === 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["formats"],
+        message: "CSV artifacts require at least one table."
+      });
+    }
+
+    if (spec.kind === "parameter_table" && spec.tables.length === 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["tables"],
+        message: "Parameter-table artifacts require at least one table."
+      });
+    }
+
+    spec.tables.forEach((table, tableIndex) => {
+      const normalizedColumns = table.columns.map((column) =>
+        column.toLocaleLowerCase("zh-CN")
+      );
+      if (new Set(normalizedColumns).size !== normalizedColumns.length) {
+        context.addIssue({
+          code: "custom",
+          path: ["tables", tableIndex, "columns"],
+          message: "Artifact table columns must be unique."
+        });
+      }
+      table.rows.forEach((row, rowIndex) => {
+        if (row.length !== table.columns.length) {
+          context.addIssue({
+            code: "custom",
+            path: ["tables", tableIndex, "rows", rowIndex],
+            message: "Artifact table rows must match the column count."
+          });
+        }
+      });
+    });
+  });
 
 export function normalizeStoredMessageParts(
   content: string,
