@@ -183,11 +183,18 @@ async function runToolContinuationProbe(
   if (!execution.ok) {
     throw new DeepSeekSmokeFailure("TOOL_EXECUTION_FAILED");
   }
+  const continuationTool = registry.definitions.find(
+    (tool) => tool.type === "function" && tool.name === call.name
+  );
+  if (!continuationTool) {
+    throw new DeepSeekSmokeFailure("TOOL_CONTINUATION_INVALID");
+  }
   let final: ProbeResult;
   try {
     final = await collectProbe(provider, {
       instructions: buildAgentV3InstructionsForRisk(risk.level),
       input: [...input, ...first.continuationItems, execution.outputItem],
+      tools: [continuationTool],
       toolChoice: "none",
       reasoningEffort: "high",
       textFormat: {

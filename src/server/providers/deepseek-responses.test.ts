@@ -364,6 +364,7 @@ describe("DeepSeekResponsesProvider", () => {
             output: '{"ok":true}'
           }
         ],
+        tools: [tool],
         toolChoice: "none",
         reasoningEffort: "high",
         textFormat: {
@@ -383,6 +384,13 @@ describe("DeepSeekResponsesProvider", () => {
     expect(sentBodies[0]).not.toHaveProperty("text");
     expect(sentBodies[1]).toMatchObject({
       tool_choice: "none",
+      tools: [
+        {
+          type: "function",
+          name: "estimate_pumpdown_time",
+          parameters: { type: "object" }
+        }
+      ],
       reasoning: { effort: "high" },
       text: {
         format: {
