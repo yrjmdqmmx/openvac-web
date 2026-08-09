@@ -77,6 +77,7 @@ import {
 const MAX_TOOL_CALLS = 8;
 const MAX_PARALLEL_TOOLS = 2;
 const MAX_MODEL_REQUESTS = 6;
+const NON_REPEATABLE_TOOL_NAMES = new Set(["create_artifact"]);
 
 export type OrchestratorEvent =
   | { type: "stage"; stage: AgentStage; label: string }
@@ -140,6 +141,7 @@ export class AgentRunOrchestrator {
     ToolExecutionResult["calculations"][number]
   >();
   private readonly seenProviderCallIds = new Set<string>();
+  private readonly attemptedNonRepeatableToolNames = new Set<string>();
   private modelRequests = 0;
   private toolCalls = 0;
   private toolRounds = 0;
@@ -259,6 +261,7 @@ export class AgentRunOrchestrator {
           true
         );
       }
+      assertAuthorizedFunctionCalls(result.calls, result.callableFunctionNames);
       if (result.calls.length === 0) {
         incomplete = result.finish.status === "incomplete";
         break;
@@ -506,6 +509,7 @@ export class AgentRunOrchestrator {
     calls: Array<{ callId: string; name: string; arguments: string }>,
     signal: AbortSignal
   ): Promise<ToolExecutionResult[]> {
+    reserveNonRepeatableToolCalls(calls, this.attemptedNonRepeatableToolNames);
     const results: ToolExecutionResult[] = [];
     for (let offset = 0; offset < calls.length; offset += MAX_PARALLEL_TOOLS) {
       const batch = calls.slice(offset, offset + MAX_PARALLEL_TOOLS);
@@ -845,19 +849,19 @@ export class AgentRunOrchestrator {
     let finish: Extract<ResponsesStreamEvent, { type: "finish" }> | undefined;
     const budgetProfile = agentRunBudgetProfile(input.requestedMode);
     const completedCalculations = [...this.calculations.values()];
+    const toolPolicy = selectAnswerToolRequestPolicy({
+      tools: this.tools.definitions,
+      calculations: completedCalculations,
+      modelInput,
+      question: input.run.question,
+      allowTools,
+      blockedCallableToolNames: this.attemptedNonRepeatableToolNames
+    });
     const request: ResponsesStreamRequest = {
       instructions: undefined,
       input: modelInput,
-      tools: allowTools
-        ? selectAnswerTools(this.tools.definitions, completedCalculations)
-        : undefined,
-      toolChoice: allowTools
-        ? selectAnswerToolChoice(
-            input.run.question,
-            modelInput,
-            completedCalculations
-          )
-        : "none",
+      tools: toolPolicy.tools,
+      toolChoice: toolPolicy.toolChoice,
       reasoningEffort:
         input.resolvedMode === "deep"
           ? input.riskLevel === "high"
@@ -902,7 +906,12 @@ export class AgentRunOrchestrator {
         true
       );
     }
-    return { outputText, calls, finish };
+    return {
+      outputText,
+      calls,
+      finish,
+      callableFunctionNames: new Set(toolPolicy.callableFunctionNames)
+    };
   }
 
   private async *meteredStream(
@@ -1035,6 +1044,7 @@ type CollectedModelResponse = {
   outputText: string;
   calls: Array<{ callId: string; name: string; arguments: string }>;
   finish: Extract<ResponsesStreamEvent, { type: "finish" }>;
+  callableFunctionNames: ReadonlySet<string>;
 };
 
 export function localizeKnownCalculationBlocks(
@@ -1206,15 +1216,138 @@ export function selectAnswerToolChoice(
 
 export function selectAnswerTools(
   tools: readonly ResponsesTool[],
-  calculations: Iterable<CalculationResult>
+  calculations: Iterable<CalculationResult>,
+  blockedToolNames: ReadonlySet<string> = new Set()
 ): ResponsesTool[] {
   const completedCalculatorNames = new Set(
     [...calculations].map((calculation) => calculation.tool)
   );
   return tools.filter(
     (tool) =>
-      tool.type !== "function" || !completedCalculatorNames.has(tool.name)
+      tool.type !== "function" ||
+      (!completedCalculatorNames.has(tool.name) &&
+        !blockedToolNames.has(tool.name))
   );
+}
+
+export function selectContinuationTools(
+  tools: readonly ResponsesTool[],
+  modelInput: readonly ResponsesInputItem[]
+): ResponsesTool[] {
+  const calledNames = new Set(
+    modelInput.flatMap((item) =>
+      item.type === "function_call" && typeof item.name === "string"
+        ? [item.name]
+        : []
+    )
+  );
+  if (calledNames.size === 0) return [];
+  const selected = tools.filter(
+    (tool) => tool.type === "function" && calledNames.has(tool.name)
+  );
+  const resolvedNames = new Set(
+    selected.flatMap((tool) => (tool.type === "function" ? [tool.name] : []))
+  );
+  if ([...calledNames].some((name) => !resolvedNames.has(name))) {
+    throw new AgentRuntimeError(
+      "TOOL_CONTINUATION_CONTRACT",
+      "工具续接缺少已调用函数的定义。",
+      false
+    );
+  }
+  return selected;
+}
+
+export function selectAnswerToolRequestPolicy(input: {
+  tools: readonly ResponsesTool[];
+  calculations: Iterable<CalculationResult>;
+  modelInput: readonly ResponsesInputItem[];
+  question: string;
+  allowTools: boolean;
+  blockedCallableToolNames?: ReadonlySet<string>;
+}): {
+  tools?: ResponsesTool[];
+  toolChoice: ResponsesToolChoice;
+  callableFunctionNames: string[];
+} {
+  const calculations = [...input.calculations];
+  const callableTools = input.allowTools
+    ? selectAnswerTools(
+        input.tools,
+        calculations,
+        input.blockedCallableToolNames
+      )
+    : [];
+  const replayTools = selectContinuationTools(input.tools, input.modelInput);
+  const selectedTools = mergeResponseTools(callableTools, replayTools);
+  const toolChoice =
+    input.allowTools && callableTools.length > 0
+      ? selectAnswerToolChoice(
+          input.question,
+          [...input.modelInput],
+          calculations
+        )
+      : "none";
+  const callableFunctionNames =
+    !input.allowTools || toolChoice === "none"
+      ? []
+      : typeof toolChoice === "object"
+        ? toolChoice.type === "function"
+          ? [toolChoice.name]
+          : []
+        : callableTools.flatMap((tool) =>
+            tool.type === "function" ? [tool.name] : []
+          );
+  return {
+    ...(selectedTools.length > 0 ? { tools: selectedTools } : {}),
+    toolChoice,
+    callableFunctionNames
+  };
+}
+
+export function assertAuthorizedFunctionCalls(
+  calls: readonly { name: string }[],
+  callableFunctionNames: ReadonlySet<string>
+): void {
+  if (calls.some((call) => !callableFunctionNames.has(call.name))) {
+    throw new AgentRuntimeError(
+      "TOOL_CALL_NOT_AUTHORIZED",
+      "模型请求了本轮未授权执行的工具。",
+      false
+    );
+  }
+}
+
+export function reserveNonRepeatableToolCalls(
+  calls: readonly { name: string }[],
+  attemptedToolNames: Set<string>
+): void {
+  const pending = new Set<string>();
+  for (const call of calls) {
+    if (!NON_REPEATABLE_TOOL_NAMES.has(call.name)) continue;
+    if (attemptedToolNames.has(call.name) || pending.has(call.name)) {
+      throw new AgentRuntimeError(
+        "TOOL_REPEAT_NOT_ALLOWED",
+        "本轮已尝试创建产物，禁止重复执行。",
+        false
+      );
+    }
+    pending.add(call.name);
+  }
+  for (const name of pending) attemptedToolNames.add(name);
+}
+
+function mergeResponseTools(
+  callableTools: readonly ResponsesTool[],
+  replayTools: readonly ResponsesTool[]
+): ResponsesTool[] {
+  const seen = new Set<string>();
+  return [...callableTools, ...replayTools].filter((tool) => {
+    const key = tool.type === "function" ? `function:${tool.name}` : tool.type;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export function selectAnswerToolRoundLimit(

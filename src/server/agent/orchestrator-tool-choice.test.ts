@@ -4,9 +4,13 @@ import type { ResponsesInputItem, ResponsesTool } from "@/server/providers";
 import type { CalculationResult } from "@/types/chat";
 
 import {
+  assertAuthorizedFunctionCalls,
+  reserveNonRepeatableToolCalls,
+  selectAnswerToolRequestPolicy,
   selectAnswerToolChoice,
   selectAnswerToolRoundLimit,
-  selectAnswerTools
+  selectAnswerTools,
+  selectContinuationTools
 } from "./orchestrator";
 
 const history: ResponsesInputItem[] = [
@@ -69,6 +73,168 @@ describe("Agent V3 deterministic calculator routing", () => {
         { tool: "estimate_pumpdown_time" } as CalculationResult
       ]).map((tool) => ("name" in tool ? tool.name : tool.type))
     ).toEqual(["create_artifact", "open_attachment_excerpt"]);
+  });
+
+  it("replays only definitions for functions present in continuation history", () => {
+    const tools: ResponsesTool[] = [
+      {
+        type: "function",
+        name: "estimate_pumpdown_time",
+        description: "calculator",
+        parameters: { type: "object" }
+      },
+      {
+        type: "function",
+        name: "create_artifact",
+        description: "artifact",
+        parameters: { type: "object" }
+      },
+      { type: "web_search" }
+    ];
+
+    expect(
+      selectContinuationTools(tools, [
+        ...history,
+        {
+          type: "function_call",
+          call_id: "call-pumpdown",
+          name: "estimate_pumpdown_time",
+          arguments: "{}"
+        },
+        {
+          type: "function_call_output",
+          call_id: "call-pumpdown",
+          output: '{"ok":true}'
+        }
+      ]).map((tool) => ("name" in tool ? tool.name : tool.type))
+    ).toEqual(["estimate_pumpdown_time"]);
+    expect(selectContinuationTools(tools, history)).toEqual([]);
+  });
+
+  it("fails closed when continuation history names an undeclared function", () => {
+    expect(() =>
+      selectContinuationTools(
+        [],
+        [
+          {
+            type: "function_call",
+            call_id: "call-unknown",
+            name: "unknown_tool",
+            arguments: "{}"
+          }
+        ]
+      )
+    ).toThrow("工具续接缺少已调用函数的定义");
+  });
+
+  it("keeps prior definitions replay-only while allowing a later artifact tool", () => {
+    const tools: ResponsesTool[] = [
+      {
+        type: "function",
+        name: "estimate_pumpdown_time",
+        description: "calculator",
+        parameters: { type: "object" }
+      },
+      {
+        type: "function",
+        name: "create_artifact",
+        description: "artifact",
+        parameters: { type: "object" }
+      }
+    ];
+    const continuation: ResponsesInputItem[] = [
+      ...history,
+      {
+        type: "function_call",
+        call_id: "call-pumpdown",
+        name: "estimate_pumpdown_time",
+        arguments: "{}"
+      },
+      {
+        type: "function_call_output",
+        call_id: "call-pumpdown",
+        output: '{"ok":true}'
+      }
+    ];
+    const calculation = {
+      tool: "estimate_pumpdown_time"
+    } as CalculationResult;
+
+    const mixed = selectAnswerToolRequestPolicy({
+      tools,
+      calculations: [calculation],
+      modelInput: continuation,
+      question: "使用上一轮计算并生成报告。",
+      allowTools: true
+    });
+    expect(mixed.toolChoice).toBe("auto");
+    expect(
+      mixed.tools?.map((tool) => ("name" in tool ? tool.name : tool.type))
+    ).toEqual(["create_artifact", "estimate_pumpdown_time"]);
+    expect(mixed.callableFunctionNames).toEqual(["create_artifact"]);
+    expect(() =>
+      assertAuthorizedFunctionCalls(
+        [{ name: "estimate_pumpdown_time" }],
+        new Set(mixed.callableFunctionNames)
+      )
+    ).toThrow("模型请求了本轮未授权执行的工具");
+    expect(() =>
+      assertAuthorizedFunctionCalls(
+        [{ name: "create_artifact" }],
+        new Set(mixed.callableFunctionNames)
+      )
+    ).not.toThrow();
+
+    const final = selectAnswerToolRequestPolicy({
+      tools,
+      calculations: [calculation],
+      modelInput: continuation,
+      question: "使用上一轮参数给出结果。",
+      allowTools: false
+    });
+    expect(final.toolChoice).toBe("none");
+    expect(
+      final.tools?.map((tool) => ("name" in tool ? tool.name : tool.type))
+    ).toEqual(["estimate_pumpdown_time"]);
+    expect(final.callableFunctionNames).toEqual([]);
+    expect(() =>
+      assertAuthorizedFunctionCalls(
+        [{ name: "estimate_pumpdown_time" }],
+        new Set(final.callableFunctionNames)
+      )
+    ).toThrow("模型请求了本轮未授权执行的工具");
+
+    const artifactAlreadyAttempted = selectAnswerToolRequestPolicy({
+      tools,
+      calculations: [calculation],
+      modelInput: continuation,
+      question: "再次生成报告。",
+      allowTools: true,
+      blockedCallableToolNames: new Set(["create_artifact"])
+    });
+    expect(artifactAlreadyAttempted.toolChoice).toBe("none");
+    expect(
+      artifactAlreadyAttempted.tools?.map((tool) =>
+        "name" in tool ? tool.name : tool.type
+      )
+    ).toEqual(["estimate_pumpdown_time"]);
+    expect(artifactAlreadyAttempted.callableFunctionNames).toEqual([]);
+  });
+
+  it("reserves create_artifact at most once per run and parallel batch", () => {
+    const attempted = new Set<string>();
+    reserveNonRepeatableToolCalls([{ name: "create_artifact" }], attempted);
+    expect(attempted).toEqual(new Set(["create_artifact"]));
+    expect(() =>
+      reserveNonRepeatableToolCalls([{ name: "create_artifact" }], attempted)
+    ).toThrow("禁止重复执行");
+
+    expect(() =>
+      reserveNonRepeatableToolCalls(
+        [{ name: "create_artifact" }, { name: "create_artifact" }],
+        new Set()
+      )
+    ).toThrow("禁止重复执行");
   });
 
   it("reserves one follow-up tool round for explicit resource or artifact work", () => {
