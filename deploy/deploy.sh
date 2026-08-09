@@ -754,6 +754,12 @@ if ! OPENVAC_IMAGE="$release_image"   release_compose run --rm --no-deps web pnp
   exit 1
 fi
 
+echo "Verifying the configured Qwen-VL contract"
+if ! OPENVAC_IMAGE="$release_image"   release_compose run --rm --no-deps web pnpm smoke:qwen-vl; then
+  echo "Configured Qwen-VL contract is not usable; deployment stopped before migration" >&2
+  exit 1
+fi
+
 if ! begin_transaction_journal; then
   echo "Could not create the persistent deployment transaction journal" >&2
   exit 1

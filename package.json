@@ -53,6 +53,7 @@
     "model:verify": "tsx scripts/verify-deepseek-model.ts",
     "semacad:verify-release": "tsx scripts/verify-semacad-release.ts",
     "smoke:deepseek": "tsx scripts/smoke-deepseek.ts",
+    "smoke:qwen-vl": "tsx scripts/smoke-qwen-vl.ts",
     "problem-reports:cleanup": "tsx scripts/cleanup-problem-reports.ts"
   },
   "dependencies": {

@@ -207,6 +207,12 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     expect(deploy.indexOf("pnpm smoke:deepseek")).toBeLessThan(
       deploy.indexOf("release_compose run --rm migrate")
     );
+    expect(deploy.indexOf("pnpm smoke:qwen-vl")).toBeGreaterThan(
+      deploy.indexOf("pnpm smoke:deepseek")
+    );
+    expect(deploy.indexOf("pnpm smoke:qwen-vl")).toBeLessThan(
+      deploy.indexOf("release_compose run --rm migrate")
+    );
   });
 
   it("serializes host activation and journals runtime mutation", () => {

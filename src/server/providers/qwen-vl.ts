@@ -1,4 +1,4 @@
-import { ProviderResponseError } from "./errors";
+import { ProviderError, ProviderResponseError } from "./errors";
 import {
   asRecord,
   createProviderDeadline,
@@ -201,7 +201,14 @@ export class QwenVlProvider implements VisionProvider {
       if (deadline.didTimeout()) {
         throw deadline.timeoutError;
       }
-      throw cause;
+      if (cause instanceof ProviderError || request.signal?.aborted) {
+        throw cause;
+      }
+      throw new ProviderResponseError(
+        PROVIDER_ID,
+        "Qwen-VL transport failed before a provider response was available.",
+        { retryable: true, cause }
+      );
     } finally {
       deadline.dispose();
     }
