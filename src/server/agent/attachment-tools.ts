@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 
 import { sanitizeEvidenceExcerpt } from "@/server/chat/evidence";
-import { ProviderError, ProviderTimeoutError } from "@/server/providers";
+import {
+  ConfigurationError,
+  ProviderError,
+  ProviderTimeoutError
+} from "@/server/providers";
 import type {
   DocumentParser,
   VisionImage,
@@ -566,6 +570,12 @@ async function analyzeVisionAttempt(
 }
 
 function normalizeVisionProviderError(error: unknown): AttachmentToolError {
+  if (error instanceof ConfigurationError) {
+    return new AttachmentToolError(
+      "VISION_PROVIDER_UNCONFIGURED",
+      "Vision analysis is not configured."
+    );
+  }
   if (error instanceof ProviderTimeoutError) {
     return new AttachmentToolError(
       "VISION_PROVIDER_TIMEOUT",

@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ConfigurationError, ProviderResponseError } from "./errors";
+import {
+  ConfigurationError,
+  ProviderResponseError,
+  ProviderTimeoutError
+} from "./errors";
 import { routeCapabilities } from "./index";
 import { QwenVlProvider } from "./qwen-vl";
 
@@ -155,6 +159,49 @@ describe("QwenVlProvider", () => {
     ).rejects.toMatchObject({
       message: expect.stringContaining("32-byte limit")
     });
+  });
+
+  it("normalizes an unclassified transport failure as retryable without exposing it", async () => {
+    const provider = new QwenVlProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => {
+        throw new TypeError("private network detail request-id=secret");
+      })
+    });
+
+    const error = await provider
+      .analyze({
+        prompt: "analyze",
+        images: [{ mimeType: "image/png", bytes: Uint8Array.of(1) }]
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      provider: "qwen-vl",
+      retryable: true,
+      status: undefined,
+      message:
+        "Qwen-VL transport failed before a provider response was available."
+    });
+    expect(error).toBeInstanceOf(ProviderResponseError);
+    expect(String(error)).not.toMatch(/private|request-id|secret/iu);
+  });
+
+  it("preserves provider timeouts for the caller to classify", async () => {
+    const timeout = new ProviderTimeoutError("qwen-vl", "fixed timeout");
+    const provider = new QwenVlProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => {
+        throw timeout;
+      })
+    });
+
+    await expect(
+      provider.analyze({
+        prompt: "analyze",
+        images: [{ mimeType: "image/png", bytes: Uint8Array.of(1) }]
+      })
+    ).rejects.toBe(timeout);
   });
 });
 

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  ConfigurationError,
   ProviderResponseError,
   ProviderTimeoutError,
   type DocumentParser,
@@ -191,6 +192,29 @@ describe("AttachmentToolService image analysis", () => {
     expect(error).toMatchObject({
       code: "VISION_PROVIDER_REQUEST_INVALID",
       message: "Vision analysis failed."
+    });
+    expect(JSON.stringify(error)).not.toMatch(/private|request-id|secret/iu);
+    expect(analyze).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies missing vision configuration without retrying or exposing provider detail", async () => {
+    const analyze = vi.fn(async () => {
+      throw new ConfigurationError(
+        "test-vision",
+        "private missing-key detail request-id=secret"
+      );
+    });
+    const service = new AttachmentToolService({
+      storage: makeStorage(imageAttachment()),
+      vision: makeVisionProvider(analyze)
+    });
+
+    const error = await service
+      .analyze({ ...scope, prompt: "Read the gauge" })
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      code: "VISION_PROVIDER_UNCONFIGURED",
+      message: "Vision analysis is not configured."
     });
     expect(JSON.stringify(error)).not.toMatch(/private|request-id|secret/iu);
     expect(analyze).toHaveBeenCalledTimes(1);
