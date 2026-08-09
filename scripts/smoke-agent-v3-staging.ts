@@ -1266,7 +1266,7 @@ async function documentFixture(
 }
 
 const FORBIDDEN_PUBLIC_FIELD =
-  /^(?:object[_-]?key|signed[_-]?url|reasoning[_-]?content|provider[_-]?request[_-]?id|raw[_-]?arguments|tool[_-]?arguments|tool[_-]?output|internal[_-]?prompt|system[_-]?prompt)$/iu;
+  /^(?:object[_-]?key|signed[_-]?url|reasoning(?:[_-]?content)?|provider[_-]?request[_-]?id|raw[_-]?arguments|tool[_-]?arguments|tool[_-]?output|internal[_-]?prompt|system[_-]?prompt)$/iu;
 
 export function assertNoForbiddenFields(value: unknown): void {
   if (hasForbiddenPublicField(value, new Set<object>())) {

@@ -160,6 +160,7 @@ describe("Agent V3 staging runtime smoke safety", () => {
     ).not.toThrow();
 
     for (const value of [
+      { reasoning: "private" },
       { reasoning_content: "private" },
       { nested: { providerRequestId: "provider-request" } },
       { nested: [{ tool_arguments: "{}" }] }
