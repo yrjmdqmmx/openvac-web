@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildDeterministicSafeAnswerV3,
+  executeCalculator,
   renderAnswerV3,
   validateAnswerV3
 } from "../src/server/agent";
 import type { AnswerV3 } from "../src/types/chat-v3";
 import {
   applyDeepSeekSmokeBoundary,
+  applyDeepSeekToolProjectionBoundary,
   classifyDeepSeekSmokeProviderFailure,
   DeepSeekSmokeFailure,
   publicDeepSeekSmokeFailure
@@ -35,6 +37,44 @@ const direct: AnswerV3 = {
 };
 
 describe("DeepSeek release smoke semantic boundary", () => {
+  it("mirrors the production deterministic calculation recovery", () => {
+    const calculation = executeCalculator("estimate_pumpdown_time", {
+      volume: { value: 100, unit: "L" },
+      pumpingSpeed: { value: 10, unit: "L/s" },
+      initialPressure: { value: 100, unit: "Pa" },
+      targetPressure: { value: 1, unit: "Pa" },
+      outputUnit: "s"
+    });
+    if (!calculation.ok) throw new Error("calculator fixture failed");
+
+    const result = applyDeepSeekToolProjectionBoundary({
+      candidate: {
+        schemaVersion: "openvac.answer.v3",
+        answerKind: "clarification",
+        riskLevel: "medium",
+        blocks: [],
+        missingInputs: ["provider candidate drift"],
+        usedEvidenceIds: [],
+        usedLinkIds: []
+      },
+      riskLevel: "medium",
+      calculations: [calculation.calculation],
+      calculationIds: new Set([calculation.calculation.id])
+    });
+
+    expect(result.semanticRecovery).toBe("deterministic_calculation");
+    expect(result.answer).toMatchObject({
+      answerKind: "expert",
+      riskLevel: "medium",
+      blocks: [
+        { type: "calculation", calculationId: calculation.calculation.id }
+      ],
+      missingInputs: [],
+      usedEvidenceIds: [],
+      usedLinkIds: []
+    });
+  });
+
   it("keeps a high-risk provider candidate that passes the product validator", () => {
     const candidate = buildDeterministicSafeAnswerV3(
       "high",
