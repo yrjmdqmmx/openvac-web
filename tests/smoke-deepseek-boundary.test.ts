@@ -112,5 +112,13 @@ describe("DeepSeek release smoke semantic boundary", () => {
     expect(`${provider}\n${unexpected}`).not.toMatch(
       /candidate|secret|E999|providerRequestId|request-secret/u
     );
+    expect(
+      publicDeepSeekSmokeFailure(
+        new DeepSeekSmokeFailure("TOOL_CONTINUATION_INVALID")
+      )
+    ).toEqual({
+      schemaVersion: "openvac.deepseek-smoke-failure.v1",
+      code: "TOOL_CONTINUATION_INVALID"
+    });
   });
 });

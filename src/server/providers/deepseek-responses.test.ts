@@ -33,6 +33,7 @@ describe("DeepSeekResponsesProvider", () => {
             },
             {
               type: "function_call",
+              id: "fc-call-1",
               call_id: "call-1",
               name: "search_knowledge",
               arguments: '{"query":"真空"}'
@@ -124,6 +125,14 @@ describe("DeepSeekResponsesProvider", () => {
         totalTokens: 130
       }
     });
+    const finish = events.at(-1);
+    expect(
+      finish?.type === "finish"
+        ? finish.continuationItems.filter(
+            (item) => item.type === "function_call" && item.call_id === "call-1"
+          )
+        : []
+    ).toHaveLength(1);
     expect(sentBody).toMatchObject({
       model: "deepseek-v4-flash",
       input: "问题",
@@ -1127,6 +1136,16 @@ describe("DeepSeekResponsesProvider", () => {
               ": keep-alive\n\n",
               event("response.created", 0, { response: { id: "resp-tools" } }),
               event("response.output_item.done", 1, {
+                output_index: 0,
+                item: {
+                  type: "reasoning",
+                  id: "reason-tools",
+                  status: "completed",
+                  content: [{ type: "reasoning_text", text: "private" }]
+                }
+              }),
+              event("response.output_item.done", 2, {
+                output_index: 1,
                 item: {
                   type: "function_call",
                   call_id: "call-a",
@@ -1135,7 +1154,8 @@ describe("DeepSeekResponsesProvider", () => {
                 }
               }),
               ": ping\n\n",
-              event("response.output_item.done", 2, {
+              event("response.output_item.done", 3, {
+                output_index: 2,
                 item: {
                   type: "function_call",
                   call_id: "call-b",
@@ -1143,7 +1163,7 @@ describe("DeepSeekResponsesProvider", () => {
                   arguments: "{}"
                 }
               }),
-              event("response.completed", 3, {
+              event("response.completed", 4, {
                 response: { id: "resp-tools", output: [] }
               })
             ])
@@ -1161,6 +1181,118 @@ describe("DeepSeekResponsesProvider", () => {
     expect(events.at(-1)).toMatchObject({
       type: "finish",
       status: "completed"
+    });
+    const finish = events.at(-1);
+    expect(finish?.type === "finish" ? finish.continuationItems : []).toEqual([
+      expect.objectContaining({ type: "reasoning", id: "reason-tools" }),
+      expect.objectContaining({ type: "function_call", call_id: "call-a" }),
+      expect.objectContaining({ type: "function_call", call_id: "call-b" })
+    ]);
+  });
+
+  it("rejects orphan function outputs locally before an outbound request", async () => {
+    const fetchMock = vi.fn();
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: fetchMock
+    });
+
+    await expect(
+      collect(
+        provider.stream({
+          input: [
+            {
+              type: "function_call_output",
+              call_id: "call-orphan",
+              output: '{"ok":true}'
+            }
+          ],
+          toolChoice: "none",
+          user: "ov1_safe-user"
+        })
+      )
+    ).rejects.toMatchObject({
+      name: "ProviderResponseError",
+      retryable: false
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed instead of truncating excess continuation items", async () => {
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(
+        async () =>
+          new Response(
+            streamFromStrings([
+              event("response.created", 0, { response: { id: "resp-many" } }),
+              event("response.completed", 1, {
+                response: {
+                  id: "resp-many",
+                  output: Array.from({ length: 257 }, (_, index) => ({
+                    type: "message",
+                    id: `msg-${index}`,
+                    role: "assistant",
+                    content: [{ type: "output_text", text: "bounded" }]
+                  }))
+                }
+              })
+            ])
+          )
+      )
+    });
+
+    await expect(
+      collect(provider.stream({ input: "test", user: "ov1_safe-user" }))
+    ).rejects.toMatchObject({
+      name: "ProviderResponseError",
+      retryable: true
+    });
+  });
+
+  it("fails closed when streamed and terminal calls disagree", async () => {
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(
+        async () =>
+          new Response(
+            streamFromStrings([
+              event("response.created", 0, {
+                response: { id: "resp-conflict" }
+              }),
+              event("response.output_item.done", 1, {
+                output_index: 0,
+                item: {
+                  type: "function_call",
+                  call_id: "call-conflict",
+                  name: "estimate_pumpdown_time",
+                  arguments: "{}"
+                }
+              }),
+              event("response.completed", 2, {
+                response: {
+                  id: "resp-conflict",
+                  output: [
+                    {
+                      type: "function_call",
+                      id: "fc-conflict",
+                      call_id: "call-conflict",
+                      name: "estimate_pumpdown_time",
+                      arguments: '{"changed":true}'
+                    }
+                  ]
+                }
+              })
+            ])
+          )
+      )
+    });
+
+    await expect(
+      collect(provider.stream({ input: "test", user: "ov1_safe-user" }))
+    ).rejects.toMatchObject({
+      name: "ProviderResponseError",
+      retryable: true
     });
   });
 
