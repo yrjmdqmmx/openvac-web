@@ -191,7 +191,7 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     expect(offline).not.toContain("openvac-modeling");
   });
 
-  it("verifies preloaded web identity and runs model verification before migration", () => {
+  it("verifies preloaded web identity and runs model contract probes before migration", () => {
     expect(deploy).toContain('if [ -n "${OPENVAC_WEB_PRELOADED_ID:-}" ]');
     expect(deploy).toContain(
       '[ "$verified_web_id" != "$OPENVAC_WEB_PRELOADED_ID" ]'
@@ -199,6 +199,12 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     expect(deploy).toContain('"org.opencontainers.image.revision"');
     expect(deploy).toContain('[ "$verified_revision" = "$target_release_id" ]');
     expect(deploy.indexOf("pnpm model:verify")).toBeLessThan(
+      deploy.indexOf("release_compose run --rm migrate")
+    );
+    expect(deploy.indexOf("pnpm smoke:deepseek")).toBeGreaterThan(
+      deploy.indexOf("pnpm model:verify")
+    );
+    expect(deploy.indexOf("pnpm smoke:deepseek")).toBeLessThan(
       deploy.indexOf("release_compose run --rm migrate")
     );
   });

@@ -1,7 +1,9 @@
 import {
-  AGENT_V2_INSTRUCTIONS,
-  ANSWER_V2_JSON_SCHEMA,
-  answerV2Schema
+  AGENT_V3_INSTRUCTIONS,
+  ANSWER_V3_JSON_SCHEMA,
+  answerV3Schema,
+  EvidenceRegistry,
+  ToolRegistry
 } from "../src/server/agent";
 import {
   createDeepSeekUserPartition,
@@ -19,15 +21,15 @@ async function main() {
   let usage;
 
   for await (const event of provider.stream({
-    instructions: AGENT_V2_INSTRUCTIONS,
-    input:
-      "在没有具体型号和工况数据时，说明水环真空泵选型前还需要确认哪些输入。不要虚构参数或来源。",
+    instructions: AGENT_V3_INSTRUCTIONS,
+    input: "真空泵冒烟并有异响。请给出安全处置，不得建议短接联锁或继续运行。",
+    tools: new ToolRegistry(new EvidenceRegistry()).definitions,
     toolChoice: "none",
-    reasoningEffort: "low",
+    reasoningEffort: "xhigh",
     textFormat: {
       type: "json_schema",
-      name: "openvac_answer_v2",
-      schema: ANSWER_V2_JSON_SCHEMA as unknown as Record<string, unknown>,
+      name: "openvac_answer_v3",
+      schema: ANSWER_V3_JSON_SCHEMA as unknown as Record<string, unknown>,
       strict: true
     },
     user: createDeepSeekUserPartition(
@@ -46,7 +48,7 @@ async function main() {
   if (terminal !== "completed") {
     throw new Error(`Responses smoke ended with ${terminal || "no terminal"}.`);
   }
-  const parsed = answerV2Schema.parse(JSON.parse(answer));
+  const parsed = answerV3Schema.parse(JSON.parse(answer));
   console.log(
     JSON.stringify(
       {
@@ -54,7 +56,7 @@ async function main() {
         protocol: "responses",
         terminal,
         answerKind: parsed.answerKind,
-        conclusionCount: parsed.conclusion.length,
+        blockCount: parsed.blocks.length,
         usage
       },
       null,
