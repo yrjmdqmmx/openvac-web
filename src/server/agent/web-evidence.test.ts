@@ -57,7 +57,8 @@ const finish: Extract<ResponsesStreamEvent, { type: "finish" }> = {
   status: "completed",
   responseId: "resp-web-1",
   outputText: JSON.stringify({ candidates: [] }),
-  continuationItems: []
+  continuationItems: [],
+  completedWebSearchCalls: 1
 };
 
 function subject(events: ResponsesStreamEvent[]) {
@@ -115,42 +116,33 @@ describe("DeepSeek native web evidence", () => {
   });
 
   it.each([
-    ["zero", [finish]],
-    [
-      "too many",
-      [
-        ...Array.from(
-          { length: 9 },
-          () => ({ type: "web-search-status", status: "completed" }) as const
-        ),
-        finish
-      ]
-    ]
-  ])("rejects %s completed native web-search calls", async (_label, events) => {
+    ["missing", [{ ...finish, completedWebSearchCalls: undefined }]],
+    ["zero", [{ ...finish, completedWebSearchCalls: 0 }]],
+    ["outside provider contract", [{ ...finish, completedWebSearchCalls: 10 }]]
+  ])("rejects %s completed native web-search proof", async (_label, events) => {
     await expect(discover(events)).rejects.toThrow(
       "NATIVE_WEB_SEARCH_COUNT_INVALID"
     );
   });
 
-  it("accepts multiple completed search subcalls in one provider response", async () => {
-    await expect(
-      discover([
-        { type: "web-search-status", status: "completed" },
-        { type: "web-search-status", status: "completed" },
-        finish
-      ])
-    ).resolves.toMatchObject({
-      searched: true,
-      provider: "deepseek-native"
-    });
-  });
+  it.each([1, 2, 8, 9])(
+    "accepts %i completed search calls proven by the terminal response",
+    async (completedWebSearchCalls) => {
+      await expect(
+        discover([{ ...finish, completedWebSearchCalls }])
+      ).resolves.toMatchObject({
+        searched: true,
+        provider: "deepseek-native"
+      });
+    }
+  );
 
   it("does not report a search when the native call contract failed", async () => {
     const service = new WebEvidenceService(
       provider,
       new EvidenceRegistry(),
       async function* () {
-        yield finish;
+        yield { ...finish, completedWebSearchCalls: 0 };
       },
       async () => []
     );
