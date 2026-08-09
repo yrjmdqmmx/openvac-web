@@ -1,3 +1,13 @@
+import type {
+  AnswerBlock,
+  AnswerV3,
+  ArtifactPart,
+  AttachmentPart,
+  InputMessagePart,
+  MessagePart,
+  VerifiedLinkPart
+} from "./chat-v3";
+
 export type RiskLevel = "low" | "medium" | "high";
 
 export type RequestedAgentMode = "auto" | "deep";
@@ -51,6 +61,19 @@ export type CalculationResult = {
   sourceIds: string[];
 };
 
+/**
+ * Browser-safe projection of a deterministic calculation. Internal tool,
+ * formula, input and result keys deliberately never cross the server boundary.
+ */
+export type PublicCalculation = {
+  calculationId: string;
+  title: string;
+  result: string;
+  unit?: string;
+  assumptions: string[];
+  warnings: string[];
+};
+
 export type ContextDisclosure = {
   strategy: "full" | "summarized" | "truncated";
   includedMessages: number;
@@ -92,6 +115,10 @@ export type AnswerMeta = {
   webSearched: boolean;
   citations: Citation[];
   answer?: AnswerV2;
+  answerV3?: AnswerV3;
+  verifiedLinks?: VerifiedLinkPart[];
+  artifacts?: ArtifactPart[];
+  answerBlocks?: AnswerBlock[];
   turnId?: string;
   runId?: string;
   answerVersion?: number;
@@ -100,7 +127,7 @@ export type AnswerMeta = {
   webMode?: WebMode;
   latencyMs?: number;
   context?: ContextDisclosure;
-  calculations?: CalculationResult[];
+  calculations?: PublicCalculation[];
   incomplete?: boolean;
 };
 
@@ -114,6 +141,9 @@ export type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  parts?: MessagePart[];
+  /** Optimistic V3 input. Replaced by server-normalized `parts` in history. */
+  inputParts?: InputMessagePart[];
   status?: "streaming" | "completed" | "incomplete" | "error";
   meta?: AnswerMeta;
 };
@@ -177,13 +207,17 @@ export type ChatStreamEvent =
     })
   | (SequencedRunEvent & {
       type: "tool.started" | "tool.completed" | "tool.failed";
-      tool: PublicToolKind;
       label: string;
     })
   | (SequencedRunEvent & {
       type: "answer.section.committed";
       section: AnswerSectionName;
       value: AnswerSectionValue;
+    })
+  | (SequencedRunEvent & {
+      type: "answer.block.committed";
+      block: AnswerBlock;
+      index: number;
     })
   | (SequencedRunEvent & {
       type: "citation.committed";
@@ -195,14 +229,16 @@ export type ChatStreamEvent =
       turnId: string;
       messageId: string;
       answerVersion: number;
-      answer: AnswerV2;
+      answer: AnswerV2 | AnswerV3;
       meta: AnswerMeta;
     })
   | (SequencedRunEvent & {
       type: "run.cancelled";
       code: "CANCELLED";
       message: string;
-      charged: false;
+      charged: false | null;
+      settlement: "released" | "pending_recovery";
+      retryable: boolean;
     })
   | (SequencedRunEvent & {
       type: "run.failed";
@@ -210,6 +246,19 @@ export type ChatStreamEvent =
       message: string;
       retryable: boolean;
       suggestedAction: "retry" | "continue" | "sign_in" | "wait" | "report";
-      charged: boolean;
+      charged: boolean | null;
+      settlement?: "released" | "pending_recovery";
       resetAt?: string;
+    })
+  | (SequencedRunEvent & {
+      type: "attachment.updated";
+      attachment: AttachmentPart;
+    })
+  | (SequencedRunEvent & {
+      type: "artifact.updated";
+      artifact: ArtifactPart;
+    })
+  | (SequencedRunEvent & {
+      type: "answer.completed";
+      answer: AnswerV3;
     });

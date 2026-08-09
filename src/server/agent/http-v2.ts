@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   AgentRunOrchestrator,
   AgentRuntimeError,
+  answerV3Blocks,
   answerSections,
   classifyVacuumRisk,
   resolveAgentMode,
@@ -13,14 +14,21 @@ import {
   type OrchestratorEvent
 } from "@/server/agent";
 import { auth } from "@/server/auth";
+import { ApiError } from "@/server/api/errors";
+import {
+  agentArtifactStorage,
+  agentAttachmentStorage,
+  chatAttachmentService
+} from "@/server/chat-attachments";
+import { inputMessagePartsSchema } from "@/server/chat-v3/contracts";
 import { isEffectiveBan } from "@/server/auth/ban-policy";
 import { db } from "@/server/db";
-import { systemSettings, user } from "@/server/db/schema";
+import { user } from "@/server/db/schema";
 import { ModelRuntimeError } from "@/server/operations/model-runtime";
 import {
   createDeepSeekUserPartition,
-  getResponsesProvider,
-  ProviderError
+  ProviderError,
+  routeCapabilities
 } from "@/server/providers";
 import {
   commitQuota,
@@ -33,11 +41,12 @@ import {
   type QuotaReservation
 } from "@/server/quota";
 import type { ChatStreamEvent } from "@/types/chat";
+import type { InputMessagePart } from "@/types/chat-v3";
 
 const requestSchema = z.object({
-  protocolVersion: z.literal(2),
+  protocolVersion: z.literal(3),
   conversationId: z.string().uuid().optional(),
-  message: z.string().trim().min(2).max(4_000),
+  parts: inputMessagePartsSchema,
   clientRequestId: z.string().uuid(),
   mode: z.enum(["auto", "deep"]),
   webMode: z.enum(["auto", "always"])
@@ -57,21 +66,7 @@ type UnsequencedV2Event<T = V2StreamEvent> = T extends V2StreamEvent
   ? Omit<T, "runId" | "sequence">
   : never;
 
-export async function agentResponsesV2Enabled(): Promise<boolean> {
-  if (process.env.AGENT_RESPONSES_V2 !== "true") return false;
-  try {
-    const [setting] = await db
-      .select({ value: systemSettings.value })
-      .from(systemSettings)
-      .where(eq(systemSettings.key, "agent_responses_v2_enabled"))
-      .limit(1);
-    return setting?.value !== false;
-  } catch {
-    return false;
-  }
-}
-
-export async function postAgentV2(request: Request): Promise<Response> {
+export async function postAgentV3(request: Request): Promise<Response> {
   const session = await auth.api.getSession({ headers: request.headers });
   if (!session) {
     return jsonError(401, "UNAUTHENTICATED", "请先登录并完成邮箱验证。");
@@ -80,8 +75,10 @@ export async function postAgentV2(request: Request): Promise<Response> {
     await request.json().catch(() => null)
   );
   if (!parsed.success) {
-    return jsonError(400, "INVALID_REQUEST", "Agent V2 请求格式不正确。");
+    return jsonError(400, "INVALID_REQUEST", "Agent 请求格式不正确。");
   }
+  const inputParts: InputMessagePart[] = parsed.data.parts;
+  const question = projectInputParts(inputParts);
   const accountFailure = await checkAccount(session.user.id);
   if (accountFailure) return accountFailure;
 
@@ -104,10 +101,10 @@ export async function postAgentV2(request: Request): Promise<Response> {
   });
   if (reservations instanceof Response) return reservations;
 
-  const risk = classifyVacuumRisk(parsed.data.message);
+  const risk = classifyVacuumRisk(question);
   const resolvedMode = resolveAgentMode({
     requested: parsed.data.mode,
-    question: parsed.data.message,
+    question,
     riskLevel: risk.level
   });
   let created;
@@ -115,20 +112,23 @@ export async function postAgentV2(request: Request): Promise<Response> {
     created = await store.createInitial({
       userId: session.user.id,
       conversationId: parsed.data.conversationId,
-      question: parsed.data.message,
+      question,
+      inputParts,
       clientRequestId: parsed.data.clientRequestId,
       requestedMode: parsed.data.mode,
       resolvedMode,
       webMode: parsed.data.webMode,
       riskLevel: risk.level,
-      model: "deepseek-v4-flash"
+      model: "deepseek-v4-flash",
+      answerQuotaLeaseId: reservations.answer.leaseId
     });
   } catch (error) {
-    await releaseRunReservations(
+    const released = await releaseRunReservations(
       reservations,
       session.user.id,
       "run_create_failed"
     );
+    if (!released) return settlementPendingResponse();
     if (
       error instanceof RunStoreError &&
       error.code === "CONVERSATION_NOT_FOUND"
@@ -138,11 +138,12 @@ export async function postAgentV2(request: Request): Promise<Response> {
     return jsonError(503, "RUN_CREATE_FAILED", "暂时无法创建本次回答。");
   }
   if (created.kind !== "created") {
-    await releaseRunReservations(
+    const released = await releaseRunReservations(
       reservations,
       session.user.id,
       "run_not_created"
     );
+    if (!released) return settlementPendingResponse();
     if (created.kind === "replay") return replayResponse(created.replay);
     if (created.kind === "busy") {
       return jsonError(409, "CONVERSATION_BUSY", "这段对话已有回答正在生成。");
@@ -150,29 +151,41 @@ export async function postAgentV2(request: Request): Promise<Response> {
     return jsonError(409, "REQUEST_ALREADY_USED", "这个请求标识已经使用。");
   }
 
-  const modelAttempt = await commitQuota({
-    leaseId: reservations.modelAttempt.leaseId,
-    userId: session.user.id
-  }).catch(() => undefined);
-  if (modelAttempt?.status !== "committed") {
-    await Promise.allSettled([
-      releaseQuota({
-        leaseId: reservations.answer.leaseId,
+  const attachmentIds = inputParts.flatMap((part) =>
+    part.type === "attachment" ? [part.attachmentId] : []
+  );
+  if (attachmentIds.length > 0) {
+    try {
+      await chatAttachmentService.bindToMessage({
+        attachmentIds,
+        conversationId: created.run.conversationId,
+        messageId: created.run.userMessageId,
+        userId: session.user.id
+      });
+    } catch (error) {
+      const settled = await settleCreatedRunFailure({
+        reservations,
         userId: session.user.id,
-        reason: "model_attempt_commit_failed"
-      }),
-      store.fail({
-        run: created.run,
-        status: "failed",
-        code: "MODEL_ATTEMPT_COMMIT_FAILED",
-        message: "Model attempt quota transition failed."
-      })
-    ]);
-    return jsonError(
-      503,
-      "MODEL_ATTEMPT_COMMIT_FAILED",
-      "模型保护额度暂时不可用。"
-    );
+        reason: "attachment_bind_failed",
+        failure: {
+          run: created.run,
+          status: "failed",
+          code:
+            error instanceof ApiError
+              ? error.code
+              : "ATTACHMENT_BIND_UNAVAILABLE",
+          message: "Attachment binding failed before model execution."
+        }
+      });
+      if (!settled) return settlementPendingResponse();
+      return error instanceof ApiError
+        ? jsonError(error.status, error.code, error.message)
+        : jsonError(
+            503,
+            "ATTACHMENT_BIND_UNAVAILABLE",
+            "附件暂时无法绑定到这条消息，请稍后重试。"
+          );
+    }
   }
 
   let userPartition: string;
@@ -182,23 +195,46 @@ export async function postAgentV2(request: Request): Promise<Response> {
       process.env.DEEPSEEK_USER_PARTITION_SECRET ?? ""
     );
   } catch {
-    await Promise.allSettled([
-      releaseQuota({
-        leaseId: reservations.answer.leaseId,
-        userId: session.user.id,
-        reason: "partition_configuration_failed"
-      }),
-      store.fail({
+    const settled = await settleCreatedRunFailure({
+      reservations,
+      userId: session.user.id,
+      reason: "partition_configuration_failed",
+      failure: {
         run: created.run,
         status: "failed",
         code: "RESPONSES_USER_PARTITION_UNAVAILABLE",
         message: "DeepSeek user partition secret is unavailable."
-      })
-    ]);
+      }
+    });
+    if (!settled) return settlementPendingResponse();
     return jsonError(
       503,
       "RESPONSES_USER_PARTITION_UNAVAILABLE",
-      "Agent V2 隐私分区配置尚未完成。"
+      "Agent 隐私分区配置尚未完成。"
+    );
+  }
+
+  const modelAttempt = await commitQuota({
+    leaseId: reservations.modelAttempt.leaseId,
+    userId: session.user.id
+  }).catch(() => undefined);
+  if (modelAttempt?.status !== "committed") {
+    const settled = await settleCreatedRunFailure({
+      reservations,
+      userId: session.user.id,
+      reason: "model_attempt_commit_failed",
+      failure: {
+        run: created.run,
+        status: "failed",
+        code: "MODEL_ATTEMPT_COMMIT_FAILED",
+        message: "Model attempt quota transition failed."
+      }
+    });
+    if (!settled) return settlementPendingResponse();
+    return jsonError(
+      503,
+      "MODEL_ATTEMPT_COMMIT_FAILED",
+      "模型保护额度暂时不可用。"
     );
   }
 
@@ -211,18 +247,14 @@ export async function postAgentV2(request: Request): Promise<Response> {
     requestedMode: parsed.data.mode,
     resolvedMode,
     webMode: parsed.data.webMode,
-    riskLevel: risk.level,
-    answerReservation: reservations.answer
+    riskLevel: risk.level
   });
 }
 
-export async function postAgentActionV2(
+export async function postAgentActionV3(
   request: Request,
   turnId: string
 ): Promise<Response> {
-  if (!(await agentResponsesV2Enabled())) {
-    return jsonError(404, "AGENT_V2_DISABLED", "Agent V2 当前未启用。");
-  }
   const session = await auth.api.getSession({ headers: request.headers });
   if (!session) {
     return jsonError(401, "UNAUTHENTICATED", "请先登录并完成邮箱验证。");
@@ -275,14 +307,16 @@ export async function postAgentActionV2(
       resolvedMode,
       webMode: parsed.data.webMode,
       riskLevel: risk.level,
-      model: "deepseek-v4-flash"
+      model: "deepseek-v4-flash",
+      answerQuotaLeaseId: reservations.answer.leaseId
     });
   } catch (error) {
-    await releaseRunReservations(
+    const released = await releaseRunReservations(
       reservations,
       session.user.id,
       "action_run_create_failed"
     );
+    if (!released) return settlementPendingResponse();
     if (error instanceof RunStoreError && error.code === "ACTION_NOT_ALLOWED") {
       return jsonError(409, error.code, "当前回答状态不支持这个操作。");
     }
@@ -292,40 +326,17 @@ export async function postAgentActionV2(
     return jsonError(503, "RUN_CREATE_FAILED", "暂时无法创建本次回答操作。");
   }
   if (created.kind !== "created") {
-    await releaseRunReservations(
+    const released = await releaseRunReservations(
       reservations,
       session.user.id,
       "action_run_not_created"
     );
+    if (!released) return settlementPendingResponse();
     if (created.kind === "replay") return replayResponse(created.replay);
     if (created.kind === "busy") {
       return jsonError(409, "CONVERSATION_BUSY", "这段对话已有回答正在生成。");
     }
     return jsonError(409, "REQUEST_ALREADY_USED", "这个请求标识已经使用。");
-  }
-  const modelAttempt = await commitQuota({
-    leaseId: reservations.modelAttempt.leaseId,
-    userId: session.user.id
-  }).catch(() => undefined);
-  if (modelAttempt?.status !== "committed") {
-    await Promise.allSettled([
-      releaseQuota({
-        leaseId: reservations.answer.leaseId,
-        userId: session.user.id,
-        reason: "model_attempt_commit_failed"
-      }),
-      store.fail({
-        run: created.run,
-        status: "failed",
-        code: "MODEL_ATTEMPT_COMMIT_FAILED",
-        message: "Model attempt quota transition failed."
-      })
-    ]);
-    return jsonError(
-      503,
-      "MODEL_ATTEMPT_COMMIT_FAILED",
-      "模型保护额度暂时不可用。"
-    );
   }
   let userPartition: string;
   try {
@@ -334,23 +345,45 @@ export async function postAgentActionV2(
       process.env.DEEPSEEK_USER_PARTITION_SECRET ?? ""
     );
   } catch {
-    await Promise.allSettled([
-      releaseQuota({
-        leaseId: reservations.answer.leaseId,
-        userId: session.user.id,
-        reason: "partition_configuration_failed"
-      }),
-      store.fail({
+    const settled = await settleCreatedRunFailure({
+      reservations,
+      userId: session.user.id,
+      reason: "partition_configuration_failed",
+      failure: {
         run: created.run,
         status: "failed",
         code: "RESPONSES_USER_PARTITION_UNAVAILABLE",
         message: "DeepSeek user partition secret is unavailable."
-      })
-    ]);
+      }
+    });
+    if (!settled) return settlementPendingResponse();
     return jsonError(
       503,
       "RESPONSES_USER_PARTITION_UNAVAILABLE",
-      "Agent V2 隐私分区配置尚未完成。"
+      "Agent 隐私分区配置尚未完成。"
+    );
+  }
+  const modelAttempt = await commitQuota({
+    leaseId: reservations.modelAttempt.leaseId,
+    userId: session.user.id
+  }).catch(() => undefined);
+  if (modelAttempt?.status !== "committed") {
+    const settled = await settleCreatedRunFailure({
+      reservations,
+      userId: session.user.id,
+      reason: "model_attempt_commit_failed",
+      failure: {
+        run: created.run,
+        status: "failed",
+        code: "MODEL_ATTEMPT_COMMIT_FAILED",
+        message: "Model attempt quota transition failed."
+      }
+    });
+    if (!settled) return settlementPendingResponse();
+    return jsonError(
+      503,
+      "MODEL_ATTEMPT_COMMIT_FAILED",
+      "模型保护额度暂时不可用。"
     );
   }
   return streamRun({
@@ -362,12 +395,11 @@ export async function postAgentActionV2(
     requestedMode: parsed.data.mode,
     resolvedMode,
     webMode: parsed.data.webMode,
-    riskLevel: risk.level,
-    answerReservation: reservations.answer
+    riskLevel: risk.level
   });
 }
 
-export async function cancelAgentRunV2(
+export async function cancelAgentRunV3(
   request: Request,
   runId: string
 ): Promise<Response> {
@@ -401,7 +433,6 @@ function streamRun(input: {
   resolvedMode: "fast" | "deep";
   webMode: "auto" | "always";
   riskLevel: "low" | "medium" | "high";
-  answerReservation: QuotaReservation;
 }): Response {
   const encoder = new TextEncoder();
   const controller = new AbortController();
@@ -443,10 +474,23 @@ function streamRun(input: {
         messageId: input.run.assistantMessageId,
         answerVersion: input.run.answerVersion
       });
+      const hasAttachments = input.run.inputParts.some(
+        (part) => part.type === "attachment"
+      );
+      const capabilities = routeCapabilities({
+        hasImages: hasAttachments,
+        hasDocuments: hasAttachments
+      });
       const orchestrator = new AgentRunOrchestrator(
-        getResponsesProvider(),
+        capabilities.reasoningProvider,
         store,
-        (event) => emitOrchestratorEvent(send, event)
+        (event) => emitOrchestratorEvent(send, event),
+        {
+          attachmentStorage: agentAttachmentStorage,
+          artifactStorage: agentArtifactStorage,
+          visionProvider: capabilities.visionProvider,
+          documentParser: capabilities.documentParser
+        }
       );
       try {
         const result = await orchestrator.run({
@@ -460,18 +504,6 @@ function streamRun(input: {
           riskLevel: input.riskLevel,
           signal
         });
-        if (result.status === "completed") {
-          await commitQuota({
-            leaseId: input.answerReservation.leaseId,
-            userId: input.userId
-          }).catch(() => undefined);
-        } else {
-          await releaseQuota({
-            leaseId: input.answerReservation.leaseId,
-            userId: input.userId,
-            reason: "agent_run_incomplete"
-          }).catch(() => undefined);
-        }
         send({
           type: "run.completed",
           conversationId: input.run.conversationId,
@@ -483,26 +515,40 @@ function streamRun(input: {
         });
       } catch (error) {
         const cancelled = signal.aborted;
-        await Promise.allSettled([
-          releaseQuota({
-            leaseId: input.answerReservation.leaseId,
-            userId: input.userId,
-            reason: cancelled ? "agent_run_cancelled" : "agent_run_failed"
-          }),
-          store.fail({
+        let settled = false;
+        try {
+          const settlement = await store.fail({
             run: input.run,
             status: cancelled ? "cancelled" : "failed",
             code: cancelled ? "CANCELLED" : publicErrorCode(error),
             message: safeStoredError(error),
             counters: orchestrator.counters
-          })
-        ]);
+          });
+          settled = settlement.answerQuotaStatus === "released";
+        } catch {
+          // The run remains pending/stale and recoverStaleAgentRuns will retry
+          // the atomic quota and artifact settlement.
+        }
+        if (!settled) {
+          send({
+            type: "run.failed",
+            code: "RUN_SETTLEMENT_PENDING",
+            message: "本次回答未完成，额度与产物清理正在自动恢复，请稍后重试。",
+            retryable: true,
+            suggestedAction: "wait",
+            charged: null,
+            settlement: "pending_recovery"
+          });
+          return;
+        }
         if (cancelled) {
           send({
             type: "run.cancelled",
             code: "CANCELLED",
             message: "已取消本次回答，未扣除成功回答额度。",
-            charged: false
+            charged: false,
+            settlement: "released",
+            retryable: true
           });
         } else {
           send({
@@ -511,7 +557,8 @@ function streamRun(input: {
             message: publicErrorMessage(error),
             retryable: isRetryable(error),
             suggestedAction: isRetryable(error) ? "retry" : "report",
-            charged: false
+            charged: false,
+            settlement: "released"
           });
         }
       } finally {
@@ -552,14 +599,13 @@ function emitOrchestratorEvent(
   } else if (event.type === "tool") {
     send({
       type: `tool.${event.status}`,
-      tool: event.tool,
       label: event.label
     });
-  } else if (event.type === "section") {
+  } else if (event.type === "block") {
     send({
-      type: "answer.section.committed",
-      section: event.section,
-      value: event.value
+      type: "answer.block.committed",
+      block: event.block,
+      index: event.index
     });
   } else {
     send({ type: "citation.committed", citation: event.citation });
@@ -591,8 +637,14 @@ function replayResponse(
           messageId: replay.messageId,
           answerVersion: replay.answerVersion
         });
-        for (const section of answerSections(replay.answer)) {
-          send({ type: "answer.section.committed", ...section });
+        if (replay.answer.schemaVersion === "openvac.answer.v3") {
+          for (const { block, index } of answerV3Blocks(replay.answer)) {
+            send({ type: "answer.block.committed", block, index });
+          }
+        } else {
+          for (const section of answerSections(replay.answer)) {
+            send({ type: "answer.section.committed", ...section });
+          }
         }
         for (const citation of replay.meta.citations) {
           send({ type: "citation.committed", citation });
@@ -630,7 +682,7 @@ async function reserveRunQuotas(input: {
     answer = await reserveAnswerQuota({
       userId: input.userId,
       clientRequestId: input.clientRequestId,
-      metadata: { conversationId: input.conversationId ?? null, protocol: 2 }
+      metadata: { conversationId: input.conversationId ?? null, protocol: 3 }
     });
   } catch (error) {
     return quotaError(error, "今天的成功回答额度已用完。");
@@ -641,24 +693,26 @@ async function reserveRunQuotas(input: {
   try {
     const modelAttempt = await reserveModelAttemptQuota({
       userId: input.userId,
-      clientRequestId: `${input.clientRequestId}:model-v2`,
-      metadata: { conversationId: input.conversationId ?? null, protocol: 2 }
+      clientRequestId: `${input.clientRequestId}:model-v3`,
+      metadata: { conversationId: input.conversationId ?? null, protocol: 3 }
     });
     if (modelAttempt.idempotent || modelAttempt.status !== "reserved") {
-      await releaseQuota({
+      const released = await releaseQuota({
         leaseId: answer.leaseId,
         userId: input.userId,
         reason: "model_attempt_request_reused"
       }).catch(() => undefined);
+      if (released?.status !== "released") return settlementPendingResponse();
       return jsonError(409, "REQUEST_IN_PROGRESS", "同一请求正在处理中。");
     }
     return { answer, modelAttempt };
   } catch (error) {
-    await releaseQuota({
+    const released = await releaseQuota({
       leaseId: answer.leaseId,
       userId: input.userId,
       reason: "model_attempt_reservation_failed"
     }).catch(() => undefined);
+    if (released?.status !== "released") return settlementPendingResponse();
     return quotaError(error, "模型尝试次数已达到今日保护上限。");
   }
 }
@@ -667,11 +721,54 @@ async function releaseRunReservations(
   reservations: { answer: QuotaReservation; modelAttempt: QuotaReservation },
   userId: string,
   reason: string
-): Promise<void> {
-  await Promise.allSettled([
+): Promise<boolean> {
+  const [answer, modelAttempt] = await Promise.allSettled([
     releaseQuota({ leaseId: reservations.answer.leaseId, userId, reason }),
     releaseQuota({ leaseId: reservations.modelAttempt.leaseId, userId, reason })
   ]);
+  return (
+    answer.status === "fulfilled" &&
+    answer.value.status === "released" &&
+    modelAttempt.status === "fulfilled" &&
+    modelAttempt.value.status === "released"
+  );
+}
+
+async function settleCreatedRunFailure(input: {
+  reservations: { answer: QuotaReservation; modelAttempt: QuotaReservation };
+  userId: string;
+  reason: string;
+  failure: Parameters<RunStore["fail"]>[0];
+}): Promise<boolean> {
+  const [run, modelAttempt] = await Promise.allSettled([
+    store.fail(input.failure),
+    releaseQuota({
+      leaseId: input.reservations.modelAttempt.leaseId,
+      userId: input.userId,
+      reason: input.reason
+    })
+  ]);
+  return (
+    run.status === "fulfilled" &&
+    run.value.answerQuotaStatus === "released" &&
+    modelAttempt.status === "fulfilled" &&
+    modelAttempt.value.status === "released"
+  );
+}
+
+function settlementPendingResponse(): Response {
+  return Response.json(
+    {
+      error: {
+        code: "RUN_SETTLEMENT_PENDING",
+        message: "额度结算正在自动恢复，请稍后重试。",
+        retryable: true,
+        charged: null,
+        settlement: "pending_recovery"
+      }
+    },
+    { status: 503 }
+  );
 }
 
 async function checkAccount(userId: string): Promise<Response | undefined> {
@@ -728,6 +825,26 @@ function quotaError(error: unknown, limitMessage: string): Response {
   return jsonError(503, "QUOTA_UNAVAILABLE", "额度服务暂时不可用。");
 }
 
+function projectInputParts(parts: InputMessagePart[]): string {
+  const text = parts
+    .filter(
+      (part): part is Extract<InputMessagePart, { type: "text" }> =>
+        part.type === "text"
+    )
+    .map((part) => part.text.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  const links = parts.filter((part) => part.type === "link").length;
+  const attachments = parts.filter((part) => part.type === "attachment").length;
+  return [
+    text || "请分析本条消息附带的资料。",
+    links > 0 ? `本条消息包含 ${links} 个待核验链接。` : "",
+    attachments > 0 ? `本条消息包含 ${attachments} 个私有附件。` : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function publicErrorCode(error: unknown): string {
   if (error instanceof AgentRuntimeError) return error.code;
   if (error instanceof ModelRuntimeError) return error.code;
@@ -750,7 +867,7 @@ function publicErrorMessage(error: unknown): string {
     error instanceof ProviderError &&
     [401, 402].includes(error.status ?? 0)
   ) {
-    return "回答 Provider 配置异常，已阻止本次回答并归还额度。";
+    return "回答服务配置异常，已阻止本次回答并归还额度。";
   }
   return "本次回答未完成，成功回答额度已归还，可稍后重试。";
 }

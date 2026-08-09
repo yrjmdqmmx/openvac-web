@@ -70,9 +70,13 @@ if [ "$1" = inspect ]; then
 fi
 
 case " $* " in
-  *" config --services "*)
+  *" exec -T postgres "*)
+    printf '%s\n' "\${OPENVAC_FAKE_DRAIN_STATE:-0|0|0}"
+    ;;
+  *"/releases/"*"/docker-compose.yml"*" config --services "*)
     printf '%s\n' web worker modeling-service modeling-worker
     ;;
+  *" config --services "*) printf '%s\n' web worker postgres migrate ;;
   *" ps -q web "*) [ ! -f "$OPENVAC_FAKE_STATE/web" ] || cat "$OPENVAC_FAKE_STATE/web" ;;
   *" ps -q worker "*) [ ! -f "$OPENVAC_FAKE_STATE/worker" ] || cat "$OPENVAC_FAKE_STATE/worker" ;;
   *" ps --all -q modeling-service "*) [ ! -f "$OPENVAC_FAKE_STATE/modeling" ] || cat "$OPENVAC_FAKE_STATE/modeling" ;;
@@ -87,6 +91,9 @@ case " $* " in
       printf '%s\n' new-web >"$OPENVAC_FAKE_STATE/web"
       printf '%s\n' new-worker >"$OPENVAC_FAKE_STATE/worker"
     fi
+    ;;
+  *" stop -t 30 worker web "*)
+    rm -f "$OPENVAC_FAKE_STATE/web" "$OPENVAC_FAKE_STATE/worker"
     ;;
   *" stop -t 30 modeling-worker modeling-service "*)
     rm -f "$OPENVAC_FAKE_STATE/modeling" "$OPENVAC_FAKE_STATE/modeling-worker"
@@ -144,7 +151,14 @@ function createFixture() {
   chmodSync(join(bundleDeploy, "preflight-host.sh"), 0o700);
   write(
     join(bundleDeploy, "backup.sh"),
-    "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$OPENVAC_FAKE_BACKUP\"\n",
+    [
+      "#!/bin/sh",
+      "set -eu",
+      "printf '%s\\n' backup >>\"$OPENVAC_FAKE_DOCKER_LOG\"",
+      '[ "${OPENVAC_FAKE_BACKUP_FAIL:-false}" != true ] || exit 1',
+      "printf '%s\\n' \"$OPENVAC_FAKE_BACKUP\"",
+      ""
+    ].join("\n"),
     0o700
   );
   write(
@@ -214,6 +228,63 @@ function runDeployment(
 }
 
 describe("transactional web-only R1 cutover", { timeout: 20_000 }, () => {
+  it("migrates and activates a first install without draining or backing up a previous release", () => {
+    const fixture = createFixture();
+    rmSync(join(fixture.host, "current-release"));
+    rmSync(join(fixture.state, "web"));
+    rmSync(join(fixture.state, "worker"));
+    rmSync(join(fixture.state, "modeling"));
+    rmSync(join(fixture.state, "modeling-worker"));
+
+    const result = runDeployment(fixture);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain(
+      "No current release is recorded; treating this as a first deployment"
+    );
+    expect(readFileSync(join(fixture.host, "current-release"), "utf8")).toBe(
+      `${fixture.targetRelease}\n`
+    );
+    expect(readFileSync(join(fixture.state, "web"), "utf8")).toBe("new-web\n");
+    expect(readFileSync(join(fixture.state, "worker"), "utf8")).toBe(
+      "new-worker\n"
+    );
+    expect(
+      readFileSync(join(fixture.bundle, "deployment-receipt"), "utf8")
+    ).toContain("rollback_rehearsal=not-required\n");
+
+    const dockerLog = readFileSync(fixture.dockerLog, "utf8");
+    expect(dockerLog).not.toContain("stop -t 30 worker web");
+    expect(dockerLog).not.toContain("exec -T postgres");
+    expect(dockerLog).not.toContain("backup");
+    expect(dockerLog).toContain("run --rm migrate");
+    expect(dockerLog.match(/up -d --no-deps web worker/g)).toHaveLength(1);
+  });
+
+  it("keeps an explicitly required rollback rehearsal fail-closed on a first install", () => {
+    const fixture = createFixture();
+    rmSync(join(fixture.host, "current-release"));
+    rmSync(join(fixture.state, "web"));
+    rmSync(join(fixture.state, "worker"));
+    rmSync(join(fixture.state, "modeling"));
+    rmSync(join(fixture.state, "modeling-worker"));
+
+    const result = runDeployment(fixture, {
+      OPENVAC_R1_ROLLBACK_REHEARSAL: "true"
+    });
+
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain(
+      "the required previous-image rollback rehearsal has no managed web/worker release to restore"
+    );
+    const dockerLog = readFileSync(fixture.dockerLog, "utf8");
+    expect(dockerLog).not.toContain("run --rm migrate");
+    expect(dockerLog).not.toContain("up -d --no-deps web worker");
+    expect(() =>
+      readFileSync(join(fixture.host, "current-release"), "utf8")
+    ).toThrow();
+  });
+
   it("executes R1 -> R0 -> R1 before publishing the new release pointer", () => {
     const fixture = createFixture();
     const result = runDeployment(fixture);
@@ -239,6 +310,8 @@ describe("transactional web-only R1 cutover", { timeout: 20_000 }, () => {
       [
         `release=${fixture.targetRelease}`,
         `web_image=sha256:${"a".repeat(64)}`,
+        "migration=passed",
+        "health=passed",
         "rollback_rehearsal=passed",
         "status=healthy",
         `activation=${fixture.targetRelease}-${fixture.activationNonce}`,
@@ -254,6 +327,16 @@ describe("transactional web-only R1 cutover", { timeout: 20_000 }, () => {
     ).toThrow();
 
     const dockerLog = readFileSync(fixture.dockerLog, "utf8");
+    const drainStop = dockerLog.indexOf("stop -t 30 worker web");
+    const drainCheck = dockerLog.indexOf("exec -T postgres");
+    const recoveryBackup = dockerLog.indexOf("backup");
+    const migration = dockerLog.indexOf("run --rm migrate");
+    const firstActivation = dockerLog.indexOf("up -d --no-deps web worker");
+    expect(drainStop).toBeGreaterThan(-1);
+    expect(drainCheck).toBeGreaterThan(drainStop);
+    expect(recoveryBackup).toBeGreaterThan(drainCheck);
+    expect(migration).toBeGreaterThan(recoveryBackup);
+    expect(firstActivation).toBeGreaterThan(migration);
     const newActivations = dockerLog.match(
       /image=ghcr\.io\/example\/openvac@sha256:[a-f0-9]+ modeling= args=.*up -d --no-deps web worker/g
     );
@@ -264,6 +347,55 @@ describe("transactional web-only R1 cutover", { timeout: 20_000 }, () => {
     expect(
       dockerLog.match(/stop -t 30 modeling-worker modeling-service/g)
     ).toHaveLength(2);
+  });
+
+  it("restores the previous web and worker when the migration drain is not empty", () => {
+    const fixture = createFixture();
+    const result = runDeployment(fixture, {
+      OPENVAC_FAKE_DRAIN_STATE: "1|0|0",
+      OPENVAC_R1_ROLLBACK_REHEARSAL: "false"
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Agent V3 migration drain is not empty");
+    expect(result.stderr).toContain(
+      "Agent V3 migration drain failed; rolling back the previous application release set"
+    );
+    expect(readFileSync(join(fixture.host, "current-release"), "utf8")).toBe(
+      `${fixture.previousRelease}\n`
+    );
+    expect(readFileSync(join(fixture.state, "web"), "utf8")).toBe("old-web\n");
+    expect(readFileSync(join(fixture.state, "worker"), "utf8")).toBe(
+      "old-worker\n"
+    );
+    expect(readFileSync(fixture.dockerLog, "utf8")).not.toContain(
+      "run --rm migrate"
+    );
+  });
+
+  it("restores the previous web and worker when the drained recovery backup fails", () => {
+    const fixture = createFixture();
+    const result = runDeployment(fixture, {
+      OPENVAC_FAKE_BACKUP_FAIL: "true",
+      OPENVAC_R1_ROLLBACK_REHEARSAL: "false"
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "Drained pre-migration recovery backup failed; rolling back the previous application release set"
+    );
+    expect(readFileSync(join(fixture.host, "current-release"), "utf8")).toBe(
+      `${fixture.previousRelease}\n`
+    );
+    expect(readFileSync(join(fixture.state, "web"), "utf8")).toBe("old-web\n");
+    expect(readFileSync(join(fixture.state, "worker"), "utf8")).toBe(
+      "old-worker\n"
+    );
+    const dockerLog = readFileSync(fixture.dockerLog, "utf8");
+    expect(dockerLog.indexOf("backup")).toBeGreaterThan(
+      dockerLog.indexOf("exec -T postgres")
+    );
+    expect(dockerLog).not.toContain("run --rm migrate");
   });
 
   it("restores R0 and keeps its pointer when pointer publication fails", () => {

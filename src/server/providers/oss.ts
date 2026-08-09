@@ -81,6 +81,9 @@ export class AlibabaOssStorage implements ObjectStorage {
         {
           headers: {
             "x-oss-object-acl": "private",
+            ...(request.forbidOverwrite
+              ? { "x-oss-forbid-overwrite": "true" }
+              : {}),
             ...(request.contentType
               ? { "Content-Type": request.contentType }
               : {})
@@ -199,32 +202,31 @@ export class AlibabaOssStorage implements ObjectStorage {
         ])
       )
     };
+    // Browsers calculate Content-Length from the request body and forbid
+    // JavaScript from setting it directly. Bind that automatic header into
+    // the OSS signature, but do not return it in requiredHeaders where a
+    // browser uploader might try to set the forbidden header itself.
+    const signedHeaders = {
+      ...requiredHeaders,
+      "Content-Length": String(request.contentLength)
+    };
 
     const client = this.getClient();
     let url: string;
     if (client.signatureUrlV4) {
-      // ali-oss includes content-type and all x-oss-* headers in the V4
-      // canonical request. Content-Length is deliberately omitted because
-      // browser JavaScript cannot set that forbidden request header.
+      // ali-oss includes these headers in the V4 canonical request. The
+      // browser supplies the signed Content-Length automatically from body.
       url = await client.signatureUrlV4(
         "PUT",
         expiresSeconds,
-        { headers: requiredHeaders, queries: {} },
-        request.key
+        { headers: signedHeaders, queries: {} },
+        request.key,
+        ["Content-Length"]
       );
-    } else if (client.signatureUrl) {
-      // The legacy signer includes Content-Type and x-oss-* metadata. The
-      // signed size-bytes metadata plus completion-time stat preserves the
-      // size invariant when V4 is unavailable.
-      url = await client.signatureUrl(request.key, {
-        expires: expiresSeconds,
-        method: "PUT",
-        ...requiredHeaders
-      });
     } else {
       throw new ProviderResponseError(
         PROVIDER_ID,
-        "The installed ali-oss client cannot create signed upload URLs."
+        "The installed ali-oss client cannot create size-bound V4 upload URLs."
       );
     }
 

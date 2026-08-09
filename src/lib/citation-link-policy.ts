@@ -22,6 +22,12 @@ export type CitationLinkDecision =
       href?: undefined;
     };
 
+export type VerifiedLinkPartInput = {
+  url: string;
+  hostname: string;
+  status: "verified" | "unavailable";
+};
+
 /**
  * Treat citation metadata as untrusted even after server-side validation.
  * Links fail closed unless the server explicitly permits them and supplies a
@@ -78,6 +84,47 @@ export function evaluateCitationLink(
     authoritative: policy.authoritative,
     href: parsed.toString()
   };
+}
+
+/**
+ * V3 answer blocks contain link IDs, never hrefs. A link becomes clickable only
+ * when the server-normalized part is verified and its parsed HTTPS hostname
+ * still matches the separately supplied hostname.
+ */
+export function evaluateVerifiedLinkPart(
+  link: VerifiedLinkPartInput
+): CitationLinkDecision {
+  if (link.status !== "verified") return denied();
+  const normalizedHostname = normalizeDomain(link.hostname);
+  if (!normalizedHostname) return denied();
+
+  const rawUrl = link.url;
+  if (
+    rawUrl !== rawUrl.trim() ||
+    /[\u0000-\u001f\u007f]/.test(rawUrl) ||
+    rawUrl.includes("\\") ||
+    rawUrl.startsWith("//")
+  ) {
+    return denied();
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return denied();
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    (parsed.port && parsed.port !== "443") ||
+    parsed.hostname.toLowerCase() !== normalizedHostname
+  ) {
+    return denied();
+  }
+
+  return { allowed: true, authoritative: false, href: parsed.toString() };
 }
 
 function normalizePolicy(

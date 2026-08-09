@@ -15,6 +15,7 @@ import {
 
 import { user } from "./auth";
 import { conversation, message } from "./chat";
+import { quotaEntryStatus } from "./quota";
 
 export const agentRunStatus = pgEnum("agent_run_status", [
   "pending",
@@ -50,6 +51,11 @@ export const agentToolStatus = pgEnum("agent_tool_status", [
   "completed",
   "failed",
   "cancelled"
+]);
+
+export const agentRunSettlementStatus = pgEnum("agent_run_settlement_status", [
+  "pending",
+  "completed"
 ]);
 
 export const memoryStatus = pgEnum("memory_status", ["active", "disabled"]);
@@ -129,6 +135,11 @@ export const agentRun = pgTable(
     resolvedMode: agentResolvedMode("resolved_mode").default("fast").notNull(),
     webMode: agentWebMode("web_mode").default("auto").notNull(),
     status: agentRunStatus("status").default("pending").notNull(),
+    answerQuotaLeaseId: uuid("answer_quota_lease_id"),
+    answerQuotaStatus: quotaEntryStatus("answer_quota_status"),
+    settlementStatus: agentRunSettlementStatus("settlement_status")
+      .default("pending")
+      .notNull(),
     riskLevel: text("risk_level").default("low").notNull(),
     answerPayload: jsonb("answer_payload").$type<Record<string, unknown>>(),
     contextMetadata: jsonb("context_metadata")
@@ -179,7 +190,17 @@ export const agentRun = pgTable(
     ),
     index("agent_run_turn_status_idx").on(table.turnId, table.status),
     index("agent_run_user_created_idx").on(table.userId, table.createdAt),
+    uniqueIndex("agent_run_answer_quota_lease_unique")
+      .on(table.answerQuotaLeaseId)
+      .where(sql`${table.answerQuotaLeaseId} is not null`),
+    index("agent_run_settlement_recovery_idx")
+      .on(table.settlementStatus, table.status, table.updatedAt)
+      .where(sql`${table.settlementStatus} = 'pending'`),
     check("agent_run_version_positive", sql`${table.version} > 0`),
+    check(
+      "agent_run_answer_quota_shape_valid",
+      sql`(${table.answerQuotaLeaseId} is null and ${table.answerQuotaStatus} is null) or (${table.answerQuotaLeaseId} is not null and ${table.answerQuotaStatus} is not null)`
+    ),
     check(
       "agent_run_tool_round_count_non_negative",
       sql`${table.toolRoundCount} >= 0`

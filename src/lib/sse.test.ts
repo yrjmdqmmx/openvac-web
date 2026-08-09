@@ -89,6 +89,31 @@ describe("parseChatEventStream", () => {
       )
     ).rejects.toThrow("未收到完整的回答");
   });
+
+  it("keeps V3 answer completion non-terminal until the run is committed", async () => {
+    const answer = {
+      schemaVersion: "openvac.answer.v3",
+      answerKind: "direct",
+      riskLevel: "low",
+      blocks: [{ type: "paragraph", text: "完成内容", evidenceIds: [] }],
+      missingInputs: [],
+      usedEvidenceIds: [],
+      usedLinkIds: []
+    };
+    const events = await collectEvents(
+      streamResponse([
+        `data: ${JSON.stringify({ type: "run.accepted", runId: "r1", sequence: 1, turnId: "t1", conversationId: "c1", userMessageId: "u1", messageId: "m1", answerVersion: 1 })}\n\n`,
+        `data: ${JSON.stringify({ type: "answer.completed", runId: "r1", sequence: 2, answer })}\n\n`,
+        `data: ${JSON.stringify({ type: "run.completed", runId: "r1", sequence: 3, turnId: "t1", conversationId: "c1", messageId: "m1", answerVersion: 1, answer, meta: { riskLevel: "low", missingInputs: [], webSearched: false, citations: [] } })}\n\n`
+      ])
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      "run.accepted",
+      "answer.completed",
+      "run.completed"
+    ]);
+  });
 });
 
 function streamResponse(chunks: string[]) {

@@ -98,37 +98,6 @@ export function AdminOverview() {
     if (payload.data) setAgent(payload.data);
   }
 
-  async function toggleAgent() {
-    if (!agent || agentBusy) return;
-    setAgentBusy(true);
-    setAgentNotice("");
-    try {
-      const response = await fetch("/api/admin/agent/status", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: !agent.enabled })
-      });
-      const payload = (await response.json()) as {
-        data?: { enabled: boolean };
-        error?: { message?: string };
-      };
-      if (!response.ok || !payload.data) {
-        setAgentNotice(payload.error?.message ?? "Agent 开关更新失败。");
-        return;
-      }
-      setAgent((current) =>
-        current ? { ...current, enabled: payload.data!.enabled } : current
-      );
-      setAgentNotice(
-        payload.data.enabled
-          ? "Agent V2 已原子启用。"
-          : "Agent V2 已关闭，新请求回到 Chat 回滚通道。"
-      );
-    } finally {
-      setAgentBusy(false);
-    }
-  }
-
   async function runAgentCheck(check: "balance" | "responses") {
     if (agentBusy) return;
     if (!window.confirm("这会主动调用外部模型或余额接口，确认继续？")) return;
@@ -221,18 +190,15 @@ export function AdminOverview() {
       {agent && (
         <section
           className="rounded-xl border border-[var(--border)] p-5"
-          aria-labelledby="agent-v2-status-title"
+          aria-labelledby="agent-v3-status-title"
         >
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <h2 id="agent-v2-status-title" className="text-lg font-semibold">
-                Agent V2
+              <h2 id="agent-v3-status-title" className="text-lg font-semibold">
+                Agent V3
               </h2>
               <p className="mt-1 text-sm text-[var(--muted)]">
-                {agent.enabled
-                  ? "Responses 正式流量已启用"
-                  : "当前使用 Chat 回滚通道"}
-                {agent.environmentMasterSwitch ? "" : "；环境总开关未开启"}
+                Responses 为唯一聊天运行路径；回滚使用上一镜像摘要
               </p>
             </div>
             {canExecuteModels ? (
@@ -252,14 +218,6 @@ export function AdminOverview() {
                   onClick={() => void runAgentCheck("responses")}
                 >
                   检查 Responses
-                </button>
-                <button
-                  type="button"
-                  className="rounded-lg bg-[var(--foreground)] px-3 py-2 text-sm text-white disabled:opacity-50"
-                  disabled={agentBusy || !agent.environmentMasterSwitch}
-                  onClick={() => void toggleAgent()}
-                >
-                  {agent.enabled ? "切回 Chat" : "启用 Agent V2"}
                 </button>
               </div>
             ) : null}

@@ -28,7 +28,7 @@ interface RepositoryReserveInput {
   metadata: Record<string, unknown>;
 }
 
-interface RepositoryTransitionInput {
+export interface RepositoryTransitionInput {
   leaseId: string;
   actorUserId?: string;
   reason?: string;
@@ -40,7 +40,9 @@ interface RepositoryStatusInput {
   scopes: QuotaScopePolicy[];
 }
 
-type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type QuotaTransaction = Parameters<
+  Parameters<typeof db.transaction>[0]
+>[0];
 type LedgerRow = typeof quotaLedger.$inferSelect;
 type BucketRow = typeof quotaBucket.$inferSelect;
 
@@ -106,7 +108,7 @@ function compareScopes(
 }
 
 async function selectIdempotentRows(
-  database: typeof db | Transaction,
+  database: typeof db | QuotaTransaction,
   input: Pick<
     RepositoryReserveInput,
     "actorUserId" | "clientRequestId" | "resource"
@@ -126,7 +128,7 @@ async function selectIdempotentRows(
 }
 
 async function assertActorCanReserve(
-  transaction: Transaction,
+  transaction: QuotaTransaction,
   actorUserId: string
 ) {
   const [account] = await transaction
@@ -147,7 +149,7 @@ async function assertActorCanReserve(
 }
 
 async function lockActorForTransition(
-  transaction: Transaction,
+  transaction: QuotaTransaction,
   actorUserId: string | undefined
 ) {
   if (!actorUserId) return;
@@ -159,7 +161,7 @@ async function lockActorForTransition(
 }
 
 async function selectBuckets(
-  database: typeof db | Transaction,
+  database: typeof db | QuotaTransaction,
   bucketIds: string[]
 ) {
   const rows: BucketRow[] = [];
@@ -179,7 +181,7 @@ async function selectBuckets(
 }
 
 async function reservationFromRows(
-  database: typeof db | Transaction,
+  database: typeof db | QuotaTransaction,
   rows: LedgerRow[],
   idempotent: boolean
 ): Promise<QuotaReservation> {
@@ -394,70 +396,90 @@ export class PostgresQuotaRepository implements QuotaRepository {
     input: RepositoryTransitionInput,
     target: Exclude<QuotaReservationStatus, "reserved">
   ): Promise<QuotaReservation> {
-    return db.transaction(async (transaction) => {
-      await lockActorForTransition(transaction, input.actorUserId);
-      const predicates = [eq(quotaLedger.leaseId, input.leaseId)];
-
-      if (input.actorUserId) {
-        predicates.push(eq(quotaLedger.actorUserId, input.actorUserId));
-      }
-
-      const selectedRows = await transaction
-        .select()
-        .from(quotaLedger)
-        .where(and(...predicates))
-        .orderBy(asc(quotaLedger.scopeType), asc(quotaLedger.scopeKey))
-        .for("update");
-      const rows = [...selectedRows].sort(compareScopes);
-
-      if (rows.length === 0) {
-        throw new QuotaReservationNotFoundError(input.leaseId);
-      }
-
-      for (const row of rows) {
-        if (row.status !== "reserved") {
-          continue;
-        }
-
-        await transaction
-          .update(quotaBucket)
-          .set({
-            reservedUnits: sql`${quotaBucket.reservedUnits} - ${row.units}`,
-            ...(target === "committed"
-              ? {
-                  committedUnits: sql`${quotaBucket.committedUnits} + ${row.units}`
-                }
-              : {}),
-            updatedAt: new Date()
-          })
-          .where(eq(quotaBucket.id, row.bucketId));
-
-        await transaction
-          .update(quotaLedger)
-          .set({
-            status: target,
-            releaseReason:
-              target === "released"
-                ? (input.reason ?? "operation_failed")
-                : null,
-            committedAt: target === "committed" ? new Date() : null,
-            releasedAt: target === "released" ? new Date() : null,
-            updatedAt: new Date()
-          })
-          .where(eq(quotaLedger.id, row.id));
-      }
-
-      const finalRows = await transaction
-        .select()
-        .from(quotaLedger)
-        .where(and(...predicates))
-        .orderBy(asc(quotaLedger.scopeType), asc(quotaLedger.scopeKey));
-
-      return reservationFromRows(
-        transaction,
-        [...finalRows].sort(compareScopes),
-        true
-      );
-    });
+    return db.transaction((transaction) =>
+      transitionQuotaReservation(transaction, input, target)
+    );
   }
+}
+
+export function commitQuotaInTransaction(
+  transaction: QuotaTransaction,
+  input: RepositoryTransitionInput
+): Promise<QuotaReservation> {
+  return transitionQuotaReservation(transaction, input, "committed");
+}
+
+export function releaseQuotaInTransaction(
+  transaction: QuotaTransaction,
+  input: RepositoryTransitionInput
+): Promise<QuotaReservation> {
+  return transitionQuotaReservation(transaction, input, "released");
+}
+
+async function transitionQuotaReservation(
+  transaction: QuotaTransaction,
+  input: RepositoryTransitionInput,
+  target: Exclude<QuotaReservationStatus, "reserved">
+): Promise<QuotaReservation> {
+  await lockActorForTransition(transaction, input.actorUserId);
+  const predicates = [eq(quotaLedger.leaseId, input.leaseId)];
+
+  if (input.actorUserId) {
+    predicates.push(eq(quotaLedger.actorUserId, input.actorUserId));
+  }
+
+  const selectedRows = await transaction
+    .select()
+    .from(quotaLedger)
+    .where(and(...predicates))
+    .orderBy(asc(quotaLedger.scopeType), asc(quotaLedger.scopeKey))
+    .for("update");
+  const rows = [...selectedRows].sort(compareScopes);
+
+  if (rows.length === 0) {
+    throw new QuotaReservationNotFoundError(input.leaseId);
+  }
+
+  for (const row of rows) {
+    if (row.status !== "reserved") {
+      continue;
+    }
+
+    await transaction
+      .update(quotaBucket)
+      .set({
+        reservedUnits: sql`${quotaBucket.reservedUnits} - ${row.units}`,
+        ...(target === "committed"
+          ? {
+              committedUnits: sql`${quotaBucket.committedUnits} + ${row.units}`
+            }
+          : {}),
+        updatedAt: new Date()
+      })
+      .where(eq(quotaBucket.id, row.bucketId));
+
+    await transaction
+      .update(quotaLedger)
+      .set({
+        status: target,
+        releaseReason:
+          target === "released" ? (input.reason ?? "operation_failed") : null,
+        committedAt: target === "committed" ? new Date() : null,
+        releasedAt: target === "released" ? new Date() : null,
+        updatedAt: new Date()
+      })
+      .where(eq(quotaLedger.id, row.id));
+  }
+
+  const finalRows = await transaction
+    .select()
+    .from(quotaLedger)
+    .where(and(...predicates))
+    .orderBy(asc(quotaLedger.scopeType), asc(quotaLedger.scopeKey));
+
+  return reservationFromRows(
+    transaction,
+    [...finalRows].sort(compareScopes),
+    true
+  );
 }

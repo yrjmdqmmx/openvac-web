@@ -153,7 +153,15 @@ describe("ChatWorkspace pending question flow", () => {
     );
     expect(
       JSON.parse(String((chatCall?.[1] as RequestInit).body))
-    ).toMatchObject({ mode: "deep", webMode: "always" });
+    ).toMatchObject({
+      protocolVersion: 3,
+      parts: [{ type: "text", text: "首页带模式的问题" }],
+      mode: "deep",
+      webMode: "always"
+    });
+    expect(
+      JSON.parse(String((chatCall?.[1] as RequestInit).body))
+    ).not.toHaveProperty("message");
     expect(screen.getByRole("button", { name: "深度思考" })).toHaveAttribute(
       "aria-pressed",
       "true"
@@ -184,6 +192,43 @@ describe("ChatWorkspace pending question flow", () => {
     expect(chatPostCount(fetchMock)).toBe(0);
     expect(sessionStorage.getItem(PENDING_QUESTION_DRAFT_KEY)).toBeNull();
     expect(screen.queryByText("有一条待发送草稿")).not.toBeInTheDocument();
+  });
+
+  it("sends an HTTPS link chip as a V3 part without requiring text", async () => {
+    const fetchMock = installFetch();
+    render(
+      createElement(ChatWorkspace, {
+        userId: "user-a",
+        userName: "用户 A",
+        userEmail: "user-a@openvac.test"
+      })
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "链接" }));
+    fireEvent.change(screen.getByLabelText("HTTPS 链接"), {
+      target: { value: "https://docs.example.com/pump" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(chatPostCount(fetchMock)).toBe(1));
+    const chatCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        String(input) === "/api/chat" &&
+        (init as RequestInit | undefined)?.method === "POST"
+    );
+    expect(
+      JSON.parse(String((chatCall?.[1] as RequestInit).body))
+    ).toMatchObject({
+      protocolVersion: 3,
+      parts: [
+        {
+          type: "link",
+          url: "https://docs.example.com/pump",
+          label: "docs.example.com"
+        }
+      ]
+    });
   });
 
   it("clears an account-mismatched v2 intent without sending", async () => {

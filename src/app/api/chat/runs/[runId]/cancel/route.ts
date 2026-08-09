@@ -1,4 +1,4 @@
-import { cancelAgentRunV2 } from "@/server/agent/http-v2";
+import { cancelAgentRunV3 } from "@/server/agent/http-v2";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,5 +8,5 @@ export async function POST(
   context: { params: Promise<{ runId: string }> }
 ) {
   const { runId } = await context.params;
-  return cancelAgentRunV2(request, runId);
+  return cancelAgentRunV3(request, runId);
 }

@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const requiredAgentEnvironment = [
-  "AGENT_RESPONSES_V2",
   "AGENT_AUTO_MAX_OUTPUT_TOKENS",
   "AGENT_DEEP_MAX_OUTPUT_TOKENS",
   "AGENT_AUTO_TIMEOUT_MS",
@@ -17,10 +16,15 @@ const requiredAgentEnvironment = [
   "MODEL_OUTPUT_COST_MICROS_PER_MILLION_TOKENS",
   "MODEL_PRICE_VERSION",
   "ALIBABA_WEB_SEARCH_COST_MICROS_PER_CALL",
-  "ALIBABA_WEB_SEARCH_PRICE_VERSION"
+  "ALIBABA_WEB_SEARCH_PRICE_VERSION",
+  "QWEN_VL_API_KEY",
+  "QWEN_VL_BASE_URL",
+  "QWEN_VL_ALLOWED_HOSTS",
+  "QWEN_VL_MODEL",
+  "QWEN_VL_MAX_OUTPUT_TOKENS"
 ] as const;
 
-describe("Agent V2 deployment contract", () => {
+describe("Agent deployment contract", () => {
   it("declares every server-only runtime value in the example and Compose environment", () => {
     const example = readFileSync(join(process.cwd(), ".env.example"), "utf8");
     const compose = readFileSync(

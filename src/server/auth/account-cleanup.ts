@@ -1,6 +1,7 @@
 import { and, eq, or, sql } from "drizzle-orm";
 
 import { accountAvatarObjectKey } from "@/server/account/avatar-key";
+import { enqueueConversationStorageDeletion } from "@/server/chat-attachments/deletion";
 import { db } from "@/server/db";
 import { getObjectStorage } from "@/server/providers";
 import {
@@ -85,6 +86,11 @@ export async function prepareUserDeletion(userId: string): Promise<void> {
       .where(eq(adminRoles.userId, userId))
       .for("update");
     assertUserCanSelfDelete(roleAssignments);
+
+    await enqueueConversationStorageDeletion(transaction, {
+      userId,
+      deleteMetadata: false
+    });
 
     await transaction
       .update(users)

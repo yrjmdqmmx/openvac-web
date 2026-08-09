@@ -38,11 +38,12 @@ describe("stored chat message serialization", () => {
         },
         citation ? [citation] : []
       )
-    ).toEqual({
+    ).toMatchObject({
       id: "message-1",
       role: "assistant",
       status: "completed",
       content: "answer",
+      parts: [{ type: "text", text: "answer" }],
       meta: {
         riskLevel: "medium",
         missingInputs: ["入口压力"],
@@ -64,6 +65,124 @@ describe("stored chat message serialization", () => {
           }
         ]
       }
+    });
+  });
+
+  it("restores verified links and artifacts without exposing signed URLs", () => {
+    const serialized = serializeStoredMessage(
+      {
+        id: "message-v3-parts",
+        role: "assistant",
+        status: "completed",
+        content: "查看结果",
+        metadata: {
+          verifiedLinks: [
+            {
+              type: "verified_link",
+              linkId: "link-1",
+              url: "https://docs.example.com/manual",
+              label: "设备手册",
+              hostname: "docs.example.com",
+              status: "verified"
+            },
+            {
+              type: "verified_link",
+              linkId: "link-secret",
+              url: "https://docs.example.com/private?Signature=secret",
+              label: "私有地址",
+              hostname: "docs.example.com",
+              status: "verified"
+            }
+          ],
+          artifacts: [
+            {
+              type: "artifact",
+              artifactId: "00000000-0000-4000-8000-000000000041",
+              kind: "diagnosis_report",
+              title: "诊断报告",
+              formats: ["pdf", "docx"],
+              status: "ready"
+            }
+          ]
+        }
+      },
+      []
+    );
+
+    expect(serialized?.parts).toEqual([
+      { type: "text", text: "查看结果" },
+      {
+        type: "verified_link",
+        linkId: "link-1",
+        url: "https://docs.example.com/manual",
+        label: "设备手册",
+        hostname: "docs.example.com",
+        status: "verified"
+      },
+      {
+        type: "artifact",
+        artifactId: "00000000-0000-4000-8000-000000000041",
+        kind: "diagnosis_report",
+        title: "诊断报告",
+        formats: ["pdf", "docx"],
+        status: "ready"
+      }
+    ]);
+    expect(JSON.stringify(serialized)).not.toContain("Signature");
+    expect(JSON.stringify(serialized)).not.toContain("secret");
+  });
+
+  it("hydrates legacy attachment IDs with owned bound attachment metadata", () => {
+    const serialized = serializeStoredMessage(
+      {
+        id: "message-legacy-attachment",
+        role: "user",
+        status: "completed",
+        content: "请检查附件",
+        metadata: {
+          inputParts: [
+            { type: "text", text: "请检查附件" },
+            {
+              type: "attachment",
+              attachmentId: "00000000-0000-4000-8000-000000000051"
+            }
+          ]
+        }
+      },
+      [],
+      [
+        {
+          type: "attachment",
+          attachmentId: "00000000-0000-4000-8000-000000000051",
+          kind: "image",
+          filename: "真空计读数.png",
+          mimeType: "image/png",
+          sizeBytes: 2048,
+          status: "ready"
+        }
+      ]
+    );
+
+    expect(serialized).toMatchObject({
+      inputParts: [
+        { type: "text", text: "请检查附件" },
+        {
+          type: "attachment",
+          attachmentId: "00000000-0000-4000-8000-000000000051"
+        }
+      ],
+      parts: [
+        { type: "text", text: "请检查附件" },
+        {
+          type: "attachment",
+          attachmentId: "00000000-0000-4000-8000-000000000051",
+          kind: "image",
+          filename: "真空计读数.png",
+          mimeType: "image/png",
+          sizeBytes: 2048,
+          status: "ready"
+        }
+      ]
     });
   });
 
@@ -114,5 +233,79 @@ describe("stored chat message serialization", () => {
     );
     expect(JSON.stringify(serialized)).not.toContain("modelingCards");
     expect(JSON.stringify(serialized)).not.toContain("evil.example");
+  });
+
+  it.each(["failed", "cancelled"])(
+    "restores retry identifiers for %s answers without exposing provider or tool metadata",
+    (status) => {
+      const serialized = serializeStoredMessage(
+        {
+          id: `message-${status}`,
+          role: "assistant",
+          status,
+          content: "本次回答未完成，可重试。",
+          metadata: {
+            turnId: "00000000-0000-4000-8000-000000000021",
+            runId: "00000000-0000-4000-8000-000000000022",
+            answerVersion: 3,
+            provider: "private-provider",
+            toolCalls: [{ toolName: "private_tool" }]
+          },
+          answerPayload: {
+            providerResponseId: "provider-secret",
+            toolName: "private_tool"
+          }
+        },
+        []
+      );
+
+      expect(serialized).toMatchObject({
+        status: "error",
+        meta: {
+          riskLevel: "low",
+          missingInputs: [],
+          webSearched: false,
+          citations: [],
+          turnId: "00000000-0000-4000-8000-000000000021",
+          runId: "00000000-0000-4000-8000-000000000022",
+          answerVersion: 3
+        }
+      });
+      expect(JSON.stringify(serialized)).not.toMatch(
+        /private-provider|private_tool|provider-secret/u
+      );
+    }
+  );
+
+  it("localizes legacy V2 calculation tool names before history reaches the UI", () => {
+    const serialized = serializeStoredMessage(
+      {
+        id: "message-calculation",
+        role: "assistant",
+        status: "completed",
+        content: "legacy projection",
+        metadata: { riskLevel: "low" },
+        answerPayload: {
+          schemaVersion: "openvac.answer.v2",
+          answerKind: "grounded",
+          conclusion: [
+            {
+              text: "estimate_pumpdown_time 计算结果。",
+              evidenceIds: []
+            }
+          ],
+          assumptions: [],
+          evidence: [],
+          missingInputs: [],
+          nextSteps: [],
+          calculationRefs: ["calc_1"]
+        }
+      },
+      []
+    );
+
+    const projection = JSON.stringify(serialized);
+    expect(projection).toContain("抽空时间估算");
+    expect(projection).not.toContain("estimate_pumpdown_time");
   });
 });

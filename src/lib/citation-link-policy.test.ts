@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { evaluateCitationLink } from "./citation-link-policy";
+import {
+  evaluateCitationLink,
+  evaluateVerifiedLinkPart
+} from "./citation-link-policy";
 
 const authoritativePolicy = {
   linkAllowed: true,
@@ -83,5 +86,43 @@ describe("evaluateCitationLink", () => {
         }
       })
     ).toEqual({ allowed: false, authoritative: false });
+  });
+});
+
+describe("evaluateVerifiedLinkPart", () => {
+  it("allows only a server-verified HTTPS URL whose hostname matches", () => {
+    expect(
+      evaluateVerifiedLinkPart({
+        url: "https://docs.example.com/manual?id=7",
+        hostname: "docs.example.com",
+        status: "verified"
+      })
+    ).toMatchObject({
+      allowed: true,
+      href: "https://docs.example.com/manual?id=7"
+    });
+  });
+
+  it.each([
+    {
+      url: "https://evil.example/manual",
+      hostname: "docs.example.com",
+      status: "verified" as const
+    },
+    {
+      url: "http://docs.example.com/manual",
+      hostname: "docs.example.com",
+      status: "verified" as const
+    },
+    {
+      url: "https://docs.example.com/manual",
+      hostname: "docs.example.com",
+      status: "unavailable" as const
+    }
+  ])("rejects an untrusted normalized link part", (link) => {
+    expect(evaluateVerifiedLinkPart(link)).toEqual({
+      allowed: false,
+      authoritative: false
+    });
   });
 });

@@ -424,4 +424,73 @@ describe("ChatWorkspace conversation history", () => {
       })
     ).toBe(true);
   });
+
+  it("deduplicates a same-version skeleton and folds old failed versions", async () => {
+    const meta = (answerVersion: number) => ({
+      riskLevel: "low" as const,
+      missingInputs: [],
+      webSearched: false,
+      citations: [],
+      turnId: "33333333-3333-4333-8333-333333333333",
+      answerVersion
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = requestUrl(input);
+        if (url.pathname === "/api/conversations") {
+          return conversationPage([firstConversation]);
+        }
+        if (url.pathname === `/api/conversations/${firstConversation.id}`) {
+          return jsonResponse({
+            data: {
+              messages: [
+                { id: "question", role: "user", content: "检查泵组" },
+                {
+                  id: "incomplete-v0",
+                  role: "assistant",
+                  content: "更早的未完成内容",
+                  status: "incomplete",
+                  meta: meta(1)
+                },
+                {
+                  id: "failed-v1",
+                  role: "assistant",
+                  content: "失败版本内容",
+                  status: "error",
+                  meta: meta(2)
+                },
+                {
+                  id: "skeleton-v2",
+                  role: "assistant",
+                  content: "",
+                  status: "streaming",
+                  meta: meta(3)
+                },
+                {
+                  id: "complete-v2",
+                  role: "assistant",
+                  content: "最终回答",
+                  status: "completed",
+                  meta: meta(3)
+                }
+              ]
+            }
+          });
+        }
+        return jsonResponse({}, 404);
+      })
+    );
+
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole("button", { name: "第一段对话" }));
+
+    expect(await screen.findByText("最终回答")).toBeInTheDocument();
+    expect(screen.getAllByText("最终回答")).toHaveLength(1);
+    expect(screen.queryByLabelText("正在生成回答")).not.toBeInTheDocument();
+    const history = screen.getByText("未完成或失败的历史版本（2）");
+    fireEvent.click(history);
+    expect(screen.getByText("失败版本内容")).toBeInTheDocument();
+    expect(screen.getByText("更早的未完成内容")).toBeInTheDocument();
+  });
 });

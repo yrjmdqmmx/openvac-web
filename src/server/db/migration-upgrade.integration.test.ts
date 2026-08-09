@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import postgres, { type Sql } from "postgres";
+import postgres, { type Sql, type TransactionSql } from "postgres";
 import { describe, expect, it } from "vitest";
 
 const describeDatabase =
@@ -23,8 +23,28 @@ async function applyMigration(database: Sql, path: string) {
   }
 }
 
+async function applyMigrationInTransaction(database: Sql, path: string) {
+  await database.begin(async (transaction) => {
+    await applyTransactionMigration(transaction, path);
+  });
+}
+
+async function applyTransactionMigration(
+  database: TransactionSql,
+  path: string
+) {
+  const statements = migration(path)
+    .split("--> statement-breakpoint")
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+
+  for (const statement of statements) {
+    await database.unsafe(statement);
+  }
+}
+
 describeDatabase("migration upgrade compatibility", () => {
-  it("upgrades a pre-0002 database through permanent modeling purge 0009", async () => {
+  it("upgrades a pre-0002 database through durable Agent settlement 0016", async () => {
     const configuredUrl = new URL(
       process.env.DATABASE_URL ??
         "postgres://openvac:openvac@127.0.0.1:5432/openvac"
@@ -156,6 +176,49 @@ describeDatabase("migration upgrade compatibility", () => {
         target,
         "0012_account_mfa_knowledge_review_sections.sql"
       );
+      await applyMigration(target, "0013_talented_human_torch.sql");
+      await applyMigration(target, "0014_material_rage.sql");
+      await applyMigration(target, "0015_glossy_magus.sql");
+      await createLegacyQuotaSchema(target);
+      const quotaUpgradeFixture = await seedAgentRunQuotaUpgrade(
+        target,
+        legacyOwnerId
+      );
+      const conflictBucketIds = await seedConflictingAnswerQuota(
+        target,
+        legacyOwnerId
+      );
+
+      await expect(
+        applyMigrationInTransaction(target, "0016_groovy_earthquake.sql")
+      ).rejects.toMatchObject({ code: "23514" });
+
+      const rolledBackSettlementColumns = await target<
+        Array<{ column_name: string }>
+      >`
+        select column_name
+        from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'agent_run'
+          and column_name in (
+            'answer_quota_lease_id', 'answer_quota_status', 'settlement_status'
+          )
+      `;
+      expect(rolledBackSettlementColumns).toEqual([]);
+      const [rolledBackSettlementType] = await target<
+        Array<{ type_name: string | null }>
+      >`
+        select to_regtype('public.agent_run_settlement_status')::text
+          as type_name
+      `;
+      expect(rolledBackSettlementType?.type_name).toBeNull();
+
+      await target`
+        delete from quota_bucket
+        where id = any(${conflictBucketIds}::uuid[])
+      `;
+      await applyMigrationInTransaction(target, "0016_groovy_earthquake.sql");
+      await verifyAgentRunQuotaUpgrade(target, quotaUpgradeFixture);
 
       const fastTrackTables = await target<Array<{ table_name: string }>>`
         select table_name
@@ -173,6 +236,83 @@ describeDatabase("migration upgrade compatibility", () => {
         "knowledge_review_section",
         "knowledge_section_decision",
         "two_factor"
+      ]);
+
+      const chatStorageTables = await target<Array<{ table_name: string }>>`
+        select table_name
+        from information_schema.tables
+        where table_schema = 'public'
+          and table_name in (
+            'chat_attachment', 'chat_attachment_chunk',
+            'chat_artifact', 'chat_artifact_file',
+            'chat_storage_account', 'chat_storage_deletion_job'
+          )
+        order by table_name
+      `;
+      expect(chatStorageTables.map((row) => row.table_name)).toEqual([
+        "chat_artifact",
+        "chat_artifact_file",
+        "chat_attachment",
+        "chat_attachment_chunk",
+        "chat_storage_account",
+        "chat_storage_deletion_job"
+      ]);
+
+      const [storageDefaults] = await target<
+        Array<{
+          used_bytes: string;
+          reserved_bytes: string;
+          limit_bytes: string;
+        }>
+      >`
+        insert into chat_storage_account (user_id)
+        values (${legacyOwnerId})
+        returning used_bytes::text, reserved_bytes::text, limit_bytes::text
+      `;
+      expect(storageDefaults).toEqual({
+        used_bytes: "0",
+        reserved_bytes: "0",
+        limit_bytes: "524288000"
+      });
+
+      await expect(
+        target`
+          update chat_storage_account
+          set reserved_bytes = 524288001
+          where user_id = ${legacyOwnerId}
+        `
+      ).rejects.toMatchObject({ code: "23514" });
+
+      const chatStorageIndexes = await target<Array<{ indexname: string }>>`
+        select indexname
+        from pg_indexes
+        where schemaname = 'public'
+          and indexname in (
+            'chat_attachment_parse_queue_idx',
+            'chat_attachment_orphan_expiry_idx',
+            'chat_storage_deletion_job_object_key_unique',
+            'chat_storage_deletion_job_queue_idx'
+          )
+        order by indexname
+      `;
+      expect(chatStorageIndexes.map((row) => row.indexname)).toEqual([
+        "chat_attachment_orphan_expiry_idx",
+        "chat_attachment_parse_queue_idx",
+        "chat_storage_deletion_job_object_key_unique",
+        "chat_storage_deletion_job_queue_idx"
+      ]);
+
+      const parserBudgetColumns = await target<Array<{ column_name: string }>>`
+        select column_name
+        from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'chat_attachment'
+          and column_name in ('parse_poll_count', 'parse_submitted_at')
+        order by column_name
+      `;
+      expect(parserBudgetColumns.map((row) => row.column_name)).toEqual([
+        "parse_poll_count",
+        "parse_submitted_at"
       ]);
 
       const fastTrackUserColumns = await target<Array<{ column_name: string }>>`
@@ -401,6 +541,321 @@ describeDatabase("migration upgrade compatibility", () => {
     }
   });
 });
+
+type QuotaEntryStatus = "reserved" | "committed" | "released";
+
+type AgentRunQuotaUpgradeFixture = Array<{
+  clientRequestId: string;
+  leaseId: string | null;
+  quotaStatus: QuotaEntryStatus | null;
+  settlementStatus: "pending" | "completed";
+}>;
+
+async function createLegacyQuotaSchema(database: Sql) {
+  await database.unsafe(`
+    CREATE TYPE quota_entry_status AS ENUM (
+      'reserved', 'committed', 'released'
+    );
+    CREATE TYPE quota_scope AS ENUM ('user', 'global');
+
+    CREATE TABLE quota_bucket (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      resource quota_resource NOT NULL,
+      scope_type quota_scope NOT NULL,
+      scope_key text NOT NULL,
+      window_key date NOT NULL,
+      limit_value integer NOT NULL,
+      reserved_units integer DEFAULT 0 NOT NULL,
+      committed_units integer DEFAULT 0 NOT NULL,
+      reset_at timestamp with time zone NOT NULL,
+      created_at timestamp with time zone DEFAULT now() NOT NULL,
+      updated_at timestamp with time zone DEFAULT now() NOT NULL,
+      CONSTRAINT quota_bucket_limit_positive CHECK (limit_value > 0),
+      CONSTRAINT quota_bucket_counts_non_negative CHECK (
+        reserved_units >= 0 AND committed_units >= 0
+      ),
+      CONSTRAINT quota_bucket_within_limit CHECK (
+        reserved_units + committed_units <= limit_value
+      )
+    );
+
+    CREATE TABLE quota_ledger (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      lease_id uuid NOT NULL,
+      bucket_id uuid NOT NULL REFERENCES quota_bucket(id) ON DELETE CASCADE,
+      actor_user_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      client_request_id text NOT NULL,
+      resource quota_resource NOT NULL,
+      scope_type quota_scope NOT NULL,
+      scope_key text NOT NULL,
+      window_key date NOT NULL,
+      units integer DEFAULT 1 NOT NULL,
+      status quota_entry_status DEFAULT 'reserved' NOT NULL,
+      release_reason text,
+      metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+      reserved_at timestamp with time zone DEFAULT now() NOT NULL,
+      committed_at timestamp with time zone,
+      released_at timestamp with time zone,
+      updated_at timestamp with time zone DEFAULT now() NOT NULL,
+      CONSTRAINT quota_ledger_units_positive CHECK (units > 0)
+    );
+
+    CREATE UNIQUE INDEX quota_bucket_scope_window_unique
+      ON quota_bucket (resource, scope_type, scope_key, window_key);
+    CREATE UNIQUE INDEX quota_ledger_idempotency_unique
+      ON quota_ledger (
+        actor_user_id, resource, client_request_id, scope_type, scope_key
+      );
+    CREATE INDEX quota_ledger_lease_idx ON quota_ledger (lease_id);
+  `);
+}
+
+async function seedAgentRunQuotaUpgrade(
+  database: Sql,
+  userId: string
+): Promise<AgentRunQuotaUpgradeFixture> {
+  const [{ id: conversationId }] = await database<Array<{ id: string }>>`
+    insert into conversation (user_id)
+    values (${userId})
+    returning id::text
+  `;
+  const cases: Array<{
+    runStatus: "running" | "completed" | "incomplete" | "failed" | "cancelled";
+    quotaStatus: QuotaEntryStatus | null;
+    settlementStatus: "pending" | "completed";
+  }> = [
+    {
+      runStatus: "running",
+      quotaStatus: "reserved",
+      settlementStatus: "pending"
+    },
+    {
+      runStatus: "completed",
+      quotaStatus: "committed",
+      settlementStatus: "completed"
+    },
+    {
+      runStatus: "incomplete",
+      quotaStatus: "released",
+      settlementStatus: "completed"
+    },
+    {
+      runStatus: "failed",
+      quotaStatus: "released",
+      settlementStatus: "completed"
+    },
+    {
+      runStatus: "cancelled",
+      quotaStatus: "released",
+      settlementStatus: "completed"
+    },
+    {
+      runStatus: "completed",
+      quotaStatus: null,
+      settlementStatus: "completed"
+    },
+    {
+      runStatus: "incomplete",
+      quotaStatus: null,
+      settlementStatus: "completed"
+    },
+    {
+      runStatus: "running",
+      quotaStatus: null,
+      settlementStatus: "pending"
+    }
+  ];
+  const fixture: AgentRunQuotaUpgradeFixture = [];
+
+  for (const [index, testCase] of cases.entries()) {
+    const clientRequestId = `upgrade-${index}-${randomUUID()}`;
+    const userMessageId = randomUUID();
+    const assistantMessageId = randomUUID();
+    const turnId = randomUUID();
+    await database`
+      insert into message (id) values (${userMessageId}), (${assistantMessageId})
+    `;
+    await database`
+      insert into conversation_turn (
+        id, conversation_id, user_message_id, ordinal
+      ) values (
+        ${turnId}, ${conversationId}, ${userMessageId}, ${index + 1}
+      )
+    `;
+    await database`
+      insert into agent_run (
+        turn_id, user_id, assistant_message_id, client_request_id,
+        version, model, status
+      ) values (
+        ${turnId}, ${userId}, ${assistantMessageId}, ${clientRequestId},
+        1, 'migration-test', ${testCase.runStatus}::agent_run_status
+      )
+    `;
+
+    let leaseId: string | null = null;
+    if (testCase.quotaStatus) {
+      leaseId = randomUUID();
+      const scopeKey = `quota-upgrade-${index}`;
+      const reservedUnits = testCase.quotaStatus === "reserved" ? 1 : 0;
+      const committedUnits = testCase.quotaStatus === "committed" ? 1 : 0;
+      const [{ id: bucketId }] = await database<Array<{ id: string }>>`
+        insert into quota_bucket (
+          resource, scope_type, scope_key, window_key, limit_value,
+          reserved_units, committed_units, reset_at
+        ) values (
+          'answer', 'user', ${scopeKey}, '2026-08-09', 10,
+          ${reservedUnits}, ${committedUnits}, now() + interval '1 day'
+        )
+        returning id::text
+      `;
+      await database`
+        insert into quota_ledger (
+          lease_id, bucket_id, actor_user_id, client_request_id,
+          resource, scope_type, scope_key, window_key, status,
+          committed_at, released_at
+        ) values (
+          ${leaseId}, ${bucketId}, ${userId}, ${clientRequestId},
+          'answer', 'user', ${scopeKey}, '2026-08-09',
+          ${testCase.quotaStatus}::quota_entry_status,
+          ${testCase.quotaStatus === "committed" ? new Date() : null},
+          ${testCase.quotaStatus === "released" ? new Date() : null}
+        )
+      `;
+    }
+
+    fixture.push({
+      clientRequestId,
+      leaseId,
+      quotaStatus: testCase.quotaStatus,
+      settlementStatus: testCase.settlementStatus
+    });
+  }
+
+  return fixture;
+}
+
+async function seedConflictingAnswerQuota(
+  database: Sql,
+  userId: string
+): Promise<string[]> {
+  const clientRequestId = `conflict-${randomUUID()}`;
+  const fixture = [
+    { scopeType: "user", status: "reserved" },
+    { scopeType: "global", status: "committed" }
+  ] as const;
+  const bucketIds: string[] = [];
+
+  for (const [index, entry] of fixture.entries()) {
+    const scopeKey = `quota-conflict-${index}`;
+    const [{ id: bucketId }] = await database<Array<{ id: string }>>`
+      insert into quota_bucket (
+        resource, scope_type, scope_key, window_key, limit_value,
+        reserved_units, committed_units, reset_at
+      ) values (
+        'answer', ${entry.scopeType}::quota_scope, ${scopeKey}, '2026-08-09',
+        10, ${entry.status === "reserved" ? 1 : 0},
+        ${entry.status === "committed" ? 1 : 0}, now() + interval '1 day'
+      )
+      returning id::text
+    `;
+    await database`
+      insert into quota_ledger (
+        lease_id, bucket_id, actor_user_id, client_request_id,
+        resource, scope_type, scope_key, window_key, status,
+        committed_at
+      ) values (
+        ${randomUUID()}, ${bucketId}, ${userId}, ${clientRequestId},
+        'answer', ${entry.scopeType}::quota_scope, ${scopeKey}, '2026-08-09',
+        ${entry.status}::quota_entry_status,
+        ${entry.status === "committed" ? new Date() : null}
+      )
+    `;
+    bucketIds.push(bucketId);
+  }
+
+  return bucketIds;
+}
+
+async function verifyAgentRunQuotaUpgrade(
+  database: Sql,
+  fixture: AgentRunQuotaUpgradeFixture
+) {
+  const clientRequestIds = fixture.map((entry) => entry.clientRequestId);
+  const rows = await database<
+    Array<{
+      client_request_id: string;
+      answer_quota_lease_id: string | null;
+      answer_quota_status: QuotaEntryStatus | null;
+      settlement_status: "pending" | "completed";
+    }>
+  >`
+    select
+      client_request_id,
+      answer_quota_lease_id::text,
+      answer_quota_status::text,
+      settlement_status::text
+    from agent_run
+    where client_request_id = any(${clientRequestIds}::text[])
+  `;
+  const actualByRequest = new Map(
+    rows.map((row) => [row.client_request_id, row])
+  );
+  for (const expected of fixture) {
+    expect(actualByRequest.get(expected.clientRequestId)).toMatchObject({
+      answer_quota_lease_id: expected.leaseId,
+      answer_quota_status: expected.quotaStatus,
+      settlement_status: expected.settlementStatus
+    });
+  }
+
+  const [constraint] = await database<Array<{ convalidated: boolean }>>`
+    select convalidated
+    from pg_constraint
+    where conname = 'agent_run_answer_quota_shape_valid'
+  `;
+  expect(constraint?.convalidated).toBe(true);
+
+  const [recoveryIndex] = await database<
+    Array<{ valid: boolean; ready: boolean; predicate: string | null }>
+  >`
+    select
+      pg_index.indisvalid as valid,
+      pg_index.indisready as ready,
+      pg_get_expr(pg_index.indpred, pg_index.indrelid) as predicate
+    from pg_index
+    join pg_class on pg_class.oid = pg_index.indexrelid
+    where pg_class.relname = 'agent_run_settlement_recovery_idx'
+  `;
+  expect(recoveryIndex).toMatchObject({ valid: true, ready: true });
+  expect(recoveryIndex?.predicate).toContain("settlement_status");
+  expect(recoveryIndex?.predicate).toContain("pending");
+
+  const reserved = fixture.find((entry) => entry.quotaStatus === "reserved");
+  await expect(
+    database`
+      update agent_run
+      set answer_quota_lease_id = null
+      where client_request_id = ${reserved!.clientRequestId}
+    `
+  ).rejects.toMatchObject({ code: "23514" });
+
+  const ledgerStatuses = await database<
+    Array<{ client_request_id: string; status: QuotaEntryStatus }>
+  >`
+    select client_request_id, status::text
+    from quota_ledger
+    where client_request_id = any(${clientRequestIds}::text[])
+  `;
+  expect(
+    new Map(ledgerStatuses.map((row) => [row.client_request_id, row.status]))
+  ).toEqual(
+    new Map(
+      fixture
+        .filter((entry) => entry.quotaStatus !== null)
+        .map((entry) => [entry.clientRequestId, entry.quotaStatus!])
+    )
+  );
+}
 
 async function verifyConsultationRollbackCompatibility(
   database: Sql,

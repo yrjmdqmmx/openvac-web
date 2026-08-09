@@ -235,21 +235,31 @@ fi
 deployment_receipt_file="$release_dir/deployment-receipt"
 [ -f "$deployment_receipt_file" ] && [ ! -L "$deployment_receipt_file" ] ||
   deployment_postcondition_failed "deploy.sh did not publish a regular deployment receipt"
-[ "$(wc -l <"$deployment_receipt_file" | tr -d '[:space:]')" = 5 ] ||
+[ "$(wc -l <"$deployment_receipt_file" | tr -d '[:space:]')" = 7 ] ||
   deployment_postcondition_failed "deploy.sh published an invalid deployment receipt"
 receipt_release="$(sed -n '1p' "$deployment_receipt_file")"
 receipt_image="$(sed -n '2p' "$deployment_receipt_file")"
-receipt_rehearsal="$(sed -n '3p' "$deployment_receipt_file")"
-receipt_status="$(sed -n '4p' "$deployment_receipt_file")"
-receipt_activation="$(sed -n '5p' "$deployment_receipt_file")"
+receipt_migration="$(sed -n '3p' "$deployment_receipt_file")"
+receipt_health="$(sed -n '4p' "$deployment_receipt_file")"
+receipt_rehearsal="$(sed -n '5p' "$deployment_receipt_file")"
+receipt_status="$(sed -n '6p' "$deployment_receipt_file")"
+receipt_activation="$(sed -n '7p' "$deployment_receipt_file")"
 [ "$receipt_release" = "release=$release_id" ] ||
   deployment_postcondition_failed "deployment receipt release does not match"
 [ "$receipt_image" = "web_image=$active_web_image_id" ] ||
   deployment_postcondition_failed "deployment receipt image does not match"
+[ "$receipt_migration" = migration=passed ] ||
+  deployment_postcondition_failed "deployment receipt migration status is invalid"
+[ "$receipt_health" = health=passed ] ||
+  deployment_postcondition_failed "deployment receipt health gate is invalid"
 case "$receipt_rehearsal" in
   rollback_rehearsal=passed|rollback_rehearsal=not-required) ;;
   *) deployment_postcondition_failed "deployment receipt rollback status is invalid" ;;
 esac
+if [ "${OPENVAC_R1_ROLLBACK_REHEARSAL:-auto}" = true ] &&
+  [ "$receipt_rehearsal" != rollback_rehearsal=passed ]; then
+  deployment_postcondition_failed "deployment receipt does not prove the required rollback rehearsal"
+fi
 [ "$receipt_status" = status=healthy ] ||
   deployment_postcondition_failed "deployment receipt health status is invalid"
 [ "$receipt_activation" = "activation=$activation_id" ] ||

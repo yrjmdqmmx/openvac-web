@@ -4,7 +4,16 @@ import type {
   Citation,
   RiskLevel
 } from "@/types/chat";
-import { safeParseAnswerV2 } from "@/server/agent/answer-v2";
+import {
+  safeParseAnswerV2,
+  sanitizeStoredAnswerV2
+} from "@/server/agent/answer-v2";
+import { safeParseAnswerV3 } from "@/server/agent/answer-v3";
+import {
+  inputMessagePartsSchema,
+  normalizeStoredMessageParts
+} from "@/server/chat-v3/contracts";
+import type { AttachmentPart, MessagePart } from "@/types/chat-v3";
 import { citationSourcePolicy } from "./citation-policy";
 
 const LICENSE_CLASSES = new Set<Citation["licenseClass"]>([
@@ -63,7 +72,8 @@ export function serializeStoredCitation(
 
 export function serializeStoredMessage(
   message: StoredMessageRecord,
-  citations: Citation[]
+  citations: Citation[],
+  hydratedAttachments: AttachmentPart[] = []
 ): ChatMessage | null {
   if (message.role !== "user" && message.role !== "assistant") {
     return null;
@@ -80,18 +90,70 @@ export function serializeStoredMessage(
     status: messageStatusValue(message.status)
   };
 
-  if (
-    message.role === "assistant" &&
-    (message.status === "completed" || message.status === "incomplete")
-  ) {
-    result.meta = answerMetaValue(
-      message.metadata,
-      citations,
-      message.answerPayload
+  const storedParts = normalizeStoredMessageParts(
+    message.content,
+    message.metadata.parts
+  );
+  const publishedParts = [
+    ...normalizeStoredMessageParts("", message.metadata.verifiedLinks),
+    ...normalizeStoredMessageParts("", message.metadata.artifacts)
+  ];
+  const hydratedById = new Map(
+    hydratedAttachments.map((attachment) => [
+      attachment.attachmentId,
+      attachment
+    ])
+  );
+  const restoredParts = storedParts.map((part) =>
+    part.type === "attachment"
+      ? (hydratedById.get(part.attachmentId) ?? part)
+      : part
+  );
+  result.parts = dedupeMessageParts([
+    ...restoredParts,
+    ...publishedParts,
+    ...hydratedAttachments
+  ]);
+
+  if (message.role === "user") {
+    const inputParts = inputMessagePartsSchema.safeParse(
+      message.metadata.inputParts
     );
+    if (inputParts.success) result.inputParts = inputParts.data;
+  }
+
+  if (message.role === "assistant") {
+    if (message.status === "completed" || message.status === "incomplete") {
+      result.meta = answerMetaValue(
+        message.metadata,
+        citations,
+        message.answerPayload
+      );
+    } else if (message.status === "failed" || message.status === "cancelled") {
+      result.meta = retryMetaValue(message.metadata);
+    }
   }
 
   return result;
+}
+
+function dedupeMessageParts(parts: MessagePart[]): MessagePart[] {
+  const seen = new Set<string>();
+  return parts.filter((part, index) => {
+    const key =
+      part.type === "attachment"
+        ? `attachment:${part.attachmentId}`
+        : part.type === "artifact"
+          ? `artifact:${part.artifactId}`
+          : part.type === "verified_link"
+            ? `link:${part.linkId}`
+            : part.type === "citation"
+              ? `citation:${part.sourceId}:${part.ordinal}`
+              : `text:${index}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function answerMetaValue(
@@ -99,13 +161,18 @@ function answerMetaValue(
   citations: Citation[],
   answerPayload?: Record<string, unknown> | null
 ): AnswerMeta {
-  const answer = safeParseAnswerV2(answerPayload);
+  const parsedAnswer = safeParseAnswerV2(answerPayload);
+  const answer = parsedAnswer
+    ? sanitizeStoredAnswerV2(parsedAnswer)
+    : undefined;
+  const answerV3 = safeParseAnswerV3(answerPayload);
   return {
     riskLevel: riskLevelValue(metadata.riskLevel),
     missingInputs: stringArrayValue(metadata.missingInputs),
     webSearched: metadata.webSearched === true,
     citations,
     ...(answer ? { answer } : {}),
+    ...(answerV3 ? { answerV3 } : {}),
     ...(stringValue(metadata.turnId)
       ? { turnId: stringValue(metadata.turnId) }
       : {}),
@@ -116,6 +183,21 @@ function answerMetaValue(
       ? { answerVersion: positiveIntegerValue(metadata.answerVersion) }
       : {}),
     ...(metadata.incomplete === true ? { incomplete: true } : {})
+  };
+}
+
+function retryMetaValue(metadata: Record<string, unknown>): AnswerMeta {
+  const turnId = stringValue(metadata.turnId);
+  const runId = stringValue(metadata.runId);
+  const answerVersion = positiveIntegerValue(metadata.answerVersion);
+  return {
+    riskLevel: "low",
+    missingInputs: [],
+    webSearched: false,
+    citations: [],
+    ...(turnId ? { turnId } : {}),
+    ...(runId ? { runId } : {}),
+    ...(answerVersion ? { answerVersion } : {})
   };
 }
 

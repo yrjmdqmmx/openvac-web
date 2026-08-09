@@ -8,6 +8,18 @@ import type {
 
 const boundedText = z.string().trim().min(1).max(4_000);
 const evidenceId = z.string().trim().min(1).max(200);
+const LEGACY_TOOL_LABELS: Readonly<Record<string, string>> = {
+  convert_vacuum_units: "真空单位换算",
+  calculate_throughput: "气体流量计算",
+  calculate_effective_pumping_speed: "有效抽速计算",
+  estimate_pumpdown_time: "抽空时间估算",
+  classify_flow_regime: "流态判定",
+  calculate_orifice_or_tube_conductance: "孔口或管道流导计算",
+  combine_parallel_pumps: "并联泵有效抽速计算",
+  estimate_leak_or_outgassing_load: "漏气与放气负载估算"
+};
+const LEGACY_INTERNAL_TEXT =
+  /\b(?:provider|tool_call|function_call|formulaId|formulaVersion|normalizedInputs|rawArguments|system\s*prompt)\b|系统提示|内部提示|(?:x-amz|x-oss)-[a-z-]*signature|ossaccesskeyid/iu;
 
 const answerClaimSchema = z.object({
   text: boundedText,
@@ -126,6 +138,34 @@ export function parseAnswerV2(value: unknown): AnswerV2 {
 export function safeParseAnswerV2(value: unknown): AnswerV2 | undefined {
   const parsed = answerV2Schema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
+}
+
+export function sanitizeStoredAnswerV2(answer: AnswerV2): AnswerV2 {
+  const sanitize = (value: string): string => {
+    let text = value;
+    for (const [internalName, localizedName] of Object.entries(
+      LEGACY_TOOL_LABELS
+    )) {
+      text = text.replaceAll(internalName, localizedName);
+    }
+    return LEGACY_INTERNAL_TEXT.test(text)
+      ? "旧回答中的内部运行信息已隐藏。"
+      : text;
+  };
+  return {
+    ...answer,
+    conclusion: answer.conclusion.map((claim) => ({
+      ...claim,
+      text: sanitize(claim.text)
+    })),
+    assumptions: answer.assumptions.map(sanitize),
+    evidence: answer.evidence.map((item) => ({
+      ...item,
+      claim: sanitize(item.claim)
+    })),
+    missingInputs: answer.missingInputs.map(sanitize),
+    nextSteps: answer.nextSteps.map(sanitize)
+  };
 }
 
 export function validateAnswerV2(

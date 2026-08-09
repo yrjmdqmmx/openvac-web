@@ -26,6 +26,7 @@ export type RegisteredEvidence = {
   trustTier: SourceTrustTier;
   reviewStatus: SourceReviewStatus;
   runtimeValidated: boolean;
+  citationVisible: boolean;
 };
 
 export class EvidenceRegistry {
@@ -54,10 +55,48 @@ export class EvidenceRegistry {
       reviewStatus:
         policy.reviewStatus ??
         (policy.runtimeValidated ? "runtime_verified" : "pending_review"),
-      runtimeValidated: policy.runtimeValidated ?? false
+      runtimeValidated: policy.runtimeValidated ?? false,
+      citationVisible: true
     };
     this.entries.set(id, entry);
     this.byOriginalSourceId.set(entry.originalSourceId, id);
+    return id;
+  }
+
+  addPrivate(input: {
+    sourceId: string;
+    title: string;
+    excerpt: string;
+    locator?: string;
+    publisher?: string;
+    reviewStatus?: SourceReviewStatus;
+    runtimeValidated?: boolean;
+  }): string {
+    const existing = this.byOriginalSourceId.get(input.sourceId);
+    if (existing) return existing;
+    const id = `E${this.entries.size + 1}`;
+    const entry: RegisteredEvidence = {
+      id,
+      evidence: {
+        citation: {
+          sourceId: input.sourceId,
+          title: input.title,
+          publisher: input.publisher ?? "用户私有附件",
+          url: "https://private.invalid/",
+          pageOrSection: input.locator,
+          fetchedAt: new Date(0),
+          licenseClass: "private_authorized"
+        },
+        excerpt: input.excerpt
+      },
+      originalSourceId: input.sourceId,
+      trustTier: "tier_b",
+      reviewStatus: input.reviewStatus ?? "pending_review",
+      runtimeValidated: input.runtimeValidated ?? false,
+      citationVisible: false
+    };
+    this.entries.set(id, entry);
+    this.byOriginalSourceId.set(input.sourceId, id);
     return id;
   }
 
@@ -85,7 +124,7 @@ export class EvidenceRegistry {
 
   citation(id: string): Citation | undefined {
     const entry = this.entries.get(id);
-    if (!entry) return undefined;
+    if (!entry?.citationVisible) return undefined;
     return {
       ...entry.evidence.citation,
       sourceId: id,

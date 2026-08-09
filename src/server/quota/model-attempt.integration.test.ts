@@ -7,7 +7,10 @@ import { prepareUserDeletion } from "@/server/auth/account-cleanup";
 import { db } from "@/server/db";
 import { quotaBucket, quotaLedger, user as users } from "@/server/db/schema";
 
-import { PostgresQuotaRepository } from "./repository";
+import {
+  commitQuotaInTransaction,
+  PostgresQuotaRepository
+} from "./repository";
 import { QuotaService } from "./service";
 import {
   QuotaAccountDeletionPendingError,
@@ -61,6 +64,56 @@ afterEach(async () => {
 });
 
 describeDatabase("model-attempt database quota", () => {
+  it("rolls back a transaction-scoped answer commit with its caller transaction", async () => {
+    const userId = await createUser("answer-atomic-rollback");
+    const quota = service({ userLimit: 10, globalLimit: 100 });
+    const reservation = await quota.reserve({
+      userId,
+      clientRequestId: randomUUID(),
+      resource: "answer",
+      at: TEST_AT
+    });
+
+    await expect(
+      db.transaction(async (transaction) => {
+        const committed = await commitQuotaInTransaction(transaction, {
+          leaseId: reservation.leaseId,
+          actorUserId: userId
+        });
+        expect(committed.status).toBe("committed");
+        throw new Error("rollback caller transaction");
+      })
+    ).rejects.toThrow("rollback caller transaction");
+
+    const ledger = await db
+      .select({ status: quotaLedger.status })
+      .from(quotaLedger)
+      .where(eq(quotaLedger.leaseId, reservation.leaseId));
+    expect(ledger).toEqual([{ status: "reserved" }]);
+
+    const [bucket] = await db
+      .select({
+        reserved: quotaBucket.reservedUnits,
+        committed: quotaBucket.committedUnits
+      })
+      .from(quotaBucket)
+      .where(
+        and(
+          eq(quotaBucket.resource, "answer"),
+          eq(quotaBucket.scopeType, "user"),
+          eq(quotaBucket.scopeKey, userId),
+          eq(quotaBucket.windowKey, TEST_WINDOW_KEY)
+        )
+      );
+    expect(bucket).toEqual({ reserved: 1, committed: 0 });
+
+    await quota.release({
+      leaseId: reservation.leaseId,
+      userId,
+      reason: "test_cleanup"
+    });
+  });
+
   it.each<QuotaResource>(["answer", "web_search", "model_attempt"])(
     "fails closed for %s without creating buckets when account deletion is pending",
     async (resource) => {
