@@ -113,4 +113,25 @@ describe("web-search quota commit boundary", () => {
     expect(evidenceMocks.search).toHaveBeenCalledTimes(1);
     expect(evidenceMocks.releaseQuota).not.toHaveBeenCalled();
   });
+
+  it("passes the legacy collection signal into local query embedding", async () => {
+    vi.stubEnv("ALIBABA_WEB_SEARCH_ENABLED", "false");
+    const controller = new AbortController();
+
+    await collectEvidence({
+      question: "真空泵选型",
+      userId: "user-1",
+      clientRequestId: "request-1",
+      signal: controller.signal
+    });
+
+    const embeddingSignal = evidenceMocks.retrieveLocal.mock
+      .calls[0]?.[2] as AbortSignal;
+    expect(embeddingSignal).toEqual(expect.any(AbortSignal));
+    expect(embeddingSignal.aborted).toBe(false);
+
+    controller.abort();
+
+    expect(embeddingSignal.aborted).toBe(true);
+  });
 });

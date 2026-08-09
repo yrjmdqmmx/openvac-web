@@ -5,7 +5,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   AGENT_V3_STAGING_ORIGIN,
+  publicSmokeFailureDiagnostic,
   publicSmokeReport,
+  runtimeTerminalFailureDiagnostic,
   signBetterAuthSessionCookie,
   validateStagingOrigin,
   withTemporaryPrincipal
@@ -75,5 +77,71 @@ describe("Agent V3 staging runtime smoke safety", () => {
     expect(source).toContain("eq(agentRuns.clientRequestId, clientRequestId)");
     expect(source).toContain("calls.length !== 0");
     expect(source).not.toContain("00000000-0000-4000-8000-000000000000");
+  });
+
+  it("reports only allowlisted staging failure fields", () => {
+    const diagnostic = publicSmokeFailureDiagnostic({
+      stage: "chat_terminal",
+      caseId: "v3-text-safety-01",
+      terminalType: "run.failed",
+      code: "PROVIDER_TIMEOUT",
+      retryable: true,
+      suggestedAction: "retry",
+      settlement: "released"
+    });
+    expect(diagnostic).toEqual({
+      schemaVersion: "openvac.agent-v3-staging-failure.v1",
+      stage: "chat_terminal",
+      caseId: "v3-text-safety-01",
+      terminalType: "run.failed",
+      code: "PROVIDER_TIMEOUT",
+      retryable: true,
+      suggestedAction: "retry",
+      settlement: "released"
+    });
+    expect(JSON.stringify(diagnostic)).not.toMatch(
+      /message|request|session|cookie|secret|provider[_-]?request/iu
+    );
+  });
+
+  it("drops untrusted diagnostic values instead of echoing them", () => {
+    const diagnostic = publicSmokeFailureDiagnostic({
+      stage: "chat_terminal",
+      caseId: "unknown-case-with-token",
+      terminalType: "run.failed",
+      code: "bad code: bearer secret",
+      httpStatus: 999,
+      suggestedAction: "dump-session",
+      settlement: "unknown"
+    });
+    expect(diagnostic).toEqual({
+      schemaVersion: "openvac.agent-v3-staging-failure.v1",
+      stage: "chat_terminal",
+      terminalType: "run.failed"
+    });
+  });
+
+  it("recognizes public failed terminals without retaining messages or ids", () => {
+    const terminal = runtimeTerminalFailureDiagnostic("v3-text-safety-01", {
+      type: "run.failed",
+      code: "PROVIDER_TIMEOUT",
+      retryable: true,
+      suggestedAction: "retry",
+      settlement: "released",
+      message: "provider request secret detail",
+      runId: "should-not-be-retained"
+    });
+    expect(terminal).toEqual({
+      stage: "chat_terminal",
+      caseId: "v3-text-safety-01",
+      terminalType: "run.failed",
+      code: "PROVIDER_TIMEOUT",
+      retryable: true,
+      suggestedAction: "retry",
+      settlement: "released"
+    });
+    expect(JSON.stringify(publicSmokeFailureDiagnostic(terminal!))).not.toMatch(
+      /message|runId|secret detail/iu
+    );
   });
 });

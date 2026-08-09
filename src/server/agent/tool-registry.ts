@@ -236,7 +236,7 @@ export class ToolRegistry {
     if (name === "search_knowledge") {
       const parsed = searchKnowledgeSchema.safeParse(raw);
       if (!parsed.success) return this.invalid(callId, parsed.error);
-      const result = await collectLocalEvidence(parsed.data.query);
+      const result = await collectLocalEvidence(parsed.data.query, signal);
       const evidenceIds = result.evidence.flatMap((item) => {
         const inferred = inferTrustTier(item.citation.url);
         const id = this.evidence.add(item, {

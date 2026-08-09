@@ -62,13 +62,14 @@ export class HybridRetriever {
 
   async retrieve(
     query: string,
-    options: Omit<HybridSearchInput, "query" | "embedding"> = {}
+    options: Omit<HybridSearchInput, "query" | "embedding"> = {},
+    signal?: AbortSignal
   ): Promise<RetrievalCandidate[]> {
     const normalized = query.trim();
     if (!normalized) {
       return [];
     }
-    const result = await this.embeddings.embed([normalized]);
+    const result = await this.embeddings.embed([normalized], signal);
     const embedding = result.vectors[0];
     if (!embedding) {
       throw new ProviderResponseError(
