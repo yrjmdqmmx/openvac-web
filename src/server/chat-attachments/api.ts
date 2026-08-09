@@ -3,9 +3,8 @@ import { z } from "zod";
 import { authenticate } from "@/server/api/auth";
 import { jsonData, parseJson, withApiErrors } from "@/server/api/errors";
 import { uuidSchema } from "@/server/api/schemas";
-import { getObjectStorage } from "@/server/providers";
 
-import { chatAttachmentRepository } from "./repository";
+import { chatAttachmentService as defaultService } from "./runtime";
 import { ChatAttachmentService } from "./service";
 import type { ChatAttachmentView } from "./service";
 
@@ -16,11 +15,6 @@ const initiateAttachmentSchema = z.object({
   sizeBytes: z.number(),
   sha256: z.string()
 });
-
-const defaultService = new ChatAttachmentService(
-  chatAttachmentRepository,
-  getObjectStorage()
-);
 
 type InitiateService = Pick<ChatAttachmentService, "initiate">;
 type CompleteService = Pick<ChatAttachmentService, "complete">;

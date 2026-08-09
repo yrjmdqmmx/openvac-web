@@ -38,11 +38,12 @@ describe("stored chat message serialization", () => {
         },
         citation ? [citation] : []
       )
-    ).toEqual({
+    ).toMatchObject({
       id: "message-1",
       role: "assistant",
       status: "completed",
       content: "answer",
+      parts: [{ type: "text", text: "answer" }],
       meta: {
         riskLevel: "medium",
         missingInputs: ["入口压力"],
@@ -65,6 +66,70 @@ describe("stored chat message serialization", () => {
         ]
       }
     });
+  });
+
+  it("restores verified links and artifacts without exposing signed URLs", () => {
+    const serialized = serializeStoredMessage(
+      {
+        id: "message-v3-parts",
+        role: "assistant",
+        status: "completed",
+        content: "查看结果",
+        metadata: {
+          verifiedLinks: [
+            {
+              type: "verified_link",
+              linkId: "link-1",
+              url: "https://docs.example.com/manual",
+              label: "设备手册",
+              hostname: "docs.example.com",
+              status: "verified"
+            },
+            {
+              type: "verified_link",
+              linkId: "link-secret",
+              url: "https://docs.example.com/private?Signature=secret",
+              label: "私有地址",
+              hostname: "docs.example.com",
+              status: "verified"
+            }
+          ],
+          artifacts: [
+            {
+              type: "artifact",
+              artifactId: "00000000-0000-4000-8000-000000000041",
+              kind: "diagnosis_report",
+              title: "诊断报告",
+              formats: ["pdf", "docx"],
+              status: "ready"
+            }
+          ]
+        }
+      },
+      []
+    );
+
+    expect(serialized?.parts).toEqual([
+      { type: "text", text: "查看结果" },
+      {
+        type: "verified_link",
+        linkId: "link-1",
+        url: "https://docs.example.com/manual",
+        label: "设备手册",
+        hostname: "docs.example.com",
+        status: "verified"
+      },
+      {
+        type: "artifact",
+        artifactId: "00000000-0000-4000-8000-000000000041",
+        kind: "diagnosis_report",
+        title: "诊断报告",
+        formats: ["pdf", "docx"],
+        status: "ready"
+      }
+    ]);
+    expect(JSON.stringify(serialized)).not.toContain("Signature");
+    expect(JSON.stringify(serialized)).not.toContain("secret");
   });
 
   it("drops non-public roles and citations without a URL", () => {

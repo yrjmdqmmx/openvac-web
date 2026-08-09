@@ -2,6 +2,8 @@ import type {
   AnswerBlock,
   AnswerV3,
   ArtifactPart,
+  AttachmentPart,
+  InputMessagePart,
   MessagePart,
   VerifiedLinkPart
 } from "./chat-v3";
@@ -116,6 +118,7 @@ export type AnswerMeta = {
   answerV3?: AnswerV3;
   verifiedLinks?: VerifiedLinkPart[];
   artifacts?: ArtifactPart[];
+  answerBlocks?: AnswerBlock[];
   turnId?: string;
   runId?: string;
   answerVersion?: number;
@@ -139,6 +142,8 @@ export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   parts?: MessagePart[];
+  /** Optimistic V3 input. Replaced by server-normalized `parts` in history. */
+  inputParts?: InputMessagePart[];
   status?: "streaming" | "completed" | "incomplete" | "error";
   meta?: AnswerMeta;
 };
@@ -241,4 +246,16 @@ export type ChatStreamEvent =
       suggestedAction: "retry" | "continue" | "sign_in" | "wait" | "report";
       charged: boolean;
       resetAt?: string;
+    })
+  | (SequencedRunEvent & {
+      type: "attachment.updated";
+      attachment: AttachmentPart;
+    })
+  | (SequencedRunEvent & {
+      type: "artifact.updated";
+      artifact: ArtifactPart;
+    })
+  | (SequencedRunEvent & {
+      type: "answer.completed";
+      answer: AnswerV3;
     });

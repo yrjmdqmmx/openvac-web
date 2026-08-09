@@ -9,6 +9,11 @@ import {
   sanitizeStoredAnswerV2
 } from "@/server/agent/answer-v2";
 import { safeParseAnswerV3 } from "@/server/agent/answer-v3";
+import {
+  inputMessagePartsSchema,
+  normalizeStoredMessageParts
+} from "@/server/chat-v3/contracts";
+import type { MessagePart } from "@/types/chat-v3";
 import { citationSourcePolicy } from "./citation-policy";
 
 const LICENSE_CLASSES = new Set<Citation["licenseClass"]>([
@@ -84,6 +89,23 @@ export function serializeStoredMessage(
     status: messageStatusValue(message.status)
   };
 
+  const storedParts = normalizeStoredMessageParts(
+    message.content,
+    message.metadata.parts
+  );
+  const publishedParts = [
+    ...normalizeStoredMessageParts("", message.metadata.verifiedLinks),
+    ...normalizeStoredMessageParts("", message.metadata.artifacts)
+  ];
+  result.parts = dedupeMessageParts([...storedParts, ...publishedParts]);
+
+  if (message.role === "user") {
+    const inputParts = inputMessagePartsSchema.safeParse(
+      message.metadata.inputParts
+    );
+    if (inputParts.success) result.inputParts = inputParts.data;
+  }
+
   if (
     message.role === "assistant" &&
     (message.status === "completed" || message.status === "incomplete")
@@ -96,6 +118,25 @@ export function serializeStoredMessage(
   }
 
   return result;
+}
+
+function dedupeMessageParts(parts: MessagePart[]): MessagePart[] {
+  const seen = new Set<string>();
+  return parts.filter((part, index) => {
+    const key =
+      part.type === "attachment"
+        ? `attachment:${part.attachmentId}`
+        : part.type === "artifact"
+          ? `artifact:${part.artifactId}`
+          : part.type === "verified_link"
+            ? `link:${part.linkId}`
+            : part.type === "citation"
+              ? `citation:${part.sourceId}:${part.ordinal}`
+              : `text:${index}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function answerMetaValue(

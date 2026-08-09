@@ -75,6 +75,86 @@ export const inputMessagePartsSchema = z
     }
   });
 
+export const verifiedLinkPartSchema = z
+  .object({
+    type: z.literal("verified_link"),
+    linkId: z.string().min(1).max(160),
+    url: z
+      .url()
+      .max(2_048)
+      .refine((url) => new URL(url).protocol === "https:")
+      .refine((url) => !hasSensitiveUrlParameters(new URL(url))),
+    label: z.string().trim().min(1).max(240),
+    hostname: z.string().trim().min(1).max(253),
+    status: z.enum(["verified", "unavailable"])
+  })
+  .superRefine((part, context) => {
+    const url = new URL(part.url);
+    if (
+      url.username ||
+      url.password ||
+      (url.port && url.port !== "443") ||
+      url.hostname !== part.hostname
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "已验证链接的主机信息不一致。"
+      });
+    }
+  });
+
+export const attachmentPartSchema = z.object({
+  type: z.literal("attachment"),
+  attachmentId: z.string().uuid(),
+  kind: z.enum(["document", "image"]),
+  filename: z.string().trim().min(1).max(512),
+  mimeType: z.string().trim().min(1).max(255),
+  sizeBytes: z.number().int().nonnegative().max(MAX_CHAT_ATTACHMENT_BYTES),
+  status: z.enum([
+    "initiated",
+    "uploading",
+    "scanning",
+    "processing",
+    "ready",
+    "failed",
+    "deleted"
+  ])
+});
+
+export const artifactPartSchema = z.object({
+  type: z.literal("artifact"),
+  artifactId: z.string().uuid(),
+  kind: z.enum([
+    "diagnosis_report",
+    "selection_report",
+    "inspection_checklist",
+    "parameter_table"
+  ]),
+  title: z.string().trim().min(1).max(240),
+  formats: z
+    .array(z.enum(["md", "docx", "pdf", "csv"]))
+    .min(1)
+    .max(4),
+  status: z.enum(["generating", "ready", "failed", "deleted"])
+});
+
+export const messagePartSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("text"),
+    text: z.string().max(MAX_CHAT_TEXT_CHARACTERS)
+  }),
+  verifiedLinkPartSchema,
+  attachmentPartSchema,
+  z.object({
+    type: z.literal("citation"),
+    sourceId: z.string().min(1).max(160),
+    ordinal: z.number().int().positive().max(10_000)
+  }),
+  artifactPartSchema
+]);
+
+export const messagePartsSchema = z.array(messagePartSchema).max(256);
+
 export const answerBlockSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("paragraph"), text: z.string(), evidenceIds }),
   z.object({
@@ -173,8 +253,12 @@ export function normalizeStoredMessageParts(
   content: string,
   parts: unknown
 ): MessagePart[] {
-  if (Array.isArray(parts) && parts.length > 0) {
-    return parts as MessagePart[];
+  if (Array.isArray(parts)) {
+    const parsed = parts.slice(0, 256).flatMap((candidate) => {
+      const result = messagePartSchema.safeParse(candidate);
+      return result.success ? [result.data as MessagePart] : [];
+    });
+    if (parsed.length > 0) return parsed;
   }
   return content.trim() ? [{ type: "text", text: content }] : [];
 }

@@ -1,18 +1,19 @@
 "use client";
 
-import { BrainCircuit, CircleStop, Globe2, Menu, Send } from "lucide-react";
+import { Menu } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  FormEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from "react";
+  ChatComposer,
+  type ComposerLink
+} from "@/components/chat/chat-composer";
+import { answerBlocksToPlainText } from "@/components/chat/answer-blocks";
 import { ProblemReportDialog } from "@/components/chat/problem-report-dialog";
 import { ConversationSidebar } from "@/components/chat/conversation-sidebar";
 import { ExpertAnswer } from "@/components/chat/expert-answer";
+import { MessagePartCards } from "@/components/chat/message-part-cards";
 import { Brand } from "@/components/brand";
+import type { LocalChatAttachment } from "@/lib/chat-attachments";
+import { reconcileChatMessages } from "@/lib/chat-version-reconciliation";
 import {
   consumeLegacyPendingQuestionDraft,
   consumePendingQuestionIntent,
@@ -28,7 +29,14 @@ import type {
   ChatMessage,
   ConversationSummary
 } from "@/types/chat";
-import type { AnswerBlock, AnswerV3 } from "@/types/chat-v3";
+import type {
+  AnswerV3,
+  ArtifactPart,
+  AttachmentPart,
+  InputMessagePart,
+  MessagePart,
+  VerifiedLinkPart
+} from "@/types/chat-v3";
 
 const CONVERSATION_PAGE_SIZE = 20;
 const CONVERSATION_SEARCH_DEBOUNCE_MS = 250;
@@ -134,7 +142,7 @@ function withAnswerSection(
 
 function renderAnswerForClipboard(answer: AnswerV2 | AnswerV3): string {
   if (answer.schemaVersion === "openvac.answer.v3") {
-    return answer.blocks.map(renderAnswerBlock).filter(Boolean).join("\n\n");
+    return answerBlocksToPlainText(answer.blocks);
   }
   const list = (items: string[]) => items.map((item) => `- ${item}`).join("\n");
   return [
@@ -151,33 +159,111 @@ function renderAnswerForClipboard(answer: AnswerV2 | AnswerV3): string {
   ].join("\n\n");
 }
 
-function renderAnswerBlock(block: AnswerBlock): string {
-  switch (block.type) {
-    case "paragraph":
-      return block.text;
-    case "heading":
-      return `${"#".repeat(block.level)} ${block.text}`;
-    case "list":
-      return block.items
-        .map((item, index) =>
-          block.style === "ordered" ? `${index + 1}. ${item}` : `- ${item}`
-        )
-        .join("\n");
-    case "table":
-      return [
-        block.columns.join(" | "),
-        ...block.rows.map((row) => row.join(" | "))
-      ].join("\n");
-    case "code":
-      return `\`\`\`${block.language ?? ""}\n${block.code}\n\`\`\``;
-    case "callout":
-      return [block.title, block.body].filter(Boolean).join("\n");
-    case "calculation":
-      return `${block.title}：${block.result}${block.unit ? ` ${block.unit}` : ""}`;
-    case "link_reference":
-    case "artifact_reference":
-      return block.label;
-  }
+function isAnswerV3(answer: AnswerV2 | AnswerV3): answer is AnswerV3 {
+  return answer.schemaVersion === "openvac.answer.v3";
+}
+
+function composerInputParts(
+  text: string,
+  links: ComposerLink[],
+  attachments: LocalChatAttachment[]
+): InputMessagePart[] {
+  return [
+    ...(text ? ([{ type: "text", text }] as const) : []),
+    ...links.map((link): InputMessagePart => ({
+      type: "link",
+      url: link.url,
+      label: link.label
+    })),
+    ...attachments.flatMap((attachment): InputMessagePart[] =>
+      attachment.status === "ready" && attachment.attachmentId
+        ? [{ type: "attachment", attachmentId: attachment.attachmentId }]
+        : []
+    )
+  ];
+}
+
+function inputPartsPlaintext(
+  text: string,
+  links: ComposerLink[],
+  attachments: LocalChatAttachment[]
+) {
+  return [
+    text,
+    ...links.map((link) => `链接：${link.label}`),
+    ...attachments
+      .filter((attachment) => attachment.status === "ready")
+      .map((attachment) => `附件：${attachment.filename}`)
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function optimisticMessageParts(
+  text: string,
+  attachments: LocalChatAttachment[]
+): MessagePart[] {
+  return [
+    ...(text ? ([{ type: "text", text }] as const) : []),
+    ...attachments.flatMap((attachment): AttachmentPart[] =>
+      attachment.status === "ready" && attachment.attachmentId
+        ? [
+            {
+              type: "attachment",
+              attachmentId: attachment.attachmentId,
+              kind: attachment.kind,
+              filename: attachment.filename,
+              mimeType: attachment.mimeType,
+              sizeBytes: attachment.sizeBytes,
+              status: "ready"
+            }
+          ]
+        : []
+    )
+  ];
+}
+
+function userMessageText(message: ChatMessage) {
+  if (!message.parts && !message.inputParts) return message.content;
+  return [
+    ...(message.parts ?? []).flatMap((part) =>
+      part.type === "text" ? [part.text] : []
+    ),
+    ...(message.parts ? [] : (message.inputParts ?? [])).flatMap((part) =>
+      part.type === "text" ? [part.text] : []
+    )
+  ].join("\n");
+}
+
+function upsertMessagePart(
+  parts: MessagePart[] | undefined,
+  next: AttachmentPart | ArtifactPart | VerifiedLinkPart
+) {
+  return [
+    ...(parts ?? []).filter((part) =>
+      next.type === "attachment"
+        ? part.type !== "attachment" || part.attachmentId !== next.attachmentId
+        : next.type === "artifact"
+          ? part.type !== "artifact" || part.artifactId !== next.artifactId
+          : part.type !== "verified_link" || part.linkId !== next.linkId
+    ),
+    next
+  ];
+}
+
+function mergeAnswerParts(
+  parts: MessagePart[] | undefined,
+  meta: AnswerMeta | undefined
+): MessagePart[] | undefined {
+  const published = [
+    ...(meta?.verifiedLinks ?? []),
+    ...(meta?.artifacts ?? [])
+  ];
+  if (published.length === 0) return parts;
+  return published.reduce<MessagePart[]>(
+    (current, part) => upsertMessagePart(current, part),
+    parts ?? []
+  );
 }
 
 export function problemReportDescriptionForMessage(
@@ -216,6 +302,10 @@ export function ChatWorkspace({
   const [conversationId, setConversationId] = useState<string>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
+  const [composerLinks, setComposerLinks] = useState<ComposerLink[]>([]);
+  const [composerAttachments, setComposerAttachments] = useState<
+    LocalChatAttachment[]
+  >([]);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [stage, setStage] = useState<string>();
@@ -253,31 +343,12 @@ export function ChatWorkspace({
   const endRef = useRef<HTMLDivElement>(null);
 
   const busy = Boolean(stage);
-  const assistantVersionsByTurn = useMemo(() => {
-    const groups = new Map<string, ChatMessage[]>();
-    for (const message of messages) {
-      const turnId =
-        message.role === "assistant" ? message.meta?.turnId : undefined;
-      if (!turnId || message.meta?.answerVersion === undefined) continue;
-      groups.set(turnId, [...(groups.get(turnId) ?? []), message]);
-    }
-    return groups;
-  }, [messages]);
-  const visibleMessages = useMemo(
-    () =>
-      messages.filter((message) => {
-        const turnId =
-          message.role === "assistant" ? message.meta?.turnId : undefined;
-        if (!turnId || message.meta?.answerVersion === undefined) return true;
-        const versions = assistantVersionsByTurn.get(turnId) ?? [];
-        if (versions.length < 2) return true;
-        const selected =
-          selectedVersionByTurn[turnId] ??
-          Math.max(...versions.map((item) => item.meta?.answerVersion ?? 0));
-        return message.meta.answerVersion === selected;
-      }),
-    [assistantVersionsByTurn, messages, selectedVersionByTurn]
+  const reconciliation = useMemo(
+    () => reconcileChatMessages(messages, selectedVersionByTurn),
+    [messages, selectedVersionByTurn]
   );
+  const visibleMessages = reconciliation.visibleMessages;
+  const reconciledTurns = reconciliation.turns;
 
   const loadConversationPage = useCallback(
     async ({
@@ -375,12 +446,30 @@ export function ChatWorkspace({
       requested?: {
         mode?: "auto" | "deep";
         webMode?: "auto" | "always";
+      },
+      composition?: {
+        links: ComposerLink[];
+        attachments: LocalChatAttachment[];
       }
     ) => {
       const question = rawQuestion.trim();
-      if (!question || busy) return;
-      if (Array.from(question).length < 2) {
+      const links = composition?.links ?? [];
+      const attachments = composition?.attachments ?? [];
+      const parts = composerInputParts(question, links, attachments);
+      if (parts.length === 0 || busy) return;
+      if (question && Array.from(question).length < 2) {
         setError("请至少输入 2 个字符，以便 OpenVac 理解你的问题。");
+        return;
+      }
+      if (
+        attachments.some(
+          (attachment) =>
+            attachment.status !== "ready" &&
+            attachment.status !== "cancelled" &&
+            attachment.status !== "deleted"
+        )
+      ) {
+        setError("所有附件就绪后才能发送。");
         return;
       }
       pendingQuestionHandledRef.current = true;
@@ -391,6 +480,8 @@ export function ChatWorkspace({
       const localUserId = makeLocalId("user");
       const localAssistantId = makeLocalId("assistant");
       setInput("");
+      setComposerLinks([]);
+      setComposerAttachments([]);
       setError(undefined);
       setResetAt(undefined);
       setStage("正在准备证据检索…");
@@ -401,7 +492,9 @@ export function ChatWorkspace({
         {
           id: localUserId,
           role: "user",
-          content: question,
+          content: inputPartsPlaintext(question, links, attachments),
+          parts: optimisticMessageParts(question, attachments),
+          inputParts: parts,
           status: "completed"
         },
         {
@@ -429,9 +522,9 @@ export function ChatWorkspace({
             Accept: "text/event-stream"
           },
           body: JSON.stringify({
-            protocolVersion: 2,
+            protocolVersion: 3,
             conversationId,
-            message: question,
+            parts,
             clientRequestId,
             mode: requestedMode,
             webMode: requestedWebMode
@@ -440,6 +533,11 @@ export function ChatWorkspace({
         });
 
         if (response.status === 401) {
+          if (!question) {
+            throw new Error(
+              "登录状态已失效。附件和链接不会暂存在浏览器中，请重新登录后再添加。"
+            );
+          }
           if (
             !savePendingQuestionIntent({
               text: question,
@@ -470,6 +568,7 @@ export function ChatWorkspace({
         let completedConversationId = conversationId;
         let completionSeen = false;
         let finalStatus: ChatMessage["status"] = "completed";
+        let finalAnswerV3: AnswerV3 | undefined;
 
         for await (const event of parseChatEventStream(response)) {
           if (event.type === "run.accepted") {
@@ -574,13 +673,70 @@ export function ChatWorkspace({
           }
           if (event.type === "answer.block.committed") {
             setMessages((current) =>
+              current.map((message) => {
+                if (message.id !== localAssistantId) return message;
+                const blocks = [...(message.meta?.answerBlocks ?? [])];
+                blocks[event.index] = event.block;
+                return {
+                  ...message,
+                  meta: {
+                    ...(message.meta ?? {
+                      riskLevel: "low" as const,
+                      missingInputs: [],
+                      webSearched: false,
+                      citations: []
+                    }),
+                    answerBlocks: blocks.filter(Boolean)
+                  }
+                };
+              })
+            );
+          }
+          if (event.type === "attachment.updated") {
+            setMessages((current) =>
+              current.map((message) =>
+                message.inputParts?.some(
+                  (part) =>
+                    part.type === "attachment" &&
+                    part.attachmentId === event.attachment.attachmentId
+                )
+                  ? {
+                      ...message,
+                      parts: upsertMessagePart(message.parts, event.attachment)
+                    }
+                  : message
+              )
+            );
+          }
+          if (event.type === "artifact.updated") {
+            setMessages((current) =>
               current.map((message) =>
                 message.id === localAssistantId
                   ? {
                       ...message,
-                      content: [message.content, renderAnswerBlock(event.block)]
-                        .filter(Boolean)
-                        .join("\n\n")
+                      parts: upsertMessagePart(message.parts, event.artifact)
+                    }
+                  : message
+              )
+            );
+          }
+          if (event.type === "answer.completed") {
+            finalAnswerV3 = event.answer;
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === localAssistantId
+                  ? {
+                      ...message,
+                      meta: {
+                        ...(message.meta ?? {
+                          riskLevel: "low" as const,
+                          missingInputs: [],
+                          webSearched: false,
+                          citations: []
+                        }),
+                        answerV3: event.answer,
+                        answerBlocks: event.answer.blocks
+                      }
                     }
                   : message
               )
@@ -615,7 +771,14 @@ export function ChatWorkspace({
           if (event.type === "run.completed") {
             completionSeen = true;
             finalMessageId = event.messageId;
-            finalMeta = event.meta;
+            finalMeta = isAnswerV3(event.answer)
+              ? {
+                  ...event.meta,
+                  answerV3: event.answer,
+                  answerBlocks: event.answer.blocks
+                }
+              : { ...event.meta, answer: event.answer };
+            if (isAnswerV3(event.answer)) finalAnswerV3 = event.answer;
             completedConversationId = event.conversationId;
             finalStatus = event.meta.incomplete ? "incomplete" : "completed";
             setTimeline((current) =>
@@ -708,10 +871,13 @@ export function ChatWorkspace({
                   id: finalMessageId,
                   status: finalStatus,
                   content: finalMeta?.answerV3
-                    ? renderAnswerForClipboard(finalMeta.answerV3)
-                    : !message.content && finalMeta?.answer
-                      ? renderAnswerForClipboard(finalMeta.answer)
-                      : message.content,
+                    ? answerBlocksToPlainText(finalMeta.answerV3.blocks)
+                    : finalAnswerV3
+                      ? answerBlocksToPlainText(finalAnswerV3.blocks)
+                      : finalMeta?.answer && !message.content
+                        ? renderAnswerForClipboard(finalMeta.answer)
+                        : message.content,
+                  parts: mergeAnswerParts(message.parts, finalMeta),
                   meta: finalMeta ?? message.meta
                 }
               : message
@@ -791,6 +957,8 @@ export function ChatWorkspace({
     conversationDetailAbortRef.current = controller;
     setConversationId(id);
     setMessages([]);
+    setComposerLinks([]);
+    setComposerAttachments([]);
     setTimeline([]);
     setActiveRunId(undefined);
     setSelectedVersionByTurn({});
@@ -866,6 +1034,8 @@ export function ChatWorkspace({
         conversationDetailRequestRef.current += 1;
         setConversationId(undefined);
         setMessages([]);
+        setComposerLinks([]);
+        setComposerAttachments([]);
       }
       await loadConversationPage({
         query: conversationQueryRef.current,
@@ -889,6 +1059,8 @@ export function ChatWorkspace({
     setConversationHistoryLoading(false);
     setConversationId(undefined);
     setMessages([]);
+    setComposerLinks([]);
+    setComposerAttachments([]);
     setTimeline([]);
     setActiveRunId(undefined);
     setSelectedVersionByTurn({});
@@ -1064,14 +1236,66 @@ export function ChatWorkspace({
         }
         if (event.type === "answer.block.committed") {
           setMessages((current) =>
+            current.map((message) => {
+              if (
+                message.id !== localAssistantId &&
+                message.meta?.runId !== event.runId
+              ) {
+                return message;
+              }
+              const blocks = [...(message.meta?.answerBlocks ?? [])];
+              blocks[event.index] = event.block;
+              return {
+                ...message,
+                meta: {
+                  ...message.meta!,
+                  answerBlocks: blocks.filter(Boolean)
+                }
+              };
+            })
+          );
+        }
+        if (event.type === "attachment.updated") {
+          setMessages((current) =>
+            current.map((message) =>
+              message.inputParts?.some(
+                (part) =>
+                  part.type === "attachment" &&
+                  part.attachmentId === event.attachment.attachmentId
+              )
+                ? {
+                    ...message,
+                    parts: upsertMessagePart(message.parts, event.attachment)
+                  }
+                : message
+            )
+          );
+        }
+        if (event.type === "artifact.updated") {
+          setMessages((current) =>
             current.map((message) =>
               message.id === localAssistantId ||
               message.meta?.runId === event.runId
                 ? {
                     ...message,
-                    content: [message.content, renderAnswerBlock(event.block)]
-                      .filter(Boolean)
-                      .join("\n\n")
+                    parts: upsertMessagePart(message.parts, event.artifact)
+                  }
+                : message
+            )
+          );
+        }
+        if (event.type === "answer.completed") {
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === localAssistantId ||
+              message.meta?.runId === event.runId
+                ? {
+                    ...message,
+                    meta: {
+                      ...message.meta!,
+                      answerV3: event.answer,
+                      answerBlocks: event.answer.blocks
+                    }
                   }
                 : message
             )
@@ -1109,8 +1333,17 @@ export function ChatWorkspace({
                     ...message,
                     id: event.messageId,
                     status: event.meta.incomplete ? "incomplete" : "completed",
-                    content: renderAnswerForClipboard(event.answer),
-                    meta: event.meta
+                    content: isAnswerV3(event.answer)
+                      ? answerBlocksToPlainText(event.answer.blocks)
+                      : renderAnswerForClipboard(event.answer),
+                    parts: mergeAnswerParts(message.parts, event.meta),
+                    meta: isAnswerV3(event.answer)
+                      ? {
+                          ...event.meta,
+                          answerV3: event.answer,
+                          answerBlocks: event.answer.blocks
+                        }
+                      : { ...event.meta, answer: event.answer }
                   }
                 : message
             )
@@ -1166,6 +1399,8 @@ export function ChatWorkspace({
           conversationDetailRequestRef.current += 1;
           setConversationId(undefined);
           setMessages([]);
+          setComposerLinks([]);
+          setComposerAttachments([]);
           setSelectedVersionByTurn({});
           setError(undefined);
           setConversationQuery("");
@@ -1229,9 +1464,18 @@ export function ChatWorkspace({
                       key={message.id}
                       className="mx-auto mb-8 flex max-w-[830px] flex-col items-end"
                     >
-                      <p className="max-w-[88%] rounded-2xl bg-[var(--surface-strong)] px-5 py-3 text-sm leading-7 sm:max-w-[74%] sm:text-base">
-                        {message.content}
-                      </p>
+                      <div className="max-w-[88%] rounded-2xl bg-[var(--surface-strong)] px-5 py-3 text-sm leading-7 sm:max-w-[74%] sm:text-base">
+                        {userMessageText(message) ? (
+                          <p className="whitespace-pre-wrap">
+                            {userMessageText(message)}
+                          </p>
+                        ) : null}
+                        <MessagePartCards
+                          parts={message.parts}
+                          inputParts={message.inputParts}
+                          compact
+                        />
+                      </div>
                       <button
                         type="button"
                         disabled={!UUID_PATTERN.test(message.id)}
@@ -1351,16 +1595,14 @@ export function ChatWorkspace({
                       }
                       versionOptions={
                         message.meta?.turnId
-                          ? (
-                              assistantVersionsByTurn.get(
-                                message.meta.turnId
-                              ) ?? []
-                            )
-                              .map((item) => item.meta?.answerVersion)
-                              .filter(
-                                (value): value is number => value !== undefined
-                              )
-                              .sort((left, right) => left - right)
+                          ? reconciledTurns.get(message.meta.turnId)
+                              ?.selectableVersions
+                          : []
+                      }
+                      historicalVersions={
+                        message.meta?.turnId
+                          ? reconciledTurns.get(message.meta.turnId)
+                              ?.historicalVersions
                           : []
                       }
                       onVersionChange={(version) => {
@@ -1441,98 +1683,29 @@ export function ChatWorkspace({
                   </button>
                 </div>
               )}
-              <form
-                aria-busy={busy}
-                onSubmit={(event: FormEvent) => {
-                  event.preventDefault();
-                  void send(input);
-                }}
-                className="flex min-h-[76px] items-end gap-3 rounded-[14px] border border-[var(--border-strong)] bg-white p-3 pl-5 shadow-[0_4px_20px_rgba(17,19,21,0.04)] transition-[border-color,box-shadow] focus-within:border-[var(--ink)] focus-within:shadow-[0_0_0_3px_rgba(17,19,21,0.08)]"
-              >
-                <label htmlFor="chat-input" className="visually-hidden">
-                  继续提问
-                </label>
-                <div className="min-w-0 flex-1">
-                  <textarea
-                    id="chat-input"
-                    value={input}
-                    onChange={(event) => setInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (
-                        event.key === "Enter" &&
-                        !event.shiftKey &&
-                        !event.nativeEvent.isComposing
-                      ) {
-                        event.preventDefault();
-                        void send(input);
-                      }
-                    }}
-                    rows={2}
-                    maxLength={4000}
-                    placeholder="继续描述工况、型号或故障现象……"
-                    className="composer-textarea max-h-40 min-h-11 w-full resize-none border-0 bg-transparent py-2 text-sm leading-6 outline-none sm:text-base"
-                  />
-                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                    <button
-                      type="button"
-                      aria-pressed={mode === "deep"}
-                      title="关闭时自动选择思考强度；开启后下一轮强制深度思考"
-                      onClick={() =>
-                        setMode((value) => (value === "deep" ? "auto" : "deep"))
-                      }
-                      className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)] ${
-                        mode === "deep"
-                          ? "bg-[var(--ink)] text-white"
-                          : "bg-[var(--surface)] text-[var(--muted)] hover:text-[var(--ink)]"
-                      }`}
-                    >
-                      <BrainCircuit aria-hidden className="h-3.5 w-3.5" />
-                      深度思考
-                    </button>
-                    <button
-                      type="button"
-                      aria-pressed={webMode === "always"}
-                      title="关闭时按问题自动联网；开启后下一轮强制联网"
-                      onClick={() =>
-                        setWebMode((value) =>
-                          value === "always" ? "auto" : "always"
-                        )
-                      }
-                      className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ink)] ${
-                        webMode === "always"
-                          ? "bg-[var(--ink)] text-white"
-                          : "bg-[var(--surface)] text-[var(--muted)] hover:text-[var(--ink)]"
-                      }`}
-                    >
-                      <Globe2 aria-hidden className="h-3.5 w-3.5" />
-                      联网
-                    </button>
-                    <span className="text-[10px] text-[var(--muted)]">
-                      {mode === "deep" ? "深度" : "自动思考"} ·{" "}
-                      {webMode === "always" ? "强制联网" : "自动联网"}
-                    </span>
-                  </div>
-                </div>
-                {busy ? (
-                  <button
-                    type="button"
-                    onClick={() => void cancelActiveRun()}
-                    className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-[var(--ink)] text-white"
-                    aria-label="取消回答"
-                  >
-                    <CircleStop className="h-5 w-5" />
-                  </button>
-                ) : (
-                  <button
-                    type="submit"
-                    disabled={Array.from(input.trim()).length < 2}
-                    className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-[var(--ink)] text-white transition-colors hover:bg-[#292b2d] disabled:opacity-30"
-                    aria-label="发送"
-                  >
-                    <Send className="h-4 w-4" />
-                  </button>
-                )}
-              </form>
+              <ChatComposer
+                key={conversationId ?? "new-conversation"}
+                input={input}
+                onInputChange={setInput}
+                links={composerLinks}
+                onLinksChange={setComposerLinks}
+                attachments={composerAttachments}
+                onAttachmentsChange={setComposerAttachments}
+                conversationId={conversationId}
+                busy={busy}
+                mode={mode}
+                webMode={webMode}
+                onModeChange={setMode}
+                onWebModeChange={setWebMode}
+                onSubmit={() =>
+                  void send(input, undefined, {
+                    links: composerLinks,
+                    attachments: composerAttachments
+                  })
+                }
+                onCancelRun={() => void cancelActiveRun()}
+                onError={setError}
+              />
               <p className="mt-2 text-center text-[11px] leading-5 text-[var(--muted)]">
                 AI 生成 · 专业建议仅供排查参考，涉及拆机请由合格人员操作。
               </p>

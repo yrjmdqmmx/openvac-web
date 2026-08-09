@@ -14,6 +14,8 @@ import {
   type OrchestratorEvent
 } from "@/server/agent";
 import { auth } from "@/server/auth";
+import { ApiError } from "@/server/api/errors";
+import { chatAttachmentService } from "@/server/chat-attachments";
 import { inputMessagePartsSchema } from "@/server/chat-v3/contracts";
 import { isEffectiveBan } from "@/server/auth/ban-policy";
 import { db } from "@/server/db";
@@ -169,6 +171,44 @@ export async function postAgentV3(request: Request): Promise<Response> {
       return jsonError(409, "CONVERSATION_BUSY", "这段对话已有回答正在生成。");
     }
     return jsonError(409, "REQUEST_ALREADY_USED", "这个请求标识已经使用。");
+  }
+
+  const attachmentIds = inputParts.flatMap((part) =>
+    part.type === "attachment" ? [part.attachmentId] : []
+  );
+  if (attachmentIds.length > 0) {
+    try {
+      await chatAttachmentService.bindToMessage({
+        attachmentIds,
+        conversationId: created.run.conversationId,
+        messageId: created.run.userMessageId,
+        userId: session.user.id
+      });
+    } catch (error) {
+      await Promise.allSettled([
+        releaseRunReservations(
+          reservations,
+          session.user.id,
+          "attachment_bind_failed"
+        ),
+        store.fail({
+          run: created.run,
+          status: "failed",
+          code:
+            error instanceof ApiError
+              ? error.code
+              : "ATTACHMENT_BIND_UNAVAILABLE",
+          message: "Attachment binding failed before model execution."
+        })
+      ]);
+      return error instanceof ApiError
+        ? jsonError(error.status, error.code, error.message)
+        : jsonError(
+            503,
+            "ATTACHMENT_BIND_UNAVAILABLE",
+            "附件暂时无法绑定到这条消息，请稍后重试。"
+          );
+    }
   }
 
   const modelAttempt = await commitQuota({

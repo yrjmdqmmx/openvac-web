@@ -14,6 +14,10 @@ import {
   ThumbsUp
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import {
+  AnswerBlocks,
+  answerBlocksToPlainText
+} from "@/components/chat/answer-blocks";
 import { evaluateCitationLink } from "@/lib/citation-link-policy";
 import type { AgentTimelineEntry } from "@/components/chat/chat-workspace";
 import type {
@@ -356,7 +360,8 @@ export function ExpertAnswer({
   onProblemReport,
   onRunAction,
   versionOptions = [],
-  onVersionChange
+  onVersionChange,
+  historicalVersions = []
 }: {
   message: ChatMessage;
   stage?: string;
@@ -369,6 +374,7 @@ export function ExpertAnswer({
   onRunAction?: (action: "retry" | "regenerate" | "continue") => void;
   versionOptions?: number[];
   onVersionChange?: (version: number) => void;
+  historicalVersions?: ChatMessage[];
 }) {
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<string>();
@@ -377,6 +383,8 @@ export function ExpertAnswer({
     () => message.meta?.citations ?? [],
     [message.meta]
   );
+  const v3Blocks =
+    message.meta?.answerV3?.blocks ?? message.meta?.answerBlocks ?? [];
 
   return (
     <article className="mx-auto w-full max-w-[830px] pb-10">
@@ -389,7 +397,7 @@ export function ExpertAnswer({
               安全优先
             </span>
           )}
-          {versionOptions.length > 1 ? (
+          {message.status === "completed" && versionOptions.length > 1 ? (
             <label className="ml-auto inline-flex items-center gap-2 text-xs text-[var(--muted)]">
               <span>回答版本</span>
               <select
@@ -435,7 +443,22 @@ export function ExpertAnswer({
         <AgentTimeline entries={timeline} />
       </div>
 
-      {message.meta?.answer && message.meta.answer.conclusion.length > 0 ? (
+      {v3Blocks.length > 0 ? (
+        <AnswerBlocks
+          blocks={v3Blocks}
+          parts={message.parts}
+          onEvidenceActivate={(id) => {
+            setActiveCitation(id);
+            window.setTimeout(
+              () =>
+                document
+                  .getElementById(`source-${id}`)
+                  ?.scrollIntoView({ behavior: "smooth", block: "center" }),
+              0
+            );
+          }}
+        />
+      ) : message.meta?.answer && message.meta.answer.conclusion.length > 0 ? (
         <StructuredAnswer
           answer={message.meta.answer}
           citations={citations}
@@ -463,6 +486,47 @@ export function ExpertAnswer({
           本次回答没有可显示的完整内容。
         </p>
       )}
+
+      {historicalVersions.length > 0 ? (
+        <details className="mt-5 rounded-xl border border-[var(--border)] px-4 py-3">
+          <summary className="cursor-pointer text-sm font-medium">
+            未完成或失败的历史版本（{historicalVersions.length}）
+          </summary>
+          <ol className="mt-3 space-y-3">
+            {historicalVersions.map((historical) => {
+              const historicalBlocks =
+                historical.meta?.answerV3?.blocks ??
+                historical.meta?.answerBlocks ??
+                [];
+              return (
+                <li
+                  key={historical.id}
+                  className="rounded-lg bg-[var(--surface)] p-3 text-sm"
+                >
+                  <p className="mb-2 text-xs font-medium text-[var(--muted)]">
+                    版本 {historical.meta?.answerVersion ?? "-"} ·{" "}
+                    {historical.status === "incomplete"
+                      ? "未完成"
+                      : historical.status === "error"
+                        ? "失败"
+                        : "已中止"}
+                  </p>
+                  {historicalBlocks.length > 0 ? (
+                    <AnswerBlocks
+                      blocks={historicalBlocks}
+                      parts={historical.parts}
+                    />
+                  ) : historical.content ? (
+                    <AnswerText content={historical.content} />
+                  ) : (
+                    <p className="text-[var(--muted)]">没有可恢复的内容。</p>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+        </details>
+      ) : null}
 
       <CalculationCards calculations={message.meta?.calculations ?? []} />
 
@@ -496,7 +560,11 @@ export function ExpertAnswer({
           <button
             type="button"
             onClick={async () => {
-              await navigator.clipboard.writeText(message.content);
+              await navigator.clipboard.writeText(
+                v3Blocks.length > 0
+                  ? answerBlocksToPlainText(v3Blocks)
+                  : message.content
+              );
               setCopied(true);
               window.setTimeout(() => setCopied(false), 1200);
             }}
