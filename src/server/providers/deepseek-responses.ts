@@ -158,6 +158,7 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
       let firstEventLatencyMs: number | undefined;
       let outputText = "";
       const emittedCalls = new Set<string>();
+      let streamedCompletedWebSearchCount = 0;
 
       for await (const rawEvent of parseSseJson(response.body)) {
         const event = asRecord(rawEvent);
@@ -232,6 +233,7 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
 
         const webStatus = webSearchStatus(eventType);
         if (webStatus) {
+          if (webStatus === "completed") streamedCompletedWebSearchCount += 1;
           yield { type: "web-search-status", status: webStatus };
           continue;
         }
@@ -243,8 +245,25 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
           }
           const continuationItems = responseOutputItems(responseRecord);
           const terminalOutputText = extractOutputText(continuationItems);
+          const webSources = extractWebSearchSources(continuationItems);
+          const terminalCompletedWebSearchCount =
+            completedWebSearchCallCount(continuationItems);
+          const additionalCompletedWebSearchCount = Math.max(
+            0,
+            terminalCompletedWebSearchCount - streamedCompletedWebSearchCount
+          );
+          for (
+            let index = 0;
+            index < additionalCompletedWebSearchCount;
+            index += 1
+          ) {
+            yield { type: "web-search-status", status: "completed" };
+          }
           const incompleteRecord = asRecord(responseRecord.incomplete_details);
           const errorRecord = asRecord(responseRecord.error ?? event.error);
+          if (terminalStatus === "completed" && webSources.length > 0) {
+            yield { type: "web-search-sources", sources: webSources };
+          }
           yield {
             type: "finish",
             status: terminalStatus,
@@ -368,6 +387,67 @@ function extractOutputText(items: ResponsesInputItem[]): string {
     }
   }
   return parts.join("");
+}
+
+function extractWebSearchSources(
+  items: ResponsesInputItem[]
+): Array<{ url: string; title: string }> {
+  const sources: Array<{ url: string; title: string }> = [];
+  const seen = new Set<string>();
+  const addSources = (values: unknown[]): boolean => {
+    for (const candidate of values) {
+      const source = asRecord(candidate);
+      const url = pickString(source, ["url"]);
+      if (!url || url.length > 2_048 || seen.has(url)) continue;
+      let parsed: URL;
+      try {
+        parsed = new URL(url);
+      } catch {
+        continue;
+      }
+      if (parsed.protocol !== "https:") continue;
+      const title = pickString(source, ["title"])?.trim();
+      sources.push({
+        url,
+        title: title && title.length <= 300 ? title : parsed.hostname
+      });
+      seen.add(url);
+      if (sources.length === 16) return true;
+    }
+    return false;
+  };
+  for (const item of items) {
+    if (item.type === "web_search_call") {
+      if (pickString(item, ["status"]) !== "completed") continue;
+      const action = asRecord(item.action);
+      const actionSources = Array.isArray(action.sources) ? action.sources : [];
+      const itemSources = Array.isArray(item.sources) ? item.sources : [];
+      if (addSources([...actionSources, ...itemSources])) return sources;
+      continue;
+    }
+    if (item.type !== "message" || !Array.isArray(item.content)) continue;
+    for (const value of item.content) {
+      const content = asRecord(value);
+      if (!Array.isArray(content.annotations)) continue;
+      if (
+        addSources(
+          content.annotations.filter(
+            (candidate) =>
+              pickString(asRecord(candidate), ["type"]) === "url_citation"
+          )
+        )
+      )
+        return sources;
+    }
+  }
+  return sources;
+}
+
+function completedWebSearchCallCount(items: ResponsesInputItem[]): number {
+  return items.filter((item) => {
+    if (item.type !== "web_search_call") return false;
+    return pickString(item, ["status"]) === "completed";
+  }).length;
 }
 
 function parseResponsesUsage(value: unknown): ResponsesUsage | undefined {

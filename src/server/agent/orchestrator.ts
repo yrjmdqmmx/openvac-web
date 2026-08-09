@@ -460,7 +460,9 @@ export class AgentRunOrchestrator {
       citationIds: result.evidenceIds,
       status: nativeSearchCompleted ? "completed" : "failed",
       latencyMs: Date.now() - startedAt,
-      errorCode: nativeSearchCompleted ? undefined : "NATIVE_WEB_SEARCH_FAILED"
+      errorCode: nativeSearchCompleted
+        ? undefined
+        : (result.failureCode ?? "NATIVE_WEB_DISCOVERY_FAILED")
     });
     for (const link of result.verifiedLinks) {
       for (const evidenceId of link.evidenceIds ?? []) {

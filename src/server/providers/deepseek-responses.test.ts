@@ -185,6 +185,175 @@ describe("DeepSeekResponsesProvider", () => {
     }
   );
 
+  it("extracts bounded HTTPS sources from search items and URL citations", async () => {
+    const body = streamFromStrings([
+      event("response.created", 0, { response: { id: "resp-web" } }),
+      event("response.completed", 1, {
+        response: {
+          id: "resp-web",
+          output: [
+            {
+              type: "web_search_call",
+              status: "completed",
+              action: {
+                type: "search",
+                sources: [
+                  {
+                    url: "https://www.pfeiffer-vacuum.com/manual",
+                    title: "Pfeiffer manual"
+                  }
+                ]
+              }
+            },
+            {
+              type: "message",
+              role: "assistant",
+              content: [
+                {
+                  type: "output_text",
+                  text: "",
+                  annotations: [
+                    {
+                      type: "url_citation",
+                      url: "https://www.leybold.com/manual",
+                      title: "Leybold manual"
+                    },
+                    {
+                      type: "url_citation",
+                      url: "http://unsafe.example/manual",
+                      title: "Unsafe"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      })
+    ]);
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => new Response(body))
+    });
+
+    const events = await collect(
+      provider.stream({
+        input: "Find a manual",
+        tools: [{ type: "web_search" }],
+        toolChoice: { type: "web_search" },
+        user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+      })
+    );
+
+    expect(events).toContainEqual({
+      type: "web-search-status",
+      status: "completed"
+    });
+    expect(events).toContainEqual({
+      type: "web-search-sources",
+      sources: [
+        {
+          url: "https://www.pfeiffer-vacuum.com/manual",
+          title: "Pfeiffer manual"
+        },
+        {
+          url: "https://www.leybold.com/manual",
+          title: "Leybold manual"
+        }
+      ]
+    });
+  });
+
+  it.each(["failed", undefined] as const)(
+    "does not infer search completion from a terminal item with status %s",
+    async (status) => {
+      const body = streamFromStrings([
+        event("response.created", 0, { response: { id: "resp-web-failed" } }),
+        event("response.completed", 1, {
+          response: {
+            id: "resp-web-failed",
+            output: [
+              {
+                type: "web_search_call",
+                ...(status ? { status } : {}),
+                action: {
+                  sources: [
+                    {
+                      url: "https://www.leybold.com/manual",
+                      title: "Leybold manual"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        })
+      ]);
+      const provider = new DeepSeekResponsesProvider({
+        apiKey: "test-key",
+        fetch: vi.fn(async () => new Response(body))
+      });
+
+      const events = await collect(
+        provider.stream({
+          input: "Find a manual",
+          tools: [{ type: "web_search" }],
+          toolChoice: { type: "web_search" },
+          user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+        })
+      );
+
+      expect(events).not.toContainEqual({
+        type: "web-search-status",
+        status: "completed"
+      });
+      expect(events).not.toContainEqual(
+        expect.objectContaining({ type: "web-search-sources" })
+      );
+    }
+  );
+
+  it.each([2, 9])(
+    "normalizes streamed and terminal completion proofs to %i calls",
+    async (terminalCount) => {
+      const body = streamFromStrings([
+        event("response.created", 0, { response: { id: "resp-web-count" } }),
+        event("response.web_search_call.completed", 1),
+        event("response.completed", 2, {
+          response: {
+            id: "resp-web-count",
+            output: Array.from({ length: terminalCount }, (_, index) => ({
+              type: "web_search_call",
+              id: `search-${index + 1}`,
+              status: "completed",
+              action: { sources: [] }
+            }))
+          }
+        })
+      ]);
+      const provider = new DeepSeekResponsesProvider({
+        apiKey: "test-key",
+        fetch: vi.fn(async () => new Response(body))
+      });
+
+      const events = await collect(
+        provider.stream({
+          input: "Find manuals",
+          tools: [{ type: "web_search" }],
+          toolChoice: { type: "web_search" },
+          user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+        })
+      );
+
+      expect(
+        events.filter(
+          (item) =>
+            item.type === "web-search-status" && item.status === "completed"
+        )
+      ).toHaveLength(terminalCount);
+    }
+  );
+
   it("drops duplicate events and rejects a backwards sequence", async () => {
     const provider = new DeepSeekResponsesProvider({
       apiKey: "test-key",

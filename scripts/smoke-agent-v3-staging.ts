@@ -563,7 +563,18 @@ async function captureCase(
   markSmokeDiagnostic("artifact_validation", { caseId: testCase.id });
   const artifactSpec = await validateRuntimeArtifacts(input, result, testCase);
   markSmokeDiagnostic("tool_validation", { caseId: testCase.id });
-  assertRequiredToolEvidence(testCase, database.toolAudit);
+  const missingTool = missingRequiredToolEvidence(testCase, database.toolAudit);
+  if (missingTool) {
+    markSmokeDiagnostic("tool_validation", {
+      caseId: testCase.id,
+      code:
+        diagnosticToken(database.toolFailureCodes.get(missingTool)) ??
+        "REQUIRED_TOOL_NOT_COMPLETED"
+    });
+    throw new Error(
+      `Runtime case ${testCase.id} did not complete ${missingTool}.`
+    );
+  }
   const authorizationAudit = authorizationAudits(
     testCase,
     result.runId,
@@ -654,7 +665,8 @@ async function loadRunEvidence(userId: string, runId: string) {
       name: agentToolCalls.toolName,
       status: agentToolCalls.status,
       citationIds: agentToolCalls.citationIds,
-      resultDigest: agentToolCalls.resultDigest
+      resultDigest: agentToolCalls.resultDigest,
+      errorCode: agentToolCalls.errorCode
     })
     .from(agentToolCalls)
     .where(eq(agentToolCalls.runId, runId))
@@ -675,13 +687,18 @@ async function loadRunEvidence(userId: string, runId: string) {
       source: "postgres_agent_tool_call" as const
     };
   });
-  return { model: run.model, toolAudit };
+  const toolFailureCodes = new Map(
+    calls.flatMap((call) =>
+      call.errorCode ? [[call.name, call.errorCode] as const] : []
+    )
+  );
+  return { model: run.model, toolAudit, toolFailureCodes };
 }
 
-function assertRequiredToolEvidence(
+function missingRequiredToolEvidence(
   testCase: AnswerV3EvalCase,
   toolAudit: Array<{ name: string; status: "completed" | "failed" }>
-): void {
+): string | undefined {
   const completed = new Set(
     toolAudit
       .filter((audit) => audit.status === "completed")
@@ -702,10 +719,9 @@ function assertRequiredToolEvidence(
                 )
                 .map((audit) => audit.name);
   for (const name of required) {
-    if (!completed.has(name)) {
-      throw new Error(`Runtime case ${testCase.id} did not complete ${name}.`);
-    }
+    if (!completed.has(name)) return name;
   }
+  return undefined;
 }
 
 async function runChat(

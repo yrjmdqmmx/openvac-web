@@ -35,28 +35,6 @@ const discoverySchema = z.object({
     .max(8)
 });
 
-const DISCOVERY_JSON_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["candidates"],
-  properties: {
-    candidates: {
-      type: "array",
-      maxItems: 8,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["url", "title", "summary"],
-        properties: {
-          url: { type: "string", maxLength: 2_000 },
-          title: { type: "string", maxLength: 300 },
-          summary: { type: "string", maxLength: 1_000 }
-        }
-      }
-    }
-  }
-};
-
 export type WebDomainPolicy = {
   domain: string;
   trustTier: SourceTrustTier;
@@ -83,6 +61,10 @@ export type WebEvidenceResult = {
   searched: boolean;
   provider: "deepseek-native" | "none";
   invocations: WebProviderInvocation[];
+  failureCode?:
+    | "NATIVE_WEB_DISCOVERY_FAILED"
+    | "NATIVE_WEB_SEARCH_COUNT_INVALID"
+    | "NATIVE_WEB_CANDIDATE_PARSE_FAILED";
 };
 
 export class WebEvidenceService {
@@ -136,11 +118,13 @@ export class WebEvidenceService {
       }
       committed = true;
 
+      let nativeFailureCode: WebEvidenceResult["failureCode"];
       const native = await this.discoverNative({ ...input, policies }).catch(
         (error: unknown) => {
           if (input.signal?.aborted) {
             throw input.signal.reason ?? error;
           }
+          nativeFailureCode = nativeWebFailureCode(error);
           return undefined;
         }
       );
@@ -151,7 +135,8 @@ export class WebEvidenceService {
         verifiedLinks: [],
         searched: false,
         provider: "none",
-        invocations: []
+        invocations: [],
+        ...(nativeFailureCode ? { failureCode: nativeFailureCode } : {})
       };
     } finally {
       if (leaseId && !committed) {
@@ -178,10 +163,12 @@ export class WebEvidenceService {
     let outputText = "";
     let invocation: WebProviderInvocation | undefined;
     let completedSearchCalls = 0;
+    const annotatedSources: Array<{ url: string; title: string }> = [];
     for await (const event of this.streamResponses({
       instructions: [
         "Use web search only to discover candidate sources for the user's question.",
         "Return only URL, title, and a short neutral summary. Do not answer the question.",
+        'If you emit text, use one JSON object shaped as {"candidates":[{"url":"https://...","title":"...","summary":"..."}]}.',
         "Prefer governments, regulators, standards bodies, original manufacturers, and authoritative research institutions.",
         `Only return HTTPS candidate URLs hosted on these approved authority domains: ${allowedDomains.join(", ")}.`
       ].join("\n"),
@@ -189,12 +176,6 @@ export class WebEvidenceService {
       tools: [{ type: "web_search" }],
       toolChoice: { type: "web_search" },
       reasoningEffort: "minimal",
-      textFormat: {
-        type: "json_schema",
-        name: "openvac_web_candidates",
-        schema: DISCOVERY_JSON_SCHEMA,
-        strict: true
-      },
       maxOutputTokens: 2_048,
       user: input.userPartition,
       signal: input.signal
@@ -202,6 +183,9 @@ export class WebEvidenceService {
       if (event.type === "text-delta") outputText += event.text;
       if (event.type === "web-search-status" && event.status === "completed") {
         completedSearchCalls += 1;
+      }
+      if (event.type === "web-search-sources") {
+        annotatedSources.push(...event.sources);
       }
       if (event.type === "finish") {
         outputText = event.outputText || outputText;
@@ -218,10 +202,23 @@ export class WebEvidenceService {
     if (!invocation || invocation.status !== "completed") {
       throw new Error("NATIVE_WEB_DISCOVERY_FAILED");
     }
-    if (completedSearchCalls !== 1) {
+    if (completedSearchCalls < 1 || completedSearchCalls > 8) {
       throw new Error("NATIVE_WEB_SEARCH_COUNT_INVALID");
     }
-    const candidates = discoverySchema.parse(parseJson(outputText)).candidates;
+    let generatedCandidates: z.infer<typeof discoverySchema>["candidates"] = [];
+    if (outputText.trim()) {
+      try {
+        generatedCandidates = discoverySchema.parse(
+          parseJson(outputText)
+        ).candidates;
+      } catch (error) {
+        if (annotatedSources.length === 0) throw error;
+      }
+    }
+    const candidates = dedupeCandidates([
+      ...generatedCandidates,
+      ...annotatedSources.map((source) => ({ ...source, summary: "" }))
+    ]).slice(0, 8);
     const accepted = candidates.flatMap((candidate) => {
       const policy = policyForUrl(candidate.url, input.policies);
       return policy ? [{ ...candidate, policy }] : [];
@@ -323,6 +320,32 @@ export class WebEvidenceService {
     }
     return { evidenceIds: ids, verifiedLinks };
   }
+}
+
+function nativeWebFailureCode(
+  error: unknown
+): NonNullable<WebEvidenceResult["failureCode"]> {
+  if (
+    error instanceof Error &&
+    error.message === "NATIVE_WEB_SEARCH_COUNT_INVALID"
+  ) {
+    return "NATIVE_WEB_SEARCH_COUNT_INVALID";
+  }
+  if (error instanceof z.ZodError || error instanceof SyntaxError) {
+    return "NATIVE_WEB_CANDIDATE_PARSE_FAILED";
+  }
+  return "NATIVE_WEB_DISCOVERY_FAILED";
+}
+
+function dedupeCandidates(
+  candidates: Array<{ url: string; title: string; summary: string }>
+) {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    if (seen.has(candidate.url)) return false;
+    seen.add(candidate.url);
+    return true;
+  });
 }
 
 async function loadDomainPolicies(): Promise<WebDomainPolicy[]> {
