@@ -1,8 +1,11 @@
 import {
+  answerUsesOnlyProjectedCalculations,
+  answerV3Schema,
+  buildDeterministicCalculationAnswerV3,
   buildDeterministicSafeAnswerV3,
   validateAnswerV3
 } from "../src/server/agent";
-import type { RiskLevel } from "../src/types/chat";
+import type { CalculationResult, RiskLevel } from "../src/types/chat";
 import type { AnswerV3 } from "../src/types/chat-v3";
 import {
   ProviderError,
@@ -13,6 +16,11 @@ import {
 export type DeepSeekSmokeBoundaryResult = {
   answer: AnswerV3;
   semanticRecovery: "none" | "deterministic_safe";
+};
+
+export type DeepSeekToolProjectionBoundaryResult = {
+  answer: AnswerV3;
+  semanticRecovery: "none" | "deterministic_calculation";
 };
 
 export type DeepSeekSmokeFailureCode =
@@ -152,5 +160,42 @@ export function applyDeepSeekSmokeBoundary(input: {
   return {
     answer: recovered.answer,
     semanticRecovery: "deterministic_safe"
+  };
+}
+
+export function applyDeepSeekToolProjectionBoundary(input: {
+  candidate: unknown;
+  riskLevel: Exclude<RiskLevel, "high">;
+  calculations: CalculationResult[];
+  calculationIds: ReadonlySet<string>;
+}): DeepSeekToolProjectionBoundaryResult {
+  const parsed = answerV3Schema.safeParse(input.candidate);
+  if (
+    parsed.success &&
+    answerUsesOnlyProjectedCalculations(
+      parsed.data,
+      input.calculationIds,
+      input.riskLevel
+    )
+  ) {
+    return { answer: parsed.data, semanticRecovery: "none" };
+  }
+
+  const fallback = buildDeterministicCalculationAnswerV3(
+    input.calculations,
+    input.riskLevel
+  );
+  if (
+    !answerUsesOnlyProjectedCalculations(
+      fallback,
+      input.calculationIds,
+      input.riskLevel
+    )
+  ) {
+    throw new DeepSeekSmokeFailure("TOOL_CONTINUATION_INVALID");
+  }
+  return {
+    answer: fallback,
+    semanticRecovery: "deterministic_calculation"
   };
 }

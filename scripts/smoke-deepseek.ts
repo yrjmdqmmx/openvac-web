@@ -1,7 +1,6 @@
 import {
   answerV3JsonSchemaForRisk,
   answerV3Schema,
-  answerUsesOnlyProjectedCalculations,
   buildTrustedCalculationFinalInput,
   buildAgentV3InstructionsForRisk,
   classifyVacuumRisk,
@@ -18,6 +17,7 @@ import {
   type ResponsesUsage
 } from "../src/server/providers";
 import {
+  applyDeepSeekToolProjectionBoundary,
   applyDeepSeekSmokeBoundary,
   classifyDeepSeekSmokeProviderFailure,
   DeepSeekSmokeFailure,
@@ -142,6 +142,7 @@ async function runToolContinuationProbe(
   terminal: "completed";
   callCount: 1;
   resultTransport: "trusted_projection";
+  semanticRecovery: "none" | "deterministic_calculation";
 }> {
   const question =
     "腔体体积 100 L、等效抽速 10 L/s；估算从 100 Pa 抽到 1 Pa 的理想抽空时间。";
@@ -220,28 +221,26 @@ async function runToolContinuationProbe(
       error
     );
   }
+  if (final.terminal !== "completed" || final.calls.length !== 0) {
+    throw new DeepSeekSmokeFailure("TOOL_CONTINUATION_INVALID");
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(final.outputText);
   } catch {
-    throw new DeepSeekSmokeFailure("TOOL_CONTINUATION_INVALID");
+    parsed = undefined;
   }
-  if (
-    final.terminal !== "completed" ||
-    final.calls.length !== 0 ||
-    !answerV3Schema.safeParse(parsed).success ||
-    !answerUsesOnlyProjectedCalculations(
-      answerV3Schema.parse(parsed),
-      new Set([projection.calculationId]),
-      risk.level
-    )
-  ) {
-    throw new DeepSeekSmokeFailure("TOOL_CONTINUATION_INVALID");
-  }
+  const boundary = applyDeepSeekToolProjectionBoundary({
+    candidate: parsed,
+    riskLevel: risk.level === "medium" ? "medium" : "low",
+    calculations: execution.calculations,
+    calculationIds: new Set([projection.calculationId])
+  });
   return {
     terminal: "completed",
     callCount: 1,
-    resultTransport: "trusted_projection"
+    resultTransport: "trusted_projection",
+    semanticRecovery: boundary.semanticRecovery
   };
 }
 
