@@ -507,7 +507,9 @@ function extractWebSearchSources(
   const addSources = (values: unknown[]): boolean => {
     for (const candidate of values) {
       const source = asRecord(candidate);
-      const url = pickString(source, ["url"]);
+      const url =
+        (typeof candidate === "string" ? candidate : undefined) ??
+        pickString(source, ["url", "uri", "link", "source_url"]);
       if (!url || url.length > 2_048 || seen.has(url)) continue;
       let parsed: URL;
       try {
@@ -516,7 +518,7 @@ function extractWebSearchSources(
         continue;
       }
       if (parsed.protocol !== "https:") continue;
-      const title = pickString(source, ["title"])?.trim();
+      const title = pickString(source, ["title", "name"])?.trim();
       sources.push({
         url,
         title: title && title.length <= 300 ? title : parsed.hostname
@@ -539,7 +541,8 @@ function extractWebSearchSources(
       const action = asRecord(item.action);
       const actionSources = Array.isArray(action.sources) ? action.sources : [];
       const itemSources = Array.isArray(item.sources) ? item.sources : [];
-      if (addSources([...actionSources, ...itemSources])) return sources;
+      if (addSources([action, ...actionSources, ...itemSources]))
+        return sources;
       continue;
     }
     if (

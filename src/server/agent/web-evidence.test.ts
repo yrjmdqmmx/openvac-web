@@ -402,6 +402,207 @@ describe("DeepSeek native web evidence", () => {
     );
   });
 
+  it("recovers an approved authority domain without an explicit scheme", async () => {
+    fetchMocks.fetch.mockImplementation(async (url: string) => ({
+      url,
+      body: "Manufacturer foreline-pressure guidance. ".repeat(4),
+      fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+    }));
+
+    await expect(
+      discover(
+        [
+          {
+            ...finish,
+            outputText: "Official result: docs.example-a.com/manual."
+          }
+        ],
+        [
+          {
+            domain: "example-a.com",
+            trustTier: "tier_a",
+            licenseClass: "open"
+          }
+        ]
+      )
+    ).resolves.toMatchObject({
+      verifiedLinks: [
+        {
+          url: "https://docs.example-a.com/manual",
+          hostname: "docs.example-a.com"
+        }
+      ]
+    });
+    expect(fetchMocks.fetch).toHaveBeenCalledWith(
+      "https://docs.example-a.com/manual",
+      undefined
+    );
+  });
+
+  it("recovers a sentence-final approved root domain", async () => {
+    fetchMocks.fetch.mockImplementation(async (url: string) => ({
+      url,
+      body: "Manufacturer foreline-pressure guidance. ".repeat(4),
+      fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+    }));
+
+    await expect(
+      discover(
+        [{ ...finish, outputText: "Official source: （example-a.com）" }],
+        [
+          {
+            domain: "example-a.com",
+            trustTier: "tier_a",
+            licenseClass: "open"
+          }
+        ]
+      )
+    ).resolves.toMatchObject({
+      verifiedLinks: [{ url: "https://example-a.com/" }]
+    });
+  });
+
+  it("recovers a benign query on an approved authority token", async () => {
+    fetchMocks.fetch.mockImplementation(async (url: string) => ({
+      url,
+      body: "Manufacturer foreline-pressure guidance. ".repeat(4),
+      fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+    }));
+
+    await expect(
+      discover(
+        [
+          {
+            ...finish,
+            outputText: "Official source: docs.example-a.com/manual?lang=zh"
+          }
+        ],
+        [
+          {
+            domain: "example-a.com",
+            trustTier: "tier_a",
+            licenseClass: "open"
+          }
+        ]
+      )
+    ).resolves.toMatchObject({
+      verifiedLinks: [{ url: "https://docs.example-a.com/manual?lang=zh" }]
+    });
+  });
+
+  it("does not spend the authority budget on ordinary words", async () => {
+    fetchMocks.fetch.mockImplementation(async (url: string) => ({
+      url,
+      body: "Manufacturer foreline-pressure guidance. ".repeat(4),
+      fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+    }));
+    const ordinaryWords = Array.from(
+      { length: 80 },
+      (_, index) => `ordinary${index + 1}`
+    ).join(" ");
+
+    await expect(
+      discover(
+        [
+          {
+            ...finish,
+            outputText: `${ordinaryWords} docs.example-a.com/manual`
+          }
+        ],
+        [
+          {
+            domain: "example-a.com",
+            trustTier: "tier_a",
+            licenseClass: "open"
+          }
+        ]
+      )
+    ).resolves.toMatchObject({
+      verifiedLinks: [{ url: "https://docs.example-a.com/manual" }]
+    });
+  });
+
+  it.each([
+    "docs.example-a.com.evil.example.net/manual",
+    "http://docs.example-a.com/manual",
+    "https://evil.example/path/docs.example-a.com/manual",
+    "https://evil.example/?next=docs.example-a.com/manual",
+    "foo@docs.example-a.com",
+    "docs.example-a.com:8443/manual",
+    "docs.example-a.com@evil.example"
+  ])(
+    "does not extract an approved domain from foreign token %s",
+    async (token) => {
+      await expect(
+        discover(
+          [{ ...finish, outputText: `Untrusted: ${token}` }],
+          [
+            {
+              domain: "example-a.com",
+              trustTier: "tier_a",
+              licenseClass: "open"
+            }
+          ]
+        )
+      ).rejects.toThrow("NATIVE_WEB_CANDIDATE_UNGOVERNED");
+      expect(fetchMocks.fetch).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    [
+      "missing",
+      "No usable source was returned.",
+      "NATIVE_WEB_CANDIDATE_MISSING"
+    ],
+    [
+      "ungoverned",
+      "https://outside.example.net/manual",
+      "NATIVE_WEB_CANDIDATE_UNGOVERNED"
+    ],
+    [
+      "sensitive",
+      "https://docs.example-a.com/manual?sig=secret",
+      "NATIVE_WEB_CANDIDATE_UNGOVERNED"
+    ],
+    [
+      "scheme-less sensitive",
+      "docs.example-a.com/manual?sig=secret",
+      "NATIVE_WEB_CANDIDATE_UNGOVERNED"
+    ]
+  ])(
+    "reports a safe %s candidate failure code",
+    async (_label, outputText, code) => {
+      const service = new WebEvidenceService(
+        provider,
+        new EvidenceRegistry(),
+        async function* () {
+          yield { ...finish, outputText };
+        },
+        async () => [
+          {
+            domain: "example-a.com",
+            trustTier: "tier_a",
+            licenseClass: "open"
+          }
+        ]
+      );
+
+      await expect(
+        service.search({
+          question: "查找资料",
+          userId: "user-1",
+          userPartition: "partition-1",
+          clientRequestId: `request-${_label}`
+        })
+      ).resolves.toMatchObject({
+        searched: false,
+        provider: "none",
+        failureCode: code
+      });
+    }
+  );
+
   it("keeps provider annotations ahead of text fallback URLs", async () => {
     fetchMocks.fetch.mockImplementation(async (url: string) => ({
       url,

@@ -67,7 +67,9 @@ export type WebEvidenceResult = {
   failureCode?:
     | "NATIVE_WEB_DISCOVERY_FAILED"
     | "NATIVE_WEB_SEARCH_COUNT_INVALID"
-    | "NATIVE_WEB_CANDIDATE_PARSE_FAILED";
+    | "NATIVE_WEB_CANDIDATE_PARSE_FAILED"
+    | "NATIVE_WEB_CANDIDATE_MISSING"
+    | "NATIVE_WEB_CANDIDATE_UNGOVERNED";
 };
 
 export class WebEvidenceService {
@@ -230,11 +232,19 @@ export class WebEvidenceService {
       input.policies
     );
     if (accepted.length === 0 && candidateParseError) {
-      accepted = governCandidates(
-        extractTextUrlCandidates(outputText),
-        input.policies
-      );
-      if (accepted.length === 0) throw candidateParseError;
+      const sawRawTextCandidate = hasRawTextCandidate(outputText);
+      const textCandidates = [
+        ...extractTextUrlCandidates(outputText),
+        ...extractTextAuthorityCandidates(outputText, input.policies)
+      ];
+      accepted = governCandidates(textCandidates, input.policies);
+      if (accepted.length === 0) {
+        throw new Error(
+          annotatedSources.length > 0 || sawRawTextCandidate
+            ? "NATIVE_WEB_CANDIDATE_UNGOVERNED"
+            : "NATIVE_WEB_CANDIDATE_MISSING"
+        );
+      }
     }
     const { evidenceIds, verifiedLinks } = await this.fetchCandidates(
       accepted,
@@ -344,6 +354,13 @@ function nativeWebFailureCode(
   ) {
     return "NATIVE_WEB_SEARCH_COUNT_INVALID";
   }
+  if (
+    error instanceof Error &&
+    (error.message === "NATIVE_WEB_CANDIDATE_MISSING" ||
+      error.message === "NATIVE_WEB_CANDIDATE_UNGOVERNED")
+  ) {
+    return error.message;
+  }
   if (error instanceof z.ZodError || error instanceof SyntaxError) {
     return "NATIVE_WEB_CANDIDATE_PARSE_FAILED";
   }
@@ -416,6 +433,93 @@ function extractTextUrlCandidates(
     if (candidates.length === 32) break;
   }
   return candidates;
+}
+
+function extractTextAuthorityCandidates(
+  value: string,
+  policies: WebDomainPolicy[]
+): z.infer<typeof discoverySchema>["candidates"] {
+  const candidates: z.infer<typeof discoverySchema>["candidates"] = [];
+  const seen = new Set<string>();
+  const scanValue = value.slice(
+    0,
+    MAX_TEXT_DISCOVERY_CHARACTERS + MAX_DISCOVERY_URL_CHARACTERS + 1
+  );
+  let inspected = 0;
+  for (const match of scanValue.matchAll(/\S+/gu)) {
+    if (
+      match.index === undefined ||
+      match.index >= MAX_TEXT_DISCOVERY_CHARACTERS
+    ) {
+      break;
+    }
+    const token = normalizeAuthorityToken(match[0]);
+    if (!token) continue;
+    inspected += 1;
+    if (inspected > MAX_TEXT_URL_TOKENS) break;
+    const parsed = parseTextCandidateUrl(`https://${token}`);
+    if (
+      !parsed ||
+      !policyForUrl(parsed.href, policies) ||
+      seen.has(parsed.href)
+    ) {
+      continue;
+    }
+    seen.add(parsed.href);
+    candidates.push({
+      url: parsed.href,
+      title: parsed.hostname,
+      summary: ""
+    });
+    if (candidates.length === 32) return candidates;
+  }
+  return candidates;
+}
+
+function hasRawTextCandidate(value: string): boolean {
+  const scanValue = value
+    .slice(0, MAX_TEXT_DISCOVERY_CHARACTERS + MAX_DISCOVERY_URL_CHARACTERS + 1)
+    .toLowerCase();
+  if (/https?:\/\/\S+/u.test(scanValue)) return true;
+  for (const match of scanValue.matchAll(/\S+/gu)) {
+    const token = normalizeAuthorityToken(match[0]);
+    if (!token) continue;
+    try {
+      const hostname = new URL(`https://${token}`).hostname.toLowerCase();
+      const labels = hostname.split(".");
+      if (
+        labels.length >= 2 &&
+        labels.every((label) => /^[a-z0-9-]{1,63}$/u.test(label)) &&
+        /^[a-z]{2,63}$/u.test(labels.at(-1) ?? "")
+      ) {
+        return true;
+      }
+    } catch {
+      // A malformed token is not a raw authority candidate.
+    }
+  }
+  return false;
+}
+
+function trimAuthorityToken(value: string): string {
+  const withoutOpeningWrapper = value.replace(/^[([{<"'“‘（【《]+/gu, "");
+  return trimTrailingUrlPunctuation(withoutOpeningWrapper).replace(
+    /[>"'”’）】》]+$/gu,
+    ""
+  );
+}
+
+function normalizeAuthorityToken(value: string): string | undefined {
+  const token = trimAuthorityToken(value);
+  if (
+    !token ||
+    !token.includes(".") ||
+    token.includes("://") ||
+    token.startsWith("//")
+  ) {
+    return undefined;
+  }
+  return token;
 }
 
 function parseTextCandidateUrl(value: string): URL | undefined {
