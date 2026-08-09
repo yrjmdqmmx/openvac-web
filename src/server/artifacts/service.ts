@@ -195,7 +195,7 @@ function downloadMetadata(
     contentType: file.contentType,
     sizeBytes: file.sizeBytes,
     checksumSha256: file.checksumSha256,
-    downloadPath: `/api/artifacts/${encodeURIComponent(artifactId)}/${file.format}`,
+    downloadPath: `/api/chat/artifacts/${encodeURIComponent(artifactId)}/download?format=${encodeURIComponent(file.format)}`,
     createdAt: file.createdAt.toISOString()
   };
 }

@@ -1,9 +1,9 @@
 # Agent V3 artifact integration
 
 Agent V3 artifacts are generated from the shared `ArtifactSpec` contract. This
-workstream supplies validation, deterministic renderers, and storage-facing
-interfaces. It deliberately does not add attachment or artifact database
-tables.
+implementation supplies validation, deterministic renderers, production
+private-object persistence, shared quota settlement, and owner-scoped status,
+preview, and download routes.
 
 ## Strict input contract
 
@@ -42,42 +42,51 @@ attachment-and-artifact quota.
 
 ## Repository and object-store boundary
 
-`ArtifactRepository` owns artifact status and file metadata. The storage
-workstream implements it next to its additive schema migration. `ArtifactObjectStore`
-owns private binary persistence. Neither interface accepts a client-provided
-signed URL.
+`ChatArtifactStorageService` owns artifact status, file metadata, shared quota,
+and private binary persistence. Neither its repository nor its object-store
+boundary accepts a client-provided signed URL.
+
+Before metadata is created, the repository verifies the active Agent run,
+source turn, conversation owner, and assistant message, then writes
+`chat_artifact.message_id`. Owner status and file access also join that binding
+to a `completed` or `incomplete` run, so a failed or still-running answer cannot
+expose an artifact.
 
 The repository records the internal object key, SHA-256 checksum, media type,
 byte length, filename, format, and timestamps. Browser-facing
 `ArtifactDownloadMetadata` omits the object key and exposes only a same-origin
-path shaped as `/api/artifacts/{artifactId}/{format}`. The future download
-handler must resolve that path through `findOwnedDownload`, verify ownership,
-and only then create or proxy a short-lived private-object download.
+path shaped as `/api/chat/artifacts/{artifactId}/download?format={format}`. The download
+handler resolves that path through the owner-scoped repository, verifies the
+completed run and committed file, and only then creates a five-minute private
+download URL.
 
 ## Failure isolation
 
-Call `ArtifactService.generateSafely` after the text answer is committed or on
-an independent artifact branch. It always resolves to an artifact result:
-`ready` with download metadata, or `failed` with one stable failure code. It
-does not rethrow validation, rendering, object-store, or repository failures
-into the answer stream.
+`ProductionArtifactStorage` runs only for an explicit artifact request and
+always returns public metadata: `ready` or `failed`. Validation, rendering,
+object-store, or repository failures become a failed tool result and do not
+fail an otherwise valid text answer.
 
 If any requested format or object write fails, the service deletes already
 written objects with best-effort cleanup, records `failed`, returns no
-downloads, and leaves the text answer intact. The browser receives only the
-localized `artifact.updated` status; logs and browser events must not contain
-raw tool output, object keys, signed URLs, provider metadata, or internal error
-text.
+downloads, and leaves the text answer intact. Rendering observes the run abort
+signal before and after every persistence boundary. A failed, cancelled, or
+timed-out run also calls `discardRun`, releases committed/reserved storage
+bytes, and queues object deletion. The browser receives only localized public
+metadata; logs and browser events must not contain raw tool output, object
+keys, signed URLs, provider metadata, or internal error text.
 
 ## Storage integration checklist
 
-1. Add the artifact tables and quota accounting through an additive migration.
-2. Implement `ArtifactRepository` and `ArtifactObjectStore`; do not change the
-   renderer contract or create a second `ArtifactSpec` schema.
-3. Reserve shared storage quota before generation, then settle using the
+1. Keep the artifact tables and quota accounting additive and compatible with
+   the previous application image.
+2. Keep one strict `ArtifactSpec` schema and the deterministic renderer
+   contract.
+3. Reserve shared storage quota before each object write, then settle using the
    server-observed persisted byte lengths.
-4. Scope every lookup and delete by owner and conversation. Account export and
-   deletion must include artifact metadata and private objects.
+4. Scope every lookup and delete by owner, conversation, run, turn, and
+   assistant message. Account export and deletion include artifact metadata and
+   private objects.
 5. Expose only the same-origin download path to the browser. Resolve private
    object access on the server after authorization.
 6. Run `pnpm test:artifacts`, `pnpm eval:answer:v3`, and the storage integration

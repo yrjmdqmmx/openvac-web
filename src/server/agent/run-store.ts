@@ -33,6 +33,10 @@ import { safeParseAnswerV2, sanitizeStoredAnswerV2 } from "./answer-v2";
 import { renderAnswerV3, safeParseAnswerV3 } from "./answer-v3";
 import { EvidenceRegistry } from "./evidence-registry";
 import { recoverStaleAgentRuns } from "./retention";
+import {
+  cleanupRunArtifactsInTransaction,
+  settleAnswerQuotaInTransaction
+} from "./run-settlement";
 
 export type AgentAction = "initial" | "retry" | "regenerate" | "continue";
 
@@ -122,6 +126,7 @@ export class RunStore {
     webMode: WebMode;
     riskLevel: RiskLevel;
     model: string;
+    answerQuotaLeaseId: string;
   }): Promise<CreateRunResult> {
     return db.transaction(async (tx) => {
       await assertAccountWritable(tx, input.userId);
@@ -238,6 +243,8 @@ export class RunStore {
         resolvedMode: input.resolvedMode,
         webMode: input.webMode,
         riskLevel: input.riskLevel,
+        answerQuotaLeaseId: input.answerQuotaLeaseId,
+        answerQuotaStatus: "reserved",
         status: "running",
         startedAt: now
       });
@@ -274,6 +281,7 @@ export class RunStore {
     webMode: WebMode;
     riskLevel: RiskLevel;
     model: string;
+    answerQuotaLeaseId: string;
   }): Promise<CreateRunResult> {
     return db.transaction(async (tx) => {
       await assertAccountWritable(tx, input.userId);
@@ -371,6 +379,8 @@ export class RunStore {
         resolvedMode: input.resolvedMode,
         webMode: input.webMode,
         riskLevel: input.riskLevel,
+        answerQuotaLeaseId: input.answerQuotaLeaseId,
+        answerQuotaStatus: "reserved",
         status: "running",
         startedAt: now
       });
@@ -467,7 +477,8 @@ export class RunStore {
       const [current] = await tx
         .select({
           status: agentRuns.status,
-          cancelRequestedAt: agentRuns.cancelRequestedAt
+          cancelRequestedAt: agentRuns.cancelRequestedAt,
+          answerQuotaLeaseId: agentRuns.answerQuotaLeaseId
         })
         .from(agentRuns)
         .where(eq(agentRuns.id, input.run.runId))
@@ -478,6 +489,9 @@ export class RunStore {
         current.cancelRequestedAt
       ) {
         throw new RunStoreError("RUN_NOT_COMPLETABLE");
+      }
+      if (!current.answerQuotaLeaseId) {
+        throw new RunStoreError("ANSWER_QUOTA_LEASE_MISSING");
       }
 
       await tx
@@ -548,20 +562,6 @@ export class RunStore {
         }
       }
 
-      await tx
-        .update(agentRuns)
-        .set({
-          status,
-          answerPayload: input.answer as Record<string, unknown>,
-          contextMetadata: input.context ?? {},
-          toolRoundCount: input.counters.toolRounds,
-          toolCallCount: input.counters.toolCalls,
-          modelRequestCount: input.counters.modelRequests,
-          retryCount: input.counters.retries,
-          repairCount: input.counters.repairs,
-          completedAt: new Date()
-        })
-        .where(eq(agentRuns.id, input.run.runId));
       if (status === "completed") {
         await tx
           .update(conversationTurns)
@@ -572,6 +572,29 @@ export class RunStore {
         .update(conversations)
         .set({ lastMessageAt: new Date(), updatedAt: new Date() })
         .where(eq(conversations.id, input.run.conversationId));
+
+      const answerQuotaStatus = await settleAnswerQuotaInTransaction(tx, {
+        leaseId: current.answerQuotaLeaseId,
+        userId: input.userId,
+        status,
+        reason: "agent_run_incomplete"
+      });
+      await tx
+        .update(agentRuns)
+        .set({
+          status,
+          answerQuotaStatus,
+          settlementStatus: "completed",
+          answerPayload: input.answer as Record<string, unknown>,
+          contextMetadata: input.context ?? {},
+          toolRoundCount: input.counters.toolRounds,
+          toolCallCount: input.counters.toolCalls,
+          modelRequestCount: input.counters.modelRequests,
+          retryCount: input.counters.retries,
+          repairCount: input.counters.repairs,
+          completedAt: new Date()
+        })
+        .where(eq(agentRuns.id, input.run.runId));
     });
     return { content, meta };
   }
@@ -589,8 +612,11 @@ export class RunStore {
       retries: number;
       repairs: number;
     };
-  }): Promise<void> {
-    await db.transaction(async (tx) => {
+  }): Promise<{
+    settlementStatus: "completed";
+    answerQuotaStatus: "released" | null;
+  }> {
+    return db.transaction(async (tx) => {
       await lockConversation(tx, input.run.conversationId);
       const [transitioned] = await tx
         .update(agentRuns)
@@ -616,8 +642,61 @@ export class RunStore {
             inArray(agentRuns.status, ["pending", "running"])
           )
         )
-        .returning({ id: agentRuns.id });
-      if (!transitioned) return;
+        .returning({
+          id: agentRuns.id,
+          userId: agentRuns.userId,
+          answerQuotaLeaseId: agentRuns.answerQuotaLeaseId
+        });
+      if (!transitioned) {
+        const [settled] = await tx
+          .select({
+            status: agentRuns.status,
+            answerQuotaStatus: agentRuns.answerQuotaStatus,
+            settlementStatus: agentRuns.settlementStatus
+          })
+          .from(agentRuns)
+          .where(eq(agentRuns.id, input.run.runId))
+          .limit(1);
+        if (
+          settled &&
+          ["failed", "cancelled"].includes(settled.status) &&
+          settled.settlementStatus === "completed" &&
+          (settled.answerQuotaStatus === "released" ||
+            settled.answerQuotaStatus === null)
+        ) {
+          return {
+            settlementStatus: "completed" as const,
+            answerQuotaStatus: settled.answerQuotaStatus
+          };
+        }
+        throw new RunStoreError("RUN_NOT_FAILABLE");
+      }
+      const answerQuotaStatus = await settleAnswerQuotaInTransaction(tx, {
+        leaseId: transitioned.answerQuotaLeaseId,
+        userId: transitioned.userId,
+        status: input.status,
+        reason:
+          input.status === "cancelled"
+            ? "agent_run_cancelled"
+            : "agent_run_failed"
+      });
+      if (answerQuotaStatus === "committed") {
+        throw new RunStoreError("ANSWER_QUOTA_RELEASE_FAILED");
+      }
+      await cleanupRunArtifactsInTransaction(tx, {
+        runId: input.run.runId,
+        userId: transitioned.userId,
+        conversationId: input.run.conversationId,
+        turnId: input.run.turnId,
+        assistantMessageId: input.run.assistantMessageId
+      });
+      await tx
+        .update(agentRuns)
+        .set({
+          answerQuotaStatus,
+          settlementStatus: "completed"
+        })
+        .where(eq(agentRuns.id, input.run.runId));
       await tx
         .update(messages)
         .set({
@@ -636,6 +715,10 @@ export class RunStore {
           }
         })
         .where(eq(messages.id, input.run.assistantMessageId));
+      return {
+        settlementStatus: "completed" as const,
+        answerQuotaStatus
+      };
     });
   }
 

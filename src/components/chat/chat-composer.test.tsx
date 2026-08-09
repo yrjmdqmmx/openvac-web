@@ -43,6 +43,7 @@ function Harness({ onSubmit = vi.fn(), onError = vi.fn() }) {
       onLinksChange={setLinks}
       attachments={attachments}
       onAttachmentsChange={setAttachments}
+      conversationId="00000000-0000-4000-8000-000000000010"
       busy={false}
       mode="auto"
       webMode="auto"

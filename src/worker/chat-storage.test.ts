@@ -234,6 +234,7 @@ function makeWorker(
 
 function makeRepository() {
   return {
+    recoverAgentRuns: vi.fn(async () => undefined),
     enqueueExpiredOrphans: vi.fn(async () => 0),
     claimAttachmentParse: vi.fn<
       ChatStorageWorkerRepository["claimAttachmentParse"]

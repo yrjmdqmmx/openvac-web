@@ -110,7 +110,7 @@ export async function uploadChatAttachment(
         ? { conversationId: options.conversationId }
         : {}),
       filename: file.name,
-      contentType: validation.mimeType,
+      mimeType: validation.mimeType,
       sizeBytes: file.size,
       sha256
     }),

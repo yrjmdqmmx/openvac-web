@@ -236,7 +236,9 @@ export type ChatStreamEvent =
       type: "run.cancelled";
       code: "CANCELLED";
       message: string;
-      charged: false;
+      charged: false | null;
+      settlement: "released" | "pending_recovery";
+      retryable: boolean;
     })
   | (SequencedRunEvent & {
       type: "run.failed";
@@ -244,7 +246,8 @@ export type ChatStreamEvent =
       message: string;
       retryable: boolean;
       suggestedAction: "retry" | "continue" | "sign_in" | "wait" | "report";
-      charged: boolean;
+      charged: boolean | null;
+      settlement?: "released" | "pending_recovery";
       resetAt?: string;
     })
   | (SequencedRunEvent & {

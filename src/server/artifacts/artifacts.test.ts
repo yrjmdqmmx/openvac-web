@@ -155,7 +155,7 @@ describe("ArtifactService", () => {
         artifactId,
         format: "md",
         filename: "report.md",
-        downloadPath: `/api/artifacts/${artifactId}/md`,
+        downloadPath: `/api/chat/artifacts/${artifactId}/download?format=md`,
         checksumSha256:
           "8b3369944dd2a3fab39e32d1aeb1f763946a458ae3e6368a46432adc8f3a0860"
       })

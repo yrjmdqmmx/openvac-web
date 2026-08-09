@@ -7,6 +7,7 @@ import { ApiError } from "@/server/api/errors";
 import { prepareUserDeletion } from "@/server/auth/account-cleanup";
 import { db, sqlClient } from "@/server/db";
 import {
+  agentRuns,
   chatAttachments,
   chatStorageAccounts,
   chatStorageDeletionJobs,
@@ -251,6 +252,26 @@ describeDatabase("chat attachment repository integration", () => {
       userMessageId: messageId,
       ordinal: 1
     });
+    const assistantMessageId = randomUUID();
+    await db.insert(messages).values({
+      id: assistantMessageId,
+      conversationId,
+      userId: ownerId,
+      sequence: 2,
+      role: "assistant",
+      content: ""
+    });
+    const runId = randomUUID();
+    await db.insert(agentRuns).values({
+      id: runId,
+      turnId: sourceTurnId,
+      userId: ownerId,
+      assistantMessageId,
+      clientRequestId: randomUUID(),
+      version: 1,
+      model: "test-model",
+      status: "running"
+    });
     const artifactId = randomUUID();
     const repository = new PostgresChatArtifactStorageRepository(
       sqlClient as never
@@ -259,6 +280,8 @@ describeDatabase("chat attachment repository integration", () => {
       artifactId,
       userId: ownerId,
       conversationId,
+      runId,
+      assistantMessageId,
       spec: {
         schemaVersion: "openvac.artifact.v1",
         kind: "diagnosis_report",

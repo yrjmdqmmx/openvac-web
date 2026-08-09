@@ -337,6 +337,9 @@ export function ChatWorkspace({
     undefined
   );
   const conversationDetailRequestRef = useRef(0);
+  const conversationCreationRef = useRef<Promise<string> | undefined>(
+    undefined
+  );
   const firstConversationHistoryLoadRef = useRef(true);
   const pendingQuestionHandledRef = useRef(false);
   const conversationQueryRef = useRef("");
@@ -404,6 +407,37 @@ export function ChatWorkspace({
   );
 
   const normalizedConversationQuery = conversationQuery.trim();
+
+  const ensureConversation = useCallback(async (): Promise<string> => {
+    if (conversationId) return conversationId;
+    if (conversationCreationRef.current) return conversationCreationRef.current;
+
+    const creation = (async () => {
+      const response = await fetch("/api/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "新对话" })
+      });
+      if (!response.ok) throw new Error("暂时无法创建附件所属对话。");
+      const payload = (await response.json()) as {
+        id?: string;
+        data?: { id?: string };
+      };
+      const id = payload.data?.id ?? payload.id;
+      if (!id || !UUID_PATTERN.test(id)) {
+        throw new Error("新对话响应不完整，请稍后重试。");
+      }
+      setConversationId(id);
+      await loadConversationPage({ query: "", page: 1, append: false });
+      return id;
+    })();
+    conversationCreationRef.current = creation;
+    try {
+      return await creation;
+    } finally {
+      conversationCreationRef.current = undefined;
+    }
+  }, [conversationId, loadConversationPage]);
 
   useEffect(() => {
     conversationQueryRef.current = normalizedConversationQuery;
@@ -555,11 +589,20 @@ export function ChatWorkspace({
         }
         if (!response.ok || !response.body) {
           const payload = (await response.json().catch(() => null)) as {
-            error?: { message?: string; resetAt?: string };
+            error?: {
+              message?: string;
+              resetAt?: string;
+              charged?: boolean | null;
+              settlement?: "released" | "pending_recovery";
+            };
           } | null;
           throw Object.assign(
             new Error(payload?.error?.message ?? "回答服务暂时不可用。"),
-            { resetAt: payload?.error?.resetAt }
+            {
+              resetAt: payload?.error?.resetAt,
+              charged: payload?.error?.charged,
+              settlement: payload?.error?.settlement
+            }
           );
         }
 
@@ -791,12 +834,17 @@ export function ChatWorkspace({
           }
           if (event.type === "run.cancelled") {
             completionSeen = true;
-            throw new Error(event.message);
+            throw Object.assign(new Error(event.message), {
+              charged: event.charged,
+              settlement: event.settlement
+            });
           }
           if (event.type === "run.failed") {
             completionSeen = true;
             throw Object.assign(new Error(event.message), {
-              resetAt: event.resetAt
+              resetAt: event.resetAt,
+              charged: event.charged,
+              settlement: event.settlement
             });
           }
           if (event.type === "status") {
@@ -895,10 +943,18 @@ export function ChatWorkspace({
         ) {
           return;
         }
+        const typed = caught as Error & {
+          resetAt?: string;
+          charged?: boolean | null;
+          settlement?: "released" | "pending_recovery";
+        };
+        const settlementPending =
+          typed.settlement === "pending_recovery" || typed.charged === null;
         if (controller.signal.aborted) {
-          setError("已取消本次回答；未完成的回答不会扣除额度。");
+          setError(
+            "已发起取消。本次回答不会计为成功；额度结算状态正在同步，可稍后刷新确认。"
+          );
         } else {
-          const typed = caught as Error & { resetAt?: string };
           setError(typed.message || "回答服务暂时不可用。");
           setResetAt(typed.resetAt);
         }
@@ -910,7 +966,12 @@ export function ChatWorkspace({
                   status: "error",
                   content:
                     message.content ||
-                    "本次回答未完成。系统已归还预占额度，请稍后重试；若持续发生，可提交问题反馈。"
+                    (settlementPending
+                      ? "本次回答未完成。额度与产物清理正在自动恢复，请稍后刷新确认。"
+                      : typed.charged === false ||
+                          typed.settlement === "released"
+                        ? "本次回答未完成。系统已归还预占额度，请稍后重试；若持续发生，可提交问题反馈。"
+                        : "本次回答未完成。额度状态尚未确认，请稍后刷新；若持续发生，可提交问题反馈。")
                 }
               : message
           )
@@ -1692,6 +1753,7 @@ export function ChatWorkspace({
                 attachments={composerAttachments}
                 onAttachmentsChange={setComposerAttachments}
                 conversationId={conversationId}
+                onEnsureConversation={ensureConversation}
                 busy={busy}
                 mode={mode}
                 webMode={webMode}

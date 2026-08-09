@@ -6,7 +6,10 @@ import type { ObjectStorage } from "@/server/providers";
 
 import {
   ChatArtifactStorageService,
+  PostgresChatArtifactStorageRepository,
+  type ChatArtifactSql,
   type ChatArtifactStorageRepository,
+  type ChatArtifactFileTarget,
   type ChatArtifactView
 } from "./artifact-storage";
 
@@ -14,13 +17,20 @@ const artifactId = "00000000-0000-4000-8000-000000000001";
 const fileId = "00000000-0000-4000-8000-000000000002";
 const conversationId = "00000000-0000-4000-8000-000000000003";
 const sourceTurnId = "00000000-0000-4000-8000-000000000004";
+const runId = "00000000-0000-4000-8000-000000000005";
+const assistantMessageId = "00000000-0000-4000-8000-000000000006";
 const spec = {
   schemaVersion: "openvac.artifact.v1" as const,
   kind: "diagnosis_report" as const,
   title: "Pump diagnosis",
   formats: ["pdf"] as ["pdf"],
   summary: "Diagnosis",
-  sections: [],
+  sections: [
+    {
+      heading: "结论",
+      paragraphs: ["检查泵入口、密封和运行参数。"]
+    }
+  ],
   tables: [],
   sourceTurnId
 };
@@ -33,6 +43,8 @@ describe("chat artifact storage", () => {
     const result = await service.create({
       userId: "user-1",
       conversationId,
+      runId,
+      assistantMessageId,
       spec
     });
 
@@ -47,6 +59,8 @@ describe("chat artifact storage", () => {
       artifactId,
       userId: "user-1",
       conversationId,
+      runId,
+      assistantMessageId,
       spec
     });
   });
@@ -137,6 +151,41 @@ describe("chat artifact storage", () => {
     expect(repository.commitFile).not.toHaveBeenCalled();
   });
 
+  it("requeues deletion when a late object upload outlives its removed reservation row", async () => {
+    const statements: Array<{ query: string; parameters?: unknown[] }> = [];
+    const sql: ChatArtifactSql = {
+      unsafe: vi.fn(async (query, parameters) => {
+        statements.push({ query, parameters });
+        return [];
+      }),
+      begin: vi.fn(async (handler) => handler(sql))
+    };
+    const repository = new PostgresChatArtifactStorageRepository(sql);
+    const objectKey =
+      "private/chat-artifacts/owner/conversation/artifact/file/report.pdf";
+
+    await repository.abortFile({
+      fileId,
+      artifactId,
+      userId: "user-1",
+      objectKey,
+      message: "commit lost race with run cleanup"
+    });
+
+    const requeue = statements.find(({ query }) =>
+      query.includes("INSERT INTO chat_storage_deletion_job")
+    );
+    expect(requeue?.query).toContain("ON CONFLICT (object_key) DO UPDATE SET");
+    expect(requeue?.query).toContain("status = 'queued'");
+    expect(requeue?.query).toContain("completed_at = NULL");
+    expect(requeue?.parameters).toEqual(["user-1", fileId, objectKey]);
+    expect(
+      statements.some(({ query }) =>
+        query.includes("UPDATE chat_storage_account")
+      )
+    ).toBe(false);
+  });
+
   it("rejects format-extension mismatches before reserving quota", async () => {
     const repository = makeRepository();
     await expect(
@@ -150,6 +199,102 @@ describe("chat artifact storage", () => {
       })
     ).rejects.toMatchObject({ code: "ARTIFACT_FILE_INVALID" });
     expect(repository.reserveFile).not.toHaveBeenCalled();
+  });
+
+  it("returns owner-scoped status and hides non-owner artifacts as not found", async () => {
+    const repository = makeRepository();
+    const service = makeService(repository, makeStorage());
+
+    await expect(
+      service.status({ artifactId, userId: "user-1" })
+    ).resolves.toMatchObject({ id: artifactId, status: "generating" });
+    expect(repository.findOwned).toHaveBeenCalledWith(artifactId, "user-1");
+
+    vi.mocked(repository.findOwned).mockResolvedValueOnce(null);
+    await expect(
+      service.status({ artifactId, userId: "user-2" })
+    ).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
+  });
+
+  it("creates a five-minute private URL only for an eligible owner file", async () => {
+    const repository = makeRepository();
+    const storage = makeStorage();
+    vi.mocked(storage.createPrivateDownloadUrl).mockResolvedValueOnce(
+      "https://oss.test/short-artifact"
+    );
+    const service = makeService(repository, storage);
+
+    await expect(
+      service.createAccessUrl({ artifactId, userId: "user-1", format: "pdf" })
+    ).resolves.toBe("https://oss.test/short-artifact");
+    expect(repository.findOwnedFile).toHaveBeenCalledWith({
+      artifactId,
+      userId: "user-1",
+      format: "pdf"
+    });
+    expect(storage.createPrivateDownloadUrl).toHaveBeenCalledWith(
+      artifactFileTarget().objectKey,
+      300
+    );
+
+    vi.mocked(repository.findOwnedFile).mockResolvedValueOnce(null);
+    await expect(
+      service.createAccessUrl({ artifactId, userId: "user-2", format: "pdf" })
+    ).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
+  });
+
+  it("atomically marks a failed batch and attempts immediate object cleanup", async () => {
+    const repository = makeRepository();
+    const storage = makeStorage();
+    vi.mocked(repository.failArtifact).mockResolvedValueOnce([
+      "private/chat-artifacts/owner/conversation/artifact/file/report.pdf"
+    ]);
+    const service = makeService(repository, storage);
+
+    await service.fail({ artifactId, conversationId, userId: "user-1" });
+
+    expect(repository.failArtifact).toHaveBeenCalledWith({
+      artifactId,
+      conversationId,
+      userId: "user-1"
+    });
+    expect(storage.deletePrivate).toHaveBeenCalledWith(
+      "private/chat-artifacts/owner/conversation/artifact/file/report.pdf"
+    );
+  });
+
+  it("finds and cleans every artifact bound to a failed run", async () => {
+    const repository = makeRepository();
+    const storage = makeStorage();
+    vi.mocked(repository.findRunArtifactIds).mockResolvedValueOnce([
+      artifactId
+    ]);
+    vi.mocked(repository.failArtifact).mockResolvedValueOnce([
+      "private/chat-artifacts/owner/conversation/artifact/file/report.pdf"
+    ]);
+    const service = makeService(repository, storage);
+
+    await service.failRun({
+      runId,
+      userId: "user-1",
+      conversationId,
+      turnId: sourceTurnId,
+      assistantMessageId
+    });
+
+    expect(repository.findRunArtifactIds).toHaveBeenCalledWith({
+      runId,
+      userId: "user-1",
+      conversationId,
+      turnId: sourceTurnId,
+      assistantMessageId
+    });
+    expect(repository.failArtifact).toHaveBeenCalledWith({
+      artifactId,
+      userId: "user-1",
+      conversationId
+    });
+    expect(storage.deletePrivate).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -179,6 +324,21 @@ function artifactView(): ChatArtifactView {
   };
 }
 
+function artifactFileTarget(): ChatArtifactFileTarget {
+  return {
+    id: fileId,
+    artifactId,
+    format: "pdf",
+    filename: "diagnosis.pdf",
+    mimeType: "application/pdf",
+    sizeBytes: 10,
+    sha256: "a".repeat(64),
+    objectKey:
+      "private/chat-artifacts/owner/conversation/artifact/file/report.pdf",
+    createdAt: "2026-08-09T00:00:00.000Z"
+  };
+}
+
 function makeRepository(): ChatArtifactStorageRepository {
   return {
     createArtifact: vi.fn(async () => artifactView()),
@@ -193,7 +353,16 @@ function makeRepository(): ChatArtifactStorageRepository {
       sha256: "a".repeat(64),
       createdAt: "2026-08-09T00:00:00.000Z"
     })),
-    abortFile: vi.fn(async () => undefined)
+    abortFile: vi.fn(async () => undefined),
+    completeArtifact: vi.fn(async () => ({
+      ...artifactView(),
+      status: "ready" as const,
+      readyAt: "2026-08-09T00:00:01.000Z"
+    })),
+    failArtifact: vi.fn(async () => []),
+    findRunArtifactIds: vi.fn(async () => []),
+    findOwned: vi.fn(async () => artifactView()),
+    findOwnedFile: vi.fn(async () => artifactFileTarget())
   };
 }
 

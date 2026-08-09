@@ -228,7 +228,7 @@ const artifactTableSchema = z
   })
   .strict();
 
-export const artifactSpecSchema = z
+export const artifactSpecBaseSchema = z
   .object({
     schemaVersion: z.literal("openvac.artifact.v1"),
     kind: z.enum([
@@ -259,8 +259,10 @@ export const artifactSpecSchema = z
     tables: z.array(artifactTableSchema).max(32),
     sourceTurnId: z.string().uuid()
   })
-  .strict()
-  .superRefine((spec, context) => {
+  .strict();
+
+export const artifactSpecSchema = artifactSpecBaseSchema.superRefine(
+  (spec, context) => {
     if (new Set(spec.formats).size !== spec.formats.length) {
       context.addIssue({
         code: "custom",
@@ -313,7 +315,8 @@ export const artifactSpecSchema = z
         }
       });
     });
-  });
+  }
+);
 
 export function normalizeStoredMessageParts(
   content: string,

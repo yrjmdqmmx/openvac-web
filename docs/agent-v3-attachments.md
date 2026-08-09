@@ -30,9 +30,10 @@ The Agent V3 message transaction must call
 `ChatAttachmentService.bindToMessage` after the user message exists and before
 the run consumes attachment IDs. The binding transaction verifies the message
 role, user, active conversation, upload completion, distinct IDs, and the
-five-attachment limit. Document parsing is not claimable until this binding is
-committed, which prevents unbound uploads from consuming DocMind quota. The
-storage workstream deliberately does not modify the Agent orchestrator.
+five-attachment limit. Document parsing starts after the authenticated upload is
+verified so the composer can keep sending disabled until parsing is ready; the
+committed storage quota and orphan TTL bound this pre-send processing. The Agent
+still binds the ready attachment to the created user message before model work.
 
 ## Parsing and cleanup
 

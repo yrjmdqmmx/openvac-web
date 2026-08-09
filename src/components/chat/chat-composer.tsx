@@ -45,6 +45,7 @@ export function ChatComposer({
   attachments,
   onAttachmentsChange,
   conversationId,
+  onEnsureConversation,
   busy,
   mode,
   webMode,
@@ -65,6 +66,7 @@ export function ChatComposer({
       | ((current: LocalChatAttachment[]) => LocalChatAttachment[])
   ) => void;
   conversationId?: string;
+  onEnsureConversation?: () => Promise<string>;
   busy: boolean;
   mode: "auto" | "deep";
   webMode: "auto" | "always";
@@ -125,8 +127,13 @@ export function ChatComposer({
     controllersRef.current.set(attachment.localId, controller);
     let registeredAttachmentId = attachment.attachmentId;
     try {
+      const uploadConversationId =
+        conversationId ?? (await onEnsureConversation?.());
+      if (!uploadConversationId) {
+        throw new Error("暂时无法创建附件所属对话，请稍后重试。");
+      }
       const part = await uploadChatAttachment(attachment.file, {
-        conversationId,
+        conversationId: uploadConversationId,
         signal: controller.signal,
         onUpdate(update) {
           if (update.attachmentId) registeredAttachmentId = update.attachmentId;

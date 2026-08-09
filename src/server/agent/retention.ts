@@ -1,12 +1,20 @@
-import { and, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, eq, inArray, lte, notExists, or, sql } from "drizzle-orm";
 
 import { db } from "@/server/db";
 import {
   agentRuns,
   agentToolCalls,
   conversationTurns,
-  messages
+  messages,
+  quotaLedger
 } from "@/server/db/schema";
+import { releaseQuotaInTransaction } from "@/server/quota/repository";
+
+import {
+  cleanupRunArtifactsInTransaction,
+  settleAnswerQuotaInTransaction,
+  type AgentRunTerminalStatus
+} from "./run-settlement";
 
 const DEFAULT_STALE_RUN_MS = 210_000;
 const MAX_RECOVERY_BATCH = 500;
@@ -35,11 +43,24 @@ export async function cleanupExpiredAgentToolCalls(
 export async function recoverStaleAgentRuns(
   scope: RecoveryScope = {},
   now = new Date()
-): Promise<{ recovered: number }> {
+): Promise<{ recovered: number; pending: number }> {
   const staleBefore = new Date(now.getTime() - staleRunThresholdMs());
   const filters = [
-    inArray(agentRuns.status, ["pending", "running"]),
-    lte(agentRuns.updatedAt, staleBefore)
+    or(
+      and(
+        inArray(agentRuns.status, ["pending", "running"]),
+        lte(agentRuns.updatedAt, staleBefore)
+      ),
+      and(
+        inArray(agentRuns.status, [
+          "completed",
+          "incomplete",
+          "failed",
+          "cancelled"
+        ]),
+        eq(agentRuns.settlementStatus, "pending")
+      )
+    )
   ];
   if (scope.userId) filters.push(eq(agentRuns.userId, scope.userId));
   if (scope.conversationId) {
@@ -52,7 +73,8 @@ export async function recoverStaleAgentRuns(
       assistantMessageId: agentRuns.assistantMessageId,
       conversationId: conversationTurns.conversationId,
       turnId: conversationTurns.id,
-      version: agentRuns.version
+      version: agentRuns.version,
+      status: agentRuns.status
     })
     .from(agentRuns)
     .innerJoin(conversationTurns, eq(agentRuns.turnId, conversationTurns.id))
@@ -61,52 +83,155 @@ export async function recoverStaleAgentRuns(
     .limit(MAX_RECOVERY_BATCH);
 
   let recovered = 0;
+  let pending = 0;
   for (const candidate of candidates) {
-    const transitioned = await db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select pg_advisory_xact_lock(hashtext(${`openvac:agent:${candidate.conversationId}`}))`
-      );
-      const [failed] = await tx
-        .update(agentRuns)
-        .set({
-          status: "failed",
-          errorCode: "PROCESS_INTERRUPTED",
-          errorMessage:
-            "Agent process ended before the run reached a terminal state.",
-          completedAt: now
-        })
-        .where(
-          and(
-            eq(agentRuns.id, candidate.runId),
-            inArray(agentRuns.status, ["pending", "running"]),
-            lte(agentRuns.updatedAt, staleBefore)
-          )
-        )
-        .returning({ id: agentRuns.id });
-      if (!failed) return false;
+    try {
+      const transitioned = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${`openvac:agent:${candidate.conversationId}`}))`
+        );
+        const [current] = await tx
+          .select({
+            status: agentRuns.status,
+            userId: agentRuns.userId,
+            answerQuotaLeaseId: agentRuns.answerQuotaLeaseId,
+            settlementStatus: agentRuns.settlementStatus,
+            updatedAt: agentRuns.updatedAt
+          })
+          .from(agentRuns)
+          .where(eq(agentRuns.id, candidate.runId))
+          .for("update")
+          .limit(1);
+        if (!current) return false;
 
-      await tx
-        .update(messages)
-        .set({
-          status: "failed",
-          content: "上次生成因服务进程中断而未完成，可重试后重新生成。",
-          errorCode: "PROCESS_INTERRUPTED",
-          errorMessage:
-            "Agent process ended before the run reached a terminal state.",
-          completedAt: now,
-          metadata: {
+        const wasInterrupted =
+          ["pending", "running"].includes(current.status) &&
+          current.updatedAt <= staleBefore;
+        const needsTerminalSettlement =
+          ["completed", "incomplete", "failed", "cancelled"].includes(
+            current.status
+          ) && current.settlementStatus === "pending";
+        if (!wasInterrupted && !needsTerminalSettlement) return false;
+
+        const terminalStatus: AgentRunTerminalStatus = wasInterrupted
+          ? "failed"
+          : (current.status as AgentRunTerminalStatus);
+        const answerQuotaStatus = await settleAnswerQuotaInTransaction(tx, {
+          leaseId: current.answerQuotaLeaseId,
+          userId: current.userId,
+          status: terminalStatus,
+          reason: wasInterrupted
+            ? "agent_run_process_interrupted"
+            : `agent_run_${terminalStatus}_recovery`
+        });
+        if (terminalStatus === "failed" || terminalStatus === "cancelled") {
+          await cleanupRunArtifactsInTransaction(tx, {
             runId: candidate.runId,
+            userId: current.userId,
+            conversationId: candidate.conversationId,
             turnId: candidate.turnId,
-            answerVersion: candidate.version
-          }
-        })
-        .where(eq(messages.id, candidate.assistantMessageId));
-      return true;
-    });
-    if (transitioned) recovered += 1;
+            assistantMessageId: candidate.assistantMessageId
+          });
+        }
+
+        await tx
+          .update(agentRuns)
+          .set({
+            status: terminalStatus,
+            answerQuotaStatus,
+            settlementStatus: "completed",
+            ...(wasInterrupted
+              ? {
+                  errorCode: "PROCESS_INTERRUPTED",
+                  errorMessage:
+                    "Agent process ended before the run reached a terminal state."
+                }
+              : {}),
+            completedAt: now
+          })
+          .where(eq(agentRuns.id, candidate.runId));
+
+        if (wasInterrupted) {
+          await tx
+            .update(messages)
+            .set({
+              status: "failed",
+              content:
+                "上次生成因服务进程中断而未完成，额度已归还，可重试后重新生成。",
+              errorCode: "PROCESS_INTERRUPTED",
+              errorMessage:
+                "Agent process ended before the run reached a terminal state.",
+              completedAt: now,
+              metadata: {
+                runId: candidate.runId,
+                turnId: candidate.turnId,
+                answerVersion: candidate.version
+              }
+            })
+            .where(eq(messages.id, candidate.assistantMessageId));
+        }
+        return true;
+      });
+      if (transitioned) recovered += 1;
+    } catch {
+      // The transaction rolled back, so the durable pending state remains
+      // eligible for the next recovery pass without blocking other runs.
+      pending += 1;
+    }
   }
 
-  return { recovered };
+  const orphanFilters = [
+    eq(quotaLedger.status, "reserved"),
+    lte(quotaLedger.reservedAt, staleBefore),
+    or(
+      and(
+        eq(quotaLedger.resource, "answer"),
+        notExists(
+          db
+            .select({ id: agentRuns.id })
+            .from(agentRuns)
+            .where(eq(agentRuns.answerQuotaLeaseId, quotaLedger.leaseId))
+        )
+      ),
+      eq(quotaLedger.resource, "model_attempt")
+    )
+  ];
+  if (scope.userId) {
+    orphanFilters.push(eq(quotaLedger.actorUserId, scope.userId));
+  }
+  const orphanedReservations = await db
+    .select({
+      leaseId: quotaLedger.leaseId,
+      userId: quotaLedger.actorUserId,
+      resource: quotaLedger.resource
+    })
+    .from(quotaLedger)
+    .where(and(...orphanFilters))
+    .groupBy(quotaLedger.leaseId, quotaLedger.actorUserId, quotaLedger.resource)
+    .orderBy(quotaLedger.leaseId)
+    .limit(MAX_RECOVERY_BATCH);
+  for (const orphan of orphanedReservations) {
+    try {
+      await db.transaction(async (tx) => {
+        const quota = await releaseQuotaInTransaction(tx, {
+          leaseId: orphan.leaseId,
+          actorUserId: orphan.userId,
+          reason:
+            orphan.resource === "answer"
+              ? "agent_run_never_persisted"
+              : "model_attempt_never_committed"
+        });
+        if (quota.resource !== orphan.resource || quota.status !== "released") {
+          throw new Error("Orphaned run quota was not released.");
+        }
+      });
+      recovered += 1;
+    } catch {
+      pending += 1;
+    }
+  }
+
+  return { recovered, pending };
 }
 
 function staleRunThresholdMs(): number {

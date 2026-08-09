@@ -31,7 +31,7 @@ export const handleInitiateChatAttachment = withApiErrors(
     const result = await service.initiate({ ...input, userId: user.id });
     return jsonData(
       {
-        ...serializeAttachment(result),
+        attachment: serializeAttachment(result),
         upload: {
           method: result.upload.method,
           url: result.upload.url,
@@ -52,11 +52,11 @@ export const handleCompleteChatAttachment = withApiErrors(
   ): Promise<Response> => {
     const user = await authenticate(request);
     const id = uuidSchema.parse(attachmentId);
-    return jsonData(
-      serializeAttachment(
+    return jsonData({
+      attachment: serializeAttachment(
         await service.complete({ attachmentId: id, userId: user.id })
       )
-    );
+    });
   }
 );
 
@@ -68,11 +68,11 @@ export const handleGetChatAttachmentStatus = withApiErrors(
   ): Promise<Response> => {
     const user = await authenticate(request);
     const id = uuidSchema.parse(attachmentId);
-    return jsonData(
-      serializeAttachment(
+    return jsonData({
+      attachment: serializeAttachment(
         await service.status({ attachmentId: id, userId: user.id })
       )
-    );
+    });
   }
 );
 
@@ -105,7 +105,9 @@ function accessHandler() {
 export const handlePreviewChatAttachment = accessHandler();
 export const handleDownloadChatAttachment = accessHandler();
 
-function serializeAttachment(item: ChatAttachmentView): ChatAttachmentView {
+function serializeAttachment(
+  item: ChatAttachmentView
+): ChatAttachmentView & { type: "attachment"; attachmentId: string } {
   const {
     id,
     conversationId,
@@ -123,6 +125,8 @@ function serializeAttachment(item: ChatAttachmentView): ChatAttachmentView {
     readyAt
   } = item;
   return {
+    type: "attachment",
+    attachmentId: id,
     id,
     conversationId,
     messageId,

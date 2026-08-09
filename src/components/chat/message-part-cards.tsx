@@ -218,28 +218,52 @@ function AttachmentCard({
 function ArtifactCard({ artifact }: { artifact: ArtifactPart }) {
   const downloadable =
     artifact.status === "ready" && UUID_PATTERN.test(artifact.artifactId);
+  const previewFormat = artifact.formats.includes("pdf")
+    ? "pdf"
+    : artifact.formats.includes("md")
+      ? "md"
+      : undefined;
   return (
-    <article className="flex max-w-full min-w-0 items-center gap-2 rounded-lg border border-[var(--border)] px-3 py-2 text-xs">
-      <FileOutput aria-hidden className="h-4 w-4 shrink-0" />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate font-medium">{artifact.title}</span>
-        <span className="text-[var(--muted)]">
-          {artifact.status === "generating"
-            ? "生成中"
-            : artifact.status === "ready"
-              ? artifact.formats.join(" / ").toUpperCase()
-              : artifact.status === "failed"
-                ? "生成失败"
-                : "已删除"}
+    <article className="flex w-full max-w-full min-w-0 flex-col gap-2 rounded-lg border border-[var(--border)] px-3 py-2 text-xs sm:w-auto sm:flex-row sm:items-center">
+      <div className="flex min-w-0 items-center gap-2">
+        <FileOutput aria-hidden className="h-4 w-4 shrink-0" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-medium">{artifact.title}</span>
+          <span className="text-[var(--muted)]">
+            {artifact.status === "generating"
+              ? "生成中"
+              : artifact.status === "ready"
+                ? artifact.formats.join(" / ").toUpperCase()
+                : artifact.status === "failed"
+                  ? "生成失败"
+                  : "已删除"}
+          </span>
         </span>
-      </span>
-      {downloadable && artifact.formats[0] ? (
-        <a
-          href={`/api/chat/artifacts/${encodeURIComponent(artifact.artifactId)}/download?format=${encodeURIComponent(artifact.formats[0])}`}
-          className="rounded-md px-2 py-1 font-medium hover:bg-[var(--surface)]"
-        >
-          下载
-        </a>
+      </div>
+      {downloadable ? (
+        <div className="flex flex-wrap gap-1 sm:ml-auto sm:justify-end">
+          {previewFormat ? (
+            <a
+              href={`/api/chat/artifacts/${encodeURIComponent(artifact.artifactId)}/preview?format=${previewFormat}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-md px-2 py-1 font-medium hover:bg-[var(--surface)]"
+            >
+              预览
+            </a>
+          ) : null}
+          {artifact.formats.map((format) => (
+            <a
+              key={format}
+              href={`/api/chat/artifacts/${encodeURIComponent(artifact.artifactId)}/download?format=${encodeURIComponent(format)}`}
+              className="rounded-md px-2 py-1 font-medium hover:bg-[var(--surface)]"
+            >
+              {artifact.formats.length === 1
+                ? "下载"
+                : `下载 ${format.toUpperCase()}`}
+            </a>
+          ))}
+        </div>
       ) : null}
     </article>
   );

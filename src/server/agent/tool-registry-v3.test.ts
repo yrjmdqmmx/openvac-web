@@ -93,6 +93,9 @@ function registry(question: string, artifactStorage?: ArtifactStorage) {
   return new ToolRegistry(new EvidenceRegistry(), {
     userId,
     conversationId,
+    userMessageId: "00000000-0000-4000-8000-000000000004",
+    assistantMessageId: "00000000-0000-4000-8000-000000000005",
+    runId: "00000000-0000-4000-8000-000000000006",
     turnId,
     question,
     inputParts: [

@@ -15,6 +15,7 @@ import {
 const scope = {
   userId: "user-a",
   conversationId: "conversation-a",
+  messageId: "message-a",
   attachmentId: "attachment-a",
   allowedAttachmentIds: ["attachment-a"]
 } as const;
@@ -147,6 +148,7 @@ function documentAttachment(): StoredAttachment {
   return {
     userId: scope.userId,
     conversationId: scope.conversationId,
+    messageId: scope.messageId,
     attachmentId: scope.attachmentId,
     kind: "document",
     filename: "report.pdf",
@@ -162,6 +164,7 @@ function imageAttachment(): StoredAttachment {
   return {
     userId: scope.userId,
     conversationId: scope.conversationId,
+    messageId: scope.messageId,
     attachmentId: scope.attachmentId,
     kind: "image",
     filename: "gauge.png",

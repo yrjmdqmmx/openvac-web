@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const requiredAgentEnvironment = [
-  "AGENT_RESPONSES_V2",
   "AGENT_AUTO_MAX_OUTPUT_TOKENS",
   "AGENT_DEEP_MAX_OUTPUT_TOKENS",
   "AGENT_AUTO_TIMEOUT_MS",

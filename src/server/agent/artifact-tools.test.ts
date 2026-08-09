@@ -10,6 +10,8 @@ import {
 } from "./artifact-tools";
 
 const turnId = "ea538766-c8a3-4350-8894-8fb72233af12";
+const runId = "2d398755-2f37-444a-a76c-66956c09fb05";
+const assistantMessageId = "2fcb566b-bd9d-4b88-aac6-611800321964";
 const artifactId = "31d56d64-399a-4813-bad1-0c93e1eb8396";
 
 describe("hasExplicitArtifactIntent", () => {
@@ -44,6 +46,8 @@ describe("ArtifactToolService", () => {
         userId: "user-a",
         conversationId: "conversation-a",
         turnId,
+        runId,
+        assistantMessageId,
         question: "请直接回答，不要创建文档",
         spec: makeSpec()
       })
@@ -53,6 +57,8 @@ describe("ArtifactToolService", () => {
         userId: "user-a",
         conversationId: "conversation-a",
         turnId,
+        runId,
+        assistantMessageId,
         question: "请创建诊断报告",
         spec: { ...makeSpec(), sourceTurnId: crypto.randomUUID() }
       })
@@ -70,6 +76,8 @@ describe("ArtifactToolService", () => {
       userId: "user-a",
       conversationId: "conversation-a",
       turnId,
+      runId,
+      assistantMessageId,
       question: "请生成一份诊断报告",
       spec: makeSpec()
     });
@@ -95,6 +103,8 @@ describe("ArtifactToolService", () => {
         userId: "user-a",
         conversationId: "conversation-a",
         turnId,
+        runId,
+        assistantMessageId,
         question: "请生成一份诊断报告",
         spec: makeSpec()
       })
@@ -110,6 +120,8 @@ describe("ArtifactToolService", () => {
         userId: "user-a",
         conversationId: "conversation-a",
         turnId,
+        runId,
+        assistantMessageId,
         question: "请生成一份诊断报告",
         spec: {
           ...makeSpec(),
@@ -129,6 +141,8 @@ describe("ArtifactToolService", () => {
         userId: "user-a",
         conversationId: "conversation-a",
         turnId,
+        runId,
+        assistantMessageId,
         question: "请生成一份诊断报告",
         spec: makeSpec()
       })

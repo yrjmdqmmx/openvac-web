@@ -1,7 +1,6 @@
 import { and, count, eq, gte, sql } from "drizzle-orm";
 import { z } from "zod";
 
-import { agentResponsesV2Enabled } from "@/server/agent/http-v2";
 import { db } from "@/server/db";
 import {
   agentRuns,
@@ -9,7 +8,7 @@ import {
   modelInvocations,
   systemSettings
 } from "@/server/db/schema";
-import { auditContext, requireCapability } from "@/server/api/auth";
+import { requireCapability } from "@/server/api/auth";
 import {
   ApiError,
   jsonData,
@@ -37,7 +36,6 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const updateSchema = z.object({ enabled: z.boolean() });
 const checkSchema = z.object({
   check: z.enum(["balance", "responses"]),
   confirmation: z.literal("EXECUTE_EXTERNAL_MODEL_CHECK")
@@ -119,11 +117,11 @@ export const GET = withApiErrors(async (request: Request) => {
   }
 
   return jsonData({
-    enabled: await agentResponsesV2Enabled(),
-    environmentMasterSwitch: process.env.AGENT_RESPONSES_V2 === "true",
+    enabled: true,
+    environmentMasterSwitch: true,
     model: "deepseek-v4-flash",
     protocol: "responses",
-    rollbackPath: "chat-completions",
+    rollbackPath: "previous-image-digest",
     configuration: {
       apiKeyConfigured: Boolean(process.env.DEEPSEEK_API_KEY?.trim()),
       userPartitionSecretConfigured:
@@ -157,16 +155,6 @@ export const GET = withApiErrors(async (request: Request) => {
       pendingKnowledgeReview: Number(pendingKnowledge[0]?.value ?? 0)
     }
   });
-});
-
-export const PATCH = withApiErrors(async (request: Request) => {
-  const actor = await requireCapability(request, apiStore, "settings:write");
-  const input = await parseJson(request, updateSchema);
-  await apiStore.updateSettings(
-    { agent_responses_v2_enabled: input.enabled },
-    auditContext(request, actor)
-  );
-  return jsonData({ enabled: await agentResponsesV2Enabled() });
 });
 
 export const POST = withApiErrors(async (request: Request) => {

@@ -74,6 +74,15 @@ describe("ChatWorkspace V3 message flow", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/conversations" && init?.method === "POST") {
+          return jsonResponse({
+            data: {
+              id: conversationId,
+              title: "新对话",
+              updatedAt: "2026-08-09T00:00:00.000Z"
+            }
+          });
+        }
         if (String(input) === "/api/chat" && init?.method === "POST") {
           chatBody = JSON.parse(String(init.body)) as Record<string, unknown>;
           const answer = {
@@ -196,6 +205,7 @@ describe("ChatWorkspace V3 message flow", () => {
     ).toBeInTheDocument();
     expect(chatBody).toMatchObject({
       protocolVersion: 3,
+      conversationId,
       parts: [
         { type: "text", text: "分析这份手册" },
         {
@@ -213,11 +223,111 @@ describe("ChatWorkspace V3 message flow", () => {
     ).toHaveAttribute("href", "https://docs.example.com/manual");
     expect(screen.getByText("诊断报告")).toBeInTheDocument();
   });
+
+  it("preserves pending settlement metadata from a non-streaming failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/chat" && init?.method === "POST") {
+          return jsonResponse(
+            {
+              error: {
+                code: "RUN_SETTLEMENT_PENDING",
+                message: "额度结算正在自动恢复，请稍后重试。",
+                retryable: true,
+                charged: null,
+                settlement: "pending_recovery"
+              }
+            },
+            503
+          );
+        }
+        return jsonResponse({
+          data: { items: [], page: 1, pageSize: 20, total: 0 }
+        });
+      })
+    );
+
+    render(
+      <ChatWorkspace
+        userId="user-a"
+        userName="用户 A"
+        userEmail="user-a@openvac.test"
+      />
+    );
+    fireEvent.change(screen.getByLabelText("继续提问"), {
+      target: { value: "分析入口压力" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(
+      await screen.findByText("额度结算正在自动恢复，请稍后重试。")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "本次回答未完成。额度与产物清理正在自动恢复，请稍后刷新确认。"
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/系统已归还预占额度/u)).not.toBeInTheDocument();
+  });
+
+  it("does not turn a streaming pending settlement into a confirmed refund", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/chat" && init?.method === "POST") {
+          return streamResponse([
+            {
+              type: "run.accepted",
+              runId,
+              sequence: 1,
+              turnId,
+              conversationId,
+              userMessageId: "00000000-0000-4000-8000-000000000025",
+              messageId: "00000000-0000-4000-8000-000000000026",
+              answerVersion: 1
+            },
+            {
+              type: "run.failed",
+              runId,
+              sequence: 2,
+              code: "RUN_SETTLEMENT_PENDING",
+              message: "额度与产物清理正在自动恢复，请稍后重试。",
+              retryable: true,
+              suggestedAction: "wait",
+              charged: null,
+              settlement: "pending_recovery"
+            }
+          ]);
+        }
+        return jsonResponse({
+          data: { items: [], page: 1, pageSize: 20, total: 0 }
+        });
+      })
+    );
+
+    render(
+      <ChatWorkspace
+        userId="user-a"
+        userName="用户 A"
+        userEmail="user-a@openvac.test"
+      />
+    );
+    fireEvent.change(screen.getByLabelText("继续提问"), {
+      target: { value: "继续分析异常" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(
+      await screen.findByText("额度与产物清理正在自动恢复，请稍后重试。")
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/系统已归还预占额度/u)).not.toBeInTheDocument();
+  });
 });
 
-function jsonResponse(payload: unknown) {
+function jsonResponse(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), {
-    status: 200,
+    status,
     headers: { "Content-Type": "application/json" }
   });
 }

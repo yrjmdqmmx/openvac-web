@@ -20,6 +20,9 @@ export type ArtifactStorageCreateInput = {
   userId: string;
   conversationId: string;
   turnId: string;
+  runId: string;
+  assistantMessageId: string;
+  signal?: AbortSignal;
   spec: ArtifactSpec;
 };
 
@@ -85,6 +88,12 @@ export class ArtifactToolService {
       "conversationId"
     );
     const turnId = requiredText(input.turnId, 240, "turnId");
+    const runId = requiredText(input.runId, 240, "runId");
+    const assistantMessageId = requiredText(
+      input.assistantMessageId,
+      240,
+      "assistantMessageId"
+    );
     if (!hasExplicitArtifactIntent(question)) {
       throw new ArtifactToolError(
         "ARTIFACT_INTENT_REQUIRED",
@@ -127,6 +136,9 @@ export class ArtifactToolService {
       userId,
       conversationId,
       turnId,
+      runId,
+      assistantMessageId,
+      signal: input.signal,
       spec: parsed.data
     });
     if (

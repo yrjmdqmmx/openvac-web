@@ -83,7 +83,7 @@ test("renders only verified HTTPS links, semantic tables, and internal artifact 
     page.getByRole("link", { name: "选型参数表（CSV）" })
   ).toHaveAttribute(
     "href",
-    "/api/artifacts/00000000-0000-4000-8000-000000000302/csv"
+    "/api/chat/artifacts/00000000-0000-4000-8000-000000000302/download?format=csv"
   );
   expect(await page.locator('a[href^="http:"]').count()).toBe(0);
 });

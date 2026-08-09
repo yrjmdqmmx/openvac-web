@@ -17,6 +17,34 @@ describe("Agent V3 deployment contract", () => {
   const packageJson = JSON.parse(
     readFileSync(join(process.cwd(), "package.json"), "utf8")
   ) as { scripts: Record<string, string> };
+  const chatRoute = readFileSync(
+    join(process.cwd(), "src/app/api/chat/route.ts"),
+    "utf8"
+  );
+  const agentHttp = readFileSync(
+    join(process.cwd(), "src/server/agent/http-v2.ts"),
+    "utf8"
+  );
+  const artifactRuntime = readFileSync(
+    join(process.cwd(), "src/server/chat-attachments/artifact-runtime.ts"),
+    "utf8"
+  );
+  const artifactStorage = readFileSync(
+    join(process.cwd(), "src/server/chat-attachments/artifact-storage.ts"),
+    "utf8"
+  );
+  const runSettlement = readFileSync(
+    join(process.cwd(), "src/server/agent/run-settlement.ts"),
+    "utf8"
+  );
+  const exampleEnvironment = readFileSync(
+    join(process.cwd(), ".env.example"),
+    "utf8"
+  );
+  const compose = readFileSync(
+    join(process.cwd(), "docker-compose.yml"),
+    "utf8"
+  );
 
   it("requires additive migration and preserves V2 history for image rollback", () => {
     expect(releaseContract).toContain("migration must be additive");
@@ -54,6 +82,30 @@ describe("Agent V3 deployment contract", () => {
     expect(packageJson.scripts["test:e2e:agent-v3"]).toContain(
       "agent-v3-contract.spec.ts"
     );
+  });
+
+  it("uses V3 as the only runtime request path", () => {
+    expect(chatRoute).toContain("return postAgentV3(request)");
+    expect(chatRoute).not.toContain("postLegacyChat");
+    expect(chatRoute).not.toContain("agentResponsesV3Enabled");
+    expect(agentHttp).toContain("protocolVersion: z.literal(3)");
+    expect(agentHttp).not.toContain("protocolVersion: z.literal(2)");
+    expect(exampleEnvironment).not.toContain("AGENT_RESPONSES_V2");
+    expect(compose).not.toContain("AGENT_RESPONSES_V2");
+  });
+
+  it("binds artifacts to the active run and cleans failed runs", () => {
+    expect(artifactStorage).toContain(
+      "id, user_id, conversation_id, message_id, source_turn_id"
+    );
+    expect(artifactStorage).toContain("active_run.assistant_message_id = $4");
+    expect(artifactStorage).toContain(
+      "completed_run.status IN ('completed', 'incomplete')"
+    );
+    expect(artifactRuntime).toContain("input.signal?.throwIfAborted()");
+    expect(runSettlement).toContain("chat_storage_deletion_job");
+    expect(runSettlement).toContain("on conflict (object_key) do nothing");
+    expect(agentHttp).toContain('settlement: "pending_recovery"');
   });
 
   it("states that the release document is not production authorization", () => {

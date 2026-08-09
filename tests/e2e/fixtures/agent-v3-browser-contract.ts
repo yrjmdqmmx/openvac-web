@@ -114,7 +114,7 @@ function renderArtifact(artifact: ContractArtifact): string {
     const label = artifact.status === "deleted" ? "产物已删除" : "产物生成失败";
     return `<section aria-label="工程产物"><span class="error">${label}</span></section>`;
   }
-  const path = `/api/artifacts/${encodeURIComponent(artifact.id)}/${artifact.format}`;
+  const path = `/api/chat/artifacts/${encodeURIComponent(artifact.id)}/download?format=${encodeURIComponent(artifact.format)}`;
   return `<section aria-label="工程产物"><a href="${path}" download>${escapeHtml(artifact.title)}（${artifact.format.toUpperCase()}）</a></section>`;
 }
 

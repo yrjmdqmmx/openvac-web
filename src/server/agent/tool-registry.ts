@@ -8,7 +8,10 @@ import type {
 } from "@/server/providers";
 import { getDocumentParser, getVisionProvider } from "@/server/providers";
 import { collectLocalEvidence } from "@/server/chat/evidence";
-import { artifactSpecSchema } from "@/server/chat-v3/contracts";
+import {
+  artifactSpecBaseSchema,
+  artifactSpecSchema
+} from "@/server/chat-v3/contracts";
 import type { CalculationResult } from "@/types/chat";
 import type {
   ArtifactPart,
@@ -61,7 +64,9 @@ const analyzeImageSchema = z.object({
   attachmentId: z.string().uuid(),
   prompt: z.string().trim().min(1).max(2_000)
 });
-const createArtifactSchema = artifactSpecSchema.omit({ sourceTurnId: true });
+const createArtifactSchema = artifactSpecBaseSchema.omit({
+  sourceTurnId: true
+});
 
 export type ToolExecutionResult = {
   ok: boolean;
@@ -76,6 +81,9 @@ export type ToolExecutionResult = {
 export type ToolRegistryOptions = {
   userId: string;
   conversationId: string;
+  userMessageId: string;
+  assistantMessageId: string;
+  runId: string;
   turnId: string;
   question: string;
   inputParts: readonly InputMessagePart[];
@@ -320,6 +328,7 @@ export class ToolRegistry {
         const result = await this.attachmentService.search({
           userId: this.options.userId,
           conversationId: this.options.conversationId,
+          messageId: this.options.userMessageId,
           allowedAttachmentIds: this.attachmentIds,
           ...parsed.data,
           signal
@@ -365,6 +374,7 @@ export class ToolRegistry {
         const result = await this.attachmentService.open({
           userId: this.options.userId,
           conversationId: this.options.conversationId,
+          messageId: this.options.userMessageId,
           allowedAttachmentIds: this.attachmentIds,
           ...parsed.data,
           signal
@@ -408,6 +418,7 @@ export class ToolRegistry {
         const result = await this.attachmentService.analyze({
           userId: this.options.userId,
           conversationId: this.options.conversationId,
+          messageId: this.options.userMessageId,
           allowedAttachmentIds: this.attachmentIds,
           ...parsed.data,
           signal
@@ -448,15 +459,21 @@ export class ToolRegistry {
         });
       }
       try {
-        const spec: ArtifactSpec = {
+        const candidate: ArtifactSpec = {
           ...parsed.data,
           sourceTurnId: this.options.turnId
         };
+        const validated = artifactSpecSchema.safeParse(candidate);
+        if (!validated.success) return this.invalid(callId, validated.error);
+        const spec = validated.data;
         const artifact = await this.artifactService.create({
           userId: this.options.userId,
           conversationId: this.options.conversationId,
           turnId: this.options.turnId,
+          runId: this.options.runId,
+          assistantMessageId: this.options.assistantMessageId,
           question: this.options.question,
+          signal,
           spec
         });
         return this.output(

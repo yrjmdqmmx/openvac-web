@@ -29,6 +29,7 @@ const DOCUMENT_MIME_TYPES = new Set([
 export type AttachmentAccessScope = {
   userId: string;
   conversationId: string;
+  messageId: string;
   attachmentId: string;
 };
 
@@ -38,7 +39,7 @@ export type StoredAttachment = AttachmentAccessScope & {
   mimeType: string;
   sizeBytes: number;
   status: AttachmentStatus;
-  bytes: Uint8Array;
+  bytes?: Uint8Array;
 };
 
 export type AttachmentTextChunk = {
@@ -269,6 +270,12 @@ export class AttachmentToolService {
         "Only JPEG and PNG images may be analyzed."
       );
     }
+    if (!(attachment.bytes instanceof Uint8Array)) {
+      throw new AttachmentToolError(
+        "ATTACHMENT_NOT_READY",
+        "Image bytes are unavailable."
+      );
+    }
     const result = await this.vision.analyze({
       images: [
         {
@@ -317,6 +324,7 @@ export class AttachmentToolService {
     if (
       attachment.userId !== input.userId ||
       attachment.conversationId !== input.conversationId ||
+      attachment.messageId !== input.messageId ||
       attachment.attachmentId !== input.attachmentId
     ) {
       throw new AttachmentToolError(
@@ -356,9 +364,10 @@ export class AttachmentToolService {
       !Number.isInteger(attachment.sizeBytes) ||
       attachment.sizeBytes <= 0 ||
       attachment.sizeBytes > MAX_ATTACHMENT_BYTES ||
-      !(attachment.bytes instanceof Uint8Array) ||
-      attachment.bytes.byteLength > MAX_ATTACHMENT_BYTES ||
-      attachment.bytes.byteLength !== attachment.sizeBytes
+      (expectedKind === "image" &&
+        (!(attachment.bytes instanceof Uint8Array) ||
+          attachment.bytes.byteLength > MAX_ATTACHMENT_BYTES ||
+          attachment.bytes.byteLength !== attachment.sizeBytes))
     ) {
       throw new AttachmentToolError(
         "ATTACHMENT_TOO_LARGE",
@@ -385,6 +394,12 @@ export class AttachmentToolService {
       throw new AttachmentToolError(
         "DOCUMENT_PARSER_UNCONFIGURED",
         "Document parsing is not configured."
+      );
+    }
+    if (!(attachment.bytes instanceof Uint8Array)) {
+      throw new AttachmentToolError(
+        "DOCUMENT_PARSE_FAILED",
+        "Document bytes are unavailable for fallback parsing."
       );
     }
     const job = await this.parser.submit({
@@ -550,6 +565,7 @@ function normalizeText(value: string): string {
 function assertScope(scope: AttachmentToolScope): void {
   boundedText(scope.userId, 240, "userId");
   boundedText(scope.conversationId, 240, "conversationId");
+  boundedText(scope.messageId, 240, "messageId");
   boundedText(scope.attachmentId, 240, "attachmentId");
   if (
     !Array.isArray(scope.allowedAttachmentIds) ||
@@ -569,6 +585,7 @@ function storageScope(input: AttachmentAccessScope): AttachmentAccessScope {
   return {
     userId: input.userId,
     conversationId: input.conversationId,
+    messageId: input.messageId,
     attachmentId: input.attachmentId
   };
 }

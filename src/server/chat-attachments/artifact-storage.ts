@@ -21,6 +21,8 @@ const ARTIFACT_MIME_BY_FORMAT: Record<ArtifactFormat, string> = {
   csv: "text/csv"
 };
 
+const ARTIFACT_ACCESS_URL_TTL_SECONDS = 5 * 60;
+
 export type ChatArtifactView = {
   id: string;
   conversationId: string;
@@ -45,11 +47,17 @@ export type ChatArtifactFileView = {
   createdAt: string;
 };
 
+export type ChatArtifactFileTarget = ChatArtifactFileView & {
+  objectKey: string;
+};
+
 export interface ChatArtifactStorageRepository {
   createArtifact(input: {
     artifactId: string;
     userId: string;
     conversationId: string;
+    runId: string;
+    assistantMessageId: string;
     spec: ArtifactSpec;
   }): Promise<ChatArtifactView>;
   reserveFile(input: {
@@ -73,8 +81,35 @@ export interface ChatArtifactStorageRepository {
     fileId: string;
     artifactId: string;
     userId: string;
+    objectKey: string;
     message: string;
   }): Promise<void>;
+  completeArtifact(input: {
+    artifactId: string;
+    userId: string;
+    conversationId: string;
+  }): Promise<ChatArtifactView>;
+  failArtifact(input: {
+    artifactId: string;
+    userId: string;
+    conversationId: string;
+  }): Promise<string[]>;
+  findRunArtifactIds(input: {
+    runId: string;
+    userId: string;
+    conversationId: string;
+    turnId: string;
+    assistantMessageId: string;
+  }): Promise<string[]>;
+  findOwned(
+    artifactId: string,
+    userId: string
+  ): Promise<ChatArtifactView | null>;
+  findOwnedFile(input: {
+    artifactId: string;
+    userId: string;
+    format: ArtifactFormat;
+  }): Promise<ChatArtifactFileTarget | null>;
 }
 
 export interface ChatArtifactSql {
@@ -115,21 +150,38 @@ export class PostgresChatArtifactStorageRepository implements ChatArtifactStorag
       if (!conversation) throw notFound("会话轮次");
       const [scope] = await transaction.unsafe(
         `
-          SELECT id FROM conversation_turn
-          WHERE id = $1 AND conversation_id = $2
-          FOR KEY SHARE
+          SELECT active_run.id
+          FROM agent_run active_run
+          JOIN conversation_turn turn_scope
+            ON turn_scope.id = active_run.turn_id
+          JOIN message assistant_message
+            ON assistant_message.id = active_run.assistant_message_id
+          WHERE active_run.id = $1
+            AND active_run.user_id = $2
+            AND active_run.turn_id = $3
+            AND active_run.assistant_message_id = $4
+            AND active_run.status IN ('pending', 'running')
+            AND turn_scope.conversation_id = $5
+            AND assistant_message.conversation_id = $5
+          FOR KEY SHARE OF active_run, turn_scope, assistant_message
         `,
-        [input.spec.sourceTurnId, input.conversationId]
+        [
+          input.runId,
+          input.userId,
+          input.spec.sourceTurnId,
+          input.assistantMessageId,
+          input.conversationId
+        ]
       );
       if (!scope) throw notFound("会话轮次");
       const [row] = await transaction.unsafe(
         `
           INSERT INTO chat_artifact (
-            id, user_id, conversation_id, source_turn_id, kind,
-            title, status, spec, created_at, updated_at
+            id, user_id, conversation_id, message_id, source_turn_id,
+            kind, title, status, spec, created_at, updated_at
           ) VALUES (
-            $1, $2, $3, $4, $5::chat_artifact_kind,
-            $6, 'generating', $7::jsonb, NOW(), NOW()
+            $1, $2, $3, $4, $5,
+            $6::chat_artifact_kind, $7, 'generating', $8::jsonb, NOW(), NOW()
           )
           RETURNING id, conversation_id, source_turn_id, kind, title,
             status, spec, created_at, updated_at, ready_at
@@ -138,6 +190,7 @@ export class PostgresChatArtifactStorageRepository implements ChatArtifactStorag
           input.artifactId,
           input.userId,
           input.conversationId,
+          input.assistantMessageId,
           input.spec.sourceTurnId,
           input.spec.kind,
           input.spec.title,
@@ -177,10 +230,12 @@ export class PostgresChatArtifactStorageRepository implements ChatArtifactStorag
           FROM chat_artifact artifact
           WHERE artifact.id = $1 AND artifact.user_id = $2
             AND artifact.conversation_id = $3
-            AND artifact.status IN ('generating', 'failed')
+            AND artifact.status = 'generating'
+            AND artifact.deleted_at IS NULL
+            AND artifact.spec -> 'formats' @> to_jsonb(ARRAY[$4::text])
           FOR UPDATE
         `,
-        [input.artifactId, input.userId, input.conversationId]
+        [input.artifactId, input.userId, input.conversationId, input.format]
       );
       if (!artifact) throw notFound("产物");
       await transaction.unsafe(
@@ -279,6 +334,8 @@ export class PostgresChatArtifactStorageRepository implements ChatArtifactStorag
           WHERE file.id = $1 AND file.artifact_id = $2
             AND artifact.user_id = $3 AND file.quota_state = 'reserved'
             AND file.deletion_status = 'active'
+            AND artifact.status = 'generating'
+            AND artifact.deleted_at IS NULL
           FOR UPDATE OF file, artifact
         `,
         [input.fileId, input.artifactId, input.userId]
@@ -303,31 +360,9 @@ export class PostgresChatArtifactStorageRepository implements ChatArtifactStorag
       );
       await transaction.unsafe(
         `
-          UPDATE chat_artifact artifact
-          SET status = CASE
-                WHEN (
-                  SELECT COUNT(*)
-                  FROM chat_artifact_file file
-                  WHERE file.artifact_id = artifact.id
-                    AND file.quota_state = 'committed'
-                    AND file.deletion_status = 'active'
-                ) >= jsonb_array_length(artifact.spec -> 'formats')
-                  THEN 'ready'::chat_artifact_status
-                ELSE 'generating'::chat_artifact_status
-              END,
-              ready_at = CASE
-                WHEN (
-                  SELECT COUNT(*)
-                  FROM chat_artifact_file file
-                  WHERE file.artifact_id = artifact.id
-                    AND file.quota_state = 'committed'
-                    AND file.deletion_status = 'active'
-                ) >= jsonb_array_length(artifact.spec -> 'formats')
-                  THEN NOW()
-                ELSE NULL
-              END,
-              updated_at = NOW()
-          WHERE artifact.id = $1 AND artifact.user_id = $2
+          UPDATE chat_artifact
+          SET updated_at = NOW()
+          WHERE id = $1 AND user_id = $2 AND status = 'generating'
         `,
         [input.artifactId, input.userId]
       );
@@ -350,31 +385,53 @@ export class PostgresChatArtifactStorageRepository implements ChatArtifactStorag
         `,
         [input.fileId, input.artifactId, input.userId]
       );
-      if (!file) return;
-      const sizeBytes = requiredInteger(file.size_bytes, "artifact file size");
-      const objectKey = requiredString(file.object_key, "artifact object key");
-      await transaction.unsafe(
-        `
-          UPDATE chat_storage_account
-          SET reserved_bytes = GREATEST(reserved_bytes - $2, 0),
-              updated_at = NOW()
-          WHERE user_id = $1
-        `,
-        [input.userId, sizeBytes]
-      );
+      if (file) {
+        const sizeBytes = requiredInteger(
+          file.size_bytes,
+          "artifact file size"
+        );
+        const storedObjectKey = requiredString(
+          file.object_key,
+          "artifact object key"
+        );
+        if (storedObjectKey !== input.objectKey) {
+          throw new Error("Artifact cleanup object key does not match.");
+        }
+        await transaction.unsafe(
+          `
+            UPDATE chat_storage_account
+            SET reserved_bytes = GREATEST(reserved_bytes - $2, 0),
+                updated_at = NOW()
+            WHERE user_id = $1
+          `,
+          [input.userId, sizeBytes]
+        );
+      }
       await transaction.unsafe(
         `
           INSERT INTO chat_storage_deletion_job (
             user_id, object_type, source_id, object_key
           ) VALUES ($1, 'artifact', $2, $3)
-          ON CONFLICT (object_key) DO NOTHING
+          ON CONFLICT (object_key) DO UPDATE SET
+            user_id = EXCLUDED.user_id,
+            source_id = EXCLUDED.source_id,
+            status = 'queued',
+            attempts = 0,
+            run_at = NOW(),
+            locked_at = NULL,
+            locked_by = NULL,
+            lease_token = NULL,
+            last_error = NULL,
+            completed_at = NULL
         `,
-        [input.userId, input.fileId, objectKey]
+        [input.userId, input.fileId, input.objectKey]
       );
-      await transaction.unsafe(
-        "DELETE FROM chat_artifact_file WHERE id = $1 AND artifact_id = $2",
-        [input.fileId, input.artifactId]
-      );
+      if (file) {
+        await transaction.unsafe(
+          "DELETE FROM chat_artifact_file WHERE id = $1 AND artifact_id = $2",
+          [input.fileId, input.artifactId]
+        );
+      }
       await transaction.unsafe(
         `
           UPDATE chat_artifact
@@ -384,6 +441,254 @@ export class PostgresChatArtifactStorageRepository implements ChatArtifactStorag
         [input.artifactId, input.userId]
       );
     });
+  }
+
+  async completeArtifact(
+    input: Parameters<ChatArtifactStorageRepository["completeArtifact"]>[0]
+  ): Promise<ChatArtifactView> {
+    return this.sql.begin(async (transaction) => {
+      const [artifact] = await transaction.unsafe(
+        `
+          SELECT artifact.id, artifact.conversation_id,
+                 artifact.source_turn_id, artifact.kind, artifact.title,
+                 artifact.status, artifact.spec, artifact.created_at,
+                 artifact.updated_at, artifact.ready_at
+          FROM chat_artifact artifact
+          JOIN conversation conversation
+            ON conversation.id = artifact.conversation_id
+          WHERE artifact.id = $1
+            AND artifact.user_id = $2
+            AND artifact.conversation_id = $3
+            AND artifact.status = 'generating'
+            AND artifact.deleted_at IS NULL
+            AND conversation.user_id = $2
+            AND conversation.status <> 'deleted'
+            AND conversation.deleted_at IS NULL
+          FOR UPDATE OF artifact
+        `,
+        [input.artifactId, input.userId, input.conversationId]
+      );
+      if (!artifact) throw notFound("产物");
+      const expected = parseArtifact(artifact).formats;
+      const files = await transaction.unsafe(
+        `
+          SELECT format
+          FROM chat_artifact_file
+          WHERE artifact_id = $1
+            AND quota_state = 'committed'
+            AND deletion_status = 'active'
+            AND deleted_at IS NULL
+          FOR UPDATE
+        `,
+        [input.artifactId]
+      );
+      const actual = files.map((file) => file.format).filter(isArtifactFormat);
+      if (!sameFormats(actual, expected)) {
+        throw new ApiError(
+          409,
+          "ARTIFACT_INCOMPLETE",
+          "产物文件尚未全部生成。"
+        );
+      }
+      const [ready] = await transaction.unsafe(
+        `
+          UPDATE chat_artifact
+          SET status = 'ready', ready_at = NOW(), updated_at = NOW()
+          WHERE id = $1 AND user_id = $2 AND status = 'generating'
+          RETURNING id, conversation_id, source_turn_id, kind, title,
+            status, spec, created_at, updated_at, ready_at
+        `,
+        [input.artifactId, input.userId]
+      );
+      return parseArtifact(ready);
+    });
+  }
+
+  async failArtifact(
+    input: Parameters<ChatArtifactStorageRepository["failArtifact"]>[0]
+  ): Promise<string[]> {
+    return this.sql.begin(async (transaction) => {
+      const [artifact] = await transaction.unsafe(
+        `
+          SELECT id, status
+          FROM chat_artifact
+          WHERE id = $1 AND user_id = $2 AND conversation_id = $3
+            AND deleted_at IS NULL
+          FOR UPDATE
+        `,
+        [input.artifactId, input.userId, input.conversationId]
+      );
+      if (!artifact) throw notFound("产物");
+      if (artifact.status === "deleted") return [];
+
+      const files = await transaction.unsafe(
+        `
+          SELECT id, size_bytes, object_key, quota_state
+          FROM chat_artifact_file
+          WHERE artifact_id = $1 AND deletion_status = 'active'
+          FOR UPDATE
+        `,
+        [input.artifactId]
+      );
+      let committedBytes = 0;
+      let reservedBytes = 0;
+      const objectKeys: string[] = [];
+      for (const file of files) {
+        const sizeBytes = requiredInteger(
+          file.size_bytes,
+          "artifact cleanup size"
+        );
+        const objectKey = requiredString(
+          file.object_key,
+          "artifact cleanup object key"
+        );
+        const quotaState = requiredString(
+          file.quota_state,
+          "artifact cleanup quota state"
+        );
+        if (quotaState === "committed") committedBytes += sizeBytes;
+        if (quotaState === "reserved") reservedBytes += sizeBytes;
+        objectKeys.push(objectKey);
+        await transaction.unsafe(
+          `
+            INSERT INTO chat_storage_deletion_job (
+              user_id, object_type, source_id, object_key
+            ) VALUES ($1, 'artifact', $2, $3)
+            ON CONFLICT (object_key) DO NOTHING
+          `,
+          [
+            input.userId,
+            requiredString(file.id, "artifact cleanup file"),
+            objectKey
+          ]
+        );
+      }
+      if (committedBytes > 0 || reservedBytes > 0) {
+        await transaction.unsafe(
+          `
+            UPDATE chat_storage_account
+            SET used_bytes = GREATEST(used_bytes - $2, 0),
+                reserved_bytes = GREATEST(reserved_bytes - $3, 0),
+                updated_at = NOW()
+            WHERE user_id = $1
+          `,
+          [input.userId, committedBytes, reservedBytes]
+        );
+      }
+      await transaction.unsafe(
+        "DELETE FROM chat_artifact_file WHERE artifact_id = $1",
+        [input.artifactId]
+      );
+      await transaction.unsafe(
+        `
+          UPDATE chat_artifact
+          SET status = 'failed', ready_at = NULL, updated_at = NOW()
+          WHERE id = $1 AND user_id = $2 AND status <> 'deleted'
+        `,
+        [input.artifactId, input.userId]
+      );
+      return objectKeys;
+    });
+  }
+
+  async findRunArtifactIds(
+    input: Parameters<ChatArtifactStorageRepository["findRunArtifactIds"]>[0]
+  ): Promise<string[]> {
+    const rows = await this.sql.unsafe(
+      `
+        SELECT artifact.id
+        FROM chat_artifact artifact
+        JOIN agent_run active_run
+          ON active_run.assistant_message_id = artifact.message_id
+         AND active_run.turn_id = artifact.source_turn_id
+        WHERE active_run.id = $1
+          AND active_run.user_id = $2
+          AND artifact.user_id = $2
+          AND artifact.conversation_id = $3
+          AND artifact.message_id = $4
+          AND artifact.source_turn_id = $5
+          AND artifact.status <> 'deleted'
+          AND artifact.deleted_at IS NULL
+      `,
+      [
+        input.runId,
+        input.userId,
+        input.conversationId,
+        input.assistantMessageId,
+        input.turnId
+      ]
+    );
+    return rows.flatMap((row) => (typeof row.id === "string" ? [row.id] : []));
+  }
+
+  async findOwned(
+    artifactId: string,
+    userId: string
+  ): Promise<ChatArtifactView | null> {
+    const [row] = await this.sql.unsafe(
+      `
+        SELECT artifact.id, artifact.conversation_id,
+               artifact.source_turn_id, artifact.kind, artifact.title,
+               artifact.status, artifact.spec, artifact.created_at,
+               artifact.updated_at, artifact.ready_at
+        FROM chat_artifact artifact
+        JOIN conversation conversation
+          ON conversation.id = artifact.conversation_id
+        JOIN agent_run completed_run
+          ON completed_run.assistant_message_id = artifact.message_id
+         AND completed_run.turn_id = artifact.source_turn_id
+        WHERE artifact.id = $1
+          AND artifact.user_id = $2
+          AND artifact.status <> 'deleted'
+          AND artifact.deleted_at IS NULL
+          AND completed_run.user_id = $2
+          AND completed_run.status IN ('completed', 'incomplete')
+          AND conversation.user_id = $2
+          AND conversation.status <> 'deleted'
+          AND conversation.deleted_at IS NULL
+      `,
+      [artifactId, userId]
+    );
+    return row ? parseArtifact(row) : null;
+  }
+
+  async findOwnedFile(
+    input: Parameters<ChatArtifactStorageRepository["findOwnedFile"]>[0]
+  ): Promise<ChatArtifactFileTarget | null> {
+    const [row] = await this.sql.unsafe(
+      `
+        SELECT file.id, file.artifact_id, file.format, file.filename,
+               file.mime_type, file.size_bytes, file.sha256, file.object_key,
+               file.created_at
+        FROM chat_artifact_file file
+        JOIN chat_artifact artifact ON artifact.id = file.artifact_id
+        JOIN conversation conversation
+          ON conversation.id = artifact.conversation_id
+        JOIN agent_run completed_run
+          ON completed_run.assistant_message_id = artifact.message_id
+         AND completed_run.turn_id = artifact.source_turn_id
+        WHERE artifact.id = $1
+          AND artifact.user_id = $2
+          AND artifact.status = 'ready'
+          AND artifact.deleted_at IS NULL
+          AND completed_run.user_id = $2
+          AND completed_run.status IN ('completed', 'incomplete')
+          AND conversation.user_id = $2
+          AND conversation.status <> 'deleted'
+          AND conversation.deleted_at IS NULL
+          AND file.format = $3::chat_artifact_format
+          AND file.quota_state = 'committed'
+          AND file.deletion_status = 'active'
+          AND file.deleted_at IS NULL
+      `,
+      [input.artifactId, input.userId, input.format]
+    );
+    return row
+      ? {
+          ...parseArtifactFile(row),
+          objectKey: requiredString(row.object_key, "artifact object key")
+        }
+      : null;
   }
 }
 
@@ -399,6 +704,8 @@ export class ChatArtifactStorageService {
   async create(input: {
     userId: string;
     conversationId: string;
+    runId: string;
+    assistantMessageId: string;
     spec: unknown;
   }): Promise<ChatArtifactView> {
     const parsed = artifactSpecSchema.safeParse(input.spec);
@@ -414,6 +721,8 @@ export class ChatArtifactStorageService {
       artifactId: this.uuidSource.randomUUID(),
       userId: input.userId,
       conversationId: input.conversationId,
+      runId: input.runId,
+      assistantMessageId: input.assistantMessageId,
       spec: parsed.data
     });
   }
@@ -497,11 +806,75 @@ export class ChatArtifactStorageService {
         fileId,
         artifactId: input.artifactId,
         userId: input.userId,
+        objectKey,
         message:
           cause instanceof Error ? cause.message : "Artifact storage failed"
       });
       throw cause;
     }
+  }
+
+  async complete(input: {
+    artifactId: string;
+    conversationId: string;
+    userId: string;
+  }): Promise<ChatArtifactView> {
+    return this.repository.completeArtifact(input);
+  }
+
+  async fail(input: {
+    artifactId: string;
+    conversationId: string;
+    userId: string;
+  }): Promise<void> {
+    const objectKeys = await this.repository.failArtifact(input);
+    await Promise.allSettled(
+      objectKeys.map((objectKey) => this.storage.deletePrivate(objectKey))
+    );
+  }
+
+  async failRun(input: {
+    runId: string;
+    userId: string;
+    conversationId: string;
+    turnId: string;
+    assistantMessageId: string;
+  }): Promise<void> {
+    const artifactIds = await this.repository.findRunArtifactIds(input);
+    for (const artifactId of artifactIds) {
+      await this.fail({
+        artifactId,
+        userId: input.userId,
+        conversationId: input.conversationId
+      });
+    }
+  }
+
+  async status(input: {
+    artifactId: string;
+    userId: string;
+  }): Promise<ChatArtifactView> {
+    const artifact = await this.repository.findOwned(
+      input.artifactId,
+      input.userId
+    );
+    if (!artifact) throw notFound("产物");
+    return artifact;
+  }
+
+  async createAccessUrl(input: {
+    artifactId: string;
+    userId: string;
+    format: ArtifactFormat;
+  }): Promise<string> {
+    const file = await this.repository.findOwnedFile(input);
+    if (!file) throw notFound("产物文件");
+    const signedUrl = await this.storage.createPrivateDownloadUrl(
+      file.objectKey,
+      ARTIFACT_ACCESS_URL_TTL_SECONDS
+    );
+    assertShortLivedHttpsUrl(signedUrl);
+    return signedUrl;
   }
 }
 
@@ -555,6 +928,17 @@ function parseArtifactFile(
   };
 }
 
+function sameFormats(
+  left: readonly ArtifactFormat[],
+  right: readonly ArtifactFormat[]
+): boolean {
+  return (
+    left.length === right.length &&
+    new Set(left).size === left.length &&
+    left.every((format) => right.includes(format))
+  );
+}
+
 function artifactObjectKey(input: {
   userId: string;
   conversationId: string;
@@ -601,6 +985,26 @@ function assertArtifactObject(
       409,
       "ARTIFACT_STORAGE_MISMATCH",
       "产物对象与登记信息不一致。"
+    );
+  }
+}
+
+function assertShortLivedHttpsUrl(value: string): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new ApiError(
+      503,
+      "ARTIFACT_STORAGE_UNAVAILABLE",
+      "对象存储未返回有效的私有访问地址。"
+    );
+  }
+  if (url.protocol !== "https:" || url.username || url.password) {
+    throw new ApiError(
+      503,
+      "ARTIFACT_STORAGE_UNAVAILABLE",
+      "对象存储未返回有效的私有访问地址。"
     );
   }
 }

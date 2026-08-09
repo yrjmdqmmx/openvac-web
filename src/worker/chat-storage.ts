@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import { sqlClient } from "@/server/db";
+import { recoverStaleAgentRuns } from "@/server/agent/retention";
 import {
   ProviderError,
   type DocumentParser,
@@ -50,6 +51,7 @@ export type ChatStorageDeletionJob = {
 };
 
 export interface ChatStorageWorkerRepository {
+  recoverAgentRuns(): Promise<void>;
   enqueueExpiredOrphans(limit?: number): Promise<number>;
   claimAttachmentParse(
     workerId: string
@@ -271,7 +273,10 @@ export class ChatStorageWorker {
   async runBatch(): Promise<
     Array<"idle" | "deferred" | "completed" | "failed">
   > {
-    await this.repository.enqueueExpiredOrphans();
+    await Promise.all([
+      this.repository.recoverAgentRuns(),
+      this.repository.enqueueExpiredOrphans()
+    ]);
     return Promise.all(
       Array.from({ length: this.concurrency }, () => this.runOnce())
     );
@@ -299,6 +304,10 @@ export class PostgresChatStorageWorkerRepository implements ChatStorageWorkerRep
   constructor(
     private readonly sql: ChatStorageSql = sqlClient as unknown as ChatStorageSql
   ) {}
+
+  async recoverAgentRuns(): Promise<void> {
+    await recoverStaleAgentRuns();
+  }
 
   async enqueueExpiredOrphans(limit = 100): Promise<number> {
     positiveInteger(limit, "limit");
@@ -590,7 +599,6 @@ WITH candidate AS (
   SELECT id
   FROM chat_attachment
   WHERE kind = 'document'
-    AND message_id IS NOT NULL
     AND quota_state = 'committed'
     AND deletion_status = 'active'
     AND status = 'processing'

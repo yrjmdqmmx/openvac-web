@@ -156,6 +156,9 @@ export class AgentRunOrchestrator {
     this.tools = new ToolRegistry(this.evidence, {
       userId: input.userId,
       conversationId: input.run.conversationId,
+      userMessageId: input.run.userMessageId,
+      assistantMessageId: input.run.assistantMessageId,
+      runId: input.run.runId,
       turnId: input.run.turnId,
       question: input.run.question,
       inputParts: input.run.inputParts,
