@@ -21,6 +21,8 @@ import {
 
 const TIME_SENSITIVE =
   /(?:最新|目前|现在|当前|价格|库存|停产|在售|新型号|新版|更新|公告)/u;
+const DEFAULT_QUERY_EMBEDDING_TIMEOUT_MS = 8_000;
+const MAX_QUERY_EMBEDDING_TIMEOUT_MS = 15_000;
 
 type EvidenceResult = {
   evidence: GroundingEvidence[];
@@ -36,7 +38,7 @@ export async function collectEvidence(input: {
   onStage?: (label: string) => void;
 }): Promise<EvidenceResult> {
   input.onStage?.("正在检索 OpenVac 知识库…");
-  const localResult = await collectLocalEvidence(input.question);
+  const localResult = await collectLocalEvidence(input.question, input.signal);
   const { patentReferences, local, evidence: localEvidence } = localResult;
 
   const insufficient =
@@ -160,7 +162,10 @@ export async function collectEvidence(input: {
   }
 }
 
-export async function collectLocalEvidence(question: string): Promise<{
+export async function collectLocalEvidence(
+  question: string,
+  signal?: AbortSignal
+): Promise<{
   evidence: GroundingEvidence[];
   patentReferences: number;
   local: {
@@ -175,7 +180,7 @@ export async function collectLocalEvidence(question: string): Promise<{
       return [...rows] as Array<Record<string, unknown>>;
     }
   ).catch(() => []);
-  const local = await retrieveLocal(question);
+  const local = await retrieveLocal(question, signal);
   const localEvidence = deduplicateEvidence([
     ...patentReferences.map((evidence) =>
       sanitizeGroundingEvidence(evidence, 2_200)
@@ -311,7 +316,10 @@ function isInstructionLikeEvidence(value: string): boolean {
   );
 }
 
-async function retrieveLocal(question: string): Promise<{
+async function retrieveLocal(
+  question: string,
+  signal?: AbortSignal
+): Promise<{
   candidates: RetrievalCandidate[];
   mode: "hybrid" | "lexical" | "none";
 }> {
@@ -326,11 +334,31 @@ async function retrieveLocal(question: string): Promise<{
       embeddings: getEmbeddingProvider(),
       repository
     });
-    const candidates = await retriever.retrieve(question, {
-      limit: 8,
-      candidateLimit: 50,
-      minimumScore: 0.01
-    });
+    const timeoutController = new AbortController();
+    const timeout = setTimeout(
+      () =>
+        timeoutController.abort(
+          new DOMException("Query embedding timed out.", "TimeoutError")
+        ),
+      queryEmbeddingTimeoutMs()
+    );
+    const embeddingSignal = signal
+      ? AbortSignal.any([signal, timeoutController.signal])
+      : timeoutController.signal;
+    let candidates: RetrievalCandidate[];
+    try {
+      candidates = await retriever.retrieve(
+        question,
+        {
+          limit: 8,
+          candidateLimit: 50,
+          minimumScore: 0.01
+        },
+        embeddingSignal
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
     return { candidates, mode: "hybrid" };
   } catch {
     try {
@@ -342,6 +370,14 @@ async function retrieveLocal(question: string): Promise<{
       return { candidates: [], mode: "none" };
     }
   }
+}
+
+function queryEmbeddingTimeoutMs(): number {
+  const configured = Number(process.env.AGENT_QUERY_EMBEDDING_TIMEOUT_MS);
+  if (!Number.isSafeInteger(configured) || configured <= 0) {
+    return DEFAULT_QUERY_EMBEDDING_TIMEOUT_MS;
+  }
+  return Math.min(configured, MAX_QUERY_EMBEDDING_TIMEOUT_MS);
 }
 
 async function lexicalFallback(

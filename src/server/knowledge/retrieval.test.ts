@@ -87,7 +87,7 @@ describe("PostgresHybridRetrievalRepository", () => {
 });
 
 describe("HybridRetriever", () => {
-  it("embeds the normalized query before repository search", async () => {
+  it("forwards the signal while preserving successful hybrid search", async () => {
     const embeddings = {
       id: "test",
       model: "test",
@@ -100,10 +100,14 @@ describe("HybridRetriever", () => {
     };
     const repository = { search: vi.fn(async () => []) };
     const retriever = new HybridRetriever({ embeddings, repository });
+    const controller = new AbortController();
 
-    await retriever.retrieve("  泵选型  ");
+    await retriever.retrieve("  泵选型  ", {}, controller.signal);
 
-    expect(embeddings.embed).toHaveBeenCalledWith(["泵选型"]);
+    expect(embeddings.embed).toHaveBeenCalledWith(
+      ["泵选型"],
+      controller.signal
+    );
     expect(repository.search).toHaveBeenCalledWith(
       expect.objectContaining({ query: "泵选型" })
     );

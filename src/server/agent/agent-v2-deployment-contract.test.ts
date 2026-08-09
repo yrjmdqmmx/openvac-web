@@ -8,6 +8,7 @@ const requiredAgentEnvironment = [
   "AGENT_DEEP_MAX_OUTPUT_TOKENS",
   "AGENT_AUTO_TIMEOUT_MS",
   "AGENT_DEEP_TIMEOUT_MS",
+  "AGENT_QUERY_EMBEDDING_TIMEOUT_MS",
   "AGENT_STALE_RUN_MS",
   "DEEPSEEK_ALLOWED_HOSTS",
   "DEEPSEEK_RESPONSES_MODEL",
@@ -45,6 +46,10 @@ describe("Agent deployment contract", () => {
     expect(example).toContain("AGENT_AUTO_TIMEOUT_MS=120000");
     expect(compose).toContain(
       "AGENT_AUTO_TIMEOUT_MS: ${AGENT_AUTO_TIMEOUT_MS:-120000}"
+    );
+    expect(example).toContain("AGENT_QUERY_EMBEDDING_TIMEOUT_MS=8000");
+    expect(compose).toContain(
+      "AGENT_QUERY_EMBEDDING_TIMEOUT_MS: ${AGENT_QUERY_EMBEDDING_TIMEOUT_MS:-8000}"
     );
   });
 

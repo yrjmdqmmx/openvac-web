@@ -51,8 +51,131 @@ const SSE_TYPES = new Set([
   "tool.failed",
   "answer.block.committed",
   "citation.committed",
-  "run.completed"
+  "run.completed",
+  "run.cancelled",
+  "run.failed"
 ]);
+
+const SMOKE_DIAGNOSTIC_STAGES = [
+  "bootstrap",
+  "health",
+  "principal_create",
+  "case_setup",
+  "conversation_create",
+  "attachment_upload",
+  "chat_request",
+  "chat_http",
+  "chat_sse_parse",
+  "chat_terminal",
+  "database_evidence",
+  "artifact_validation",
+  "case_cleanup",
+  "principal_cleanup",
+  "report_write"
+] as const;
+const SMOKE_DIAGNOSTIC_STAGE_SET = new Set<string>(SMOKE_DIAGNOSTIC_STAGES);
+const SMOKE_CASE_IDS = new Set(ANSWER_V3_EVAL_CASES.map((item) => item.id));
+const DIAGNOSTIC_TOKEN = /^[A-Z][A-Z0-9_]{0,63}$/u;
+const DIAGNOSTIC_ACTIONS = new Set([
+  "retry",
+  "continue",
+  "sign_in",
+  "wait",
+  "report"
+]);
+const DIAGNOSTIC_SETTLEMENTS = new Set(["released", "pending_recovery"]);
+
+type SmokeDiagnosticStage = (typeof SMOKE_DIAGNOSTIC_STAGES)[number];
+type SmokeDiagnosticState = {
+  stage: SmokeDiagnosticStage;
+  caseId?: string;
+  terminalType?: "run.cancelled" | "run.failed";
+  code?: string;
+  httpStatus?: number;
+  retryable?: boolean;
+  suggestedAction?: string;
+  settlement?: string;
+};
+
+let smokeDiagnosticState: SmokeDiagnosticState = { stage: "bootstrap" };
+let smokeFailureState: SmokeDiagnosticState | undefined;
+
+function markSmokeDiagnostic(
+  stage: SmokeDiagnosticStage,
+  input: Omit<SmokeDiagnosticState, "stage"> = {}
+): void {
+  smokeDiagnosticState = { stage, ...input };
+}
+
+function captureSmokeFailure(): void {
+  smokeFailureState ??= smokeDiagnosticState;
+}
+
+export function publicSmokeFailureDiagnostic(
+  input: SmokeDiagnosticState
+): Record<string, unknown> {
+  const stage = SMOKE_DIAGNOSTIC_STAGE_SET.has(input.stage)
+    ? input.stage
+    : "bootstrap";
+  const caseId =
+    input.caseId && SMOKE_CASE_IDS.has(input.caseId) ? input.caseId : undefined;
+  const terminalType =
+    input.terminalType === "run.failed" ||
+    input.terminalType === "run.cancelled"
+      ? input.terminalType
+      : undefined;
+  const code =
+    typeof input.code === "string" && DIAGNOSTIC_TOKEN.test(input.code)
+      ? input.code
+      : undefined;
+  const httpStatus =
+    Number.isInteger(input.httpStatus) &&
+    Number(input.httpStatus) >= 100 &&
+    Number(input.httpStatus) <= 599
+      ? Number(input.httpStatus)
+      : undefined;
+  return {
+    schemaVersion: "openvac.agent-v3-staging-failure.v1",
+    stage,
+    ...(caseId ? { caseId } : {}),
+    ...(terminalType ? { terminalType } : {}),
+    ...(code ? { code } : {}),
+    ...(httpStatus ? { httpStatus } : {}),
+    ...(typeof input.retryable === "boolean"
+      ? { retryable: input.retryable }
+      : {}),
+    ...(input.suggestedAction && DIAGNOSTIC_ACTIONS.has(input.suggestedAction)
+      ? { suggestedAction: input.suggestedAction }
+      : {}),
+    ...(input.settlement && DIAGNOSTIC_SETTLEMENTS.has(input.settlement)
+      ? { settlement: input.settlement }
+      : {})
+  };
+}
+
+export function runtimeTerminalFailureDiagnostic(
+  caseId: string,
+  event: Record<string, unknown>
+): SmokeDiagnosticState | undefined {
+  if (event.type !== "run.failed" && event.type !== "run.cancelled") {
+    return undefined;
+  }
+  return {
+    stage: "chat_terminal",
+    caseId,
+    terminalType: event.type,
+    code: diagnosticToken(event.code),
+    ...(typeof event.retryable === "boolean"
+      ? { retryable: event.retryable }
+      : {}),
+    suggestedAction:
+      typeof event.suggestedAction === "string"
+        ? event.suggestedAction
+        : undefined,
+    settlement:
+      typeof event.settlement === "string" ? event.settlement : undefined
+  };
+}
 
 type TemporaryPrincipal = {
   userId: string;
@@ -178,6 +301,8 @@ export function publicSmokeReport(input: {
 }
 
 async function main(): Promise<void> {
+  smokeFailureState = undefined;
+  markSmokeDiagnostic("bootstrap");
   const baseUrl = validateStagingOrigin(process.env.APP_URL);
   const gitSha = requiredMatch(
     "AGENT_V3_SMOKE_GIT_SHA",
@@ -200,12 +325,22 @@ async function main(): Promise<void> {
     "answer-v3-runtime-evidence.json"
   );
   const smokePath = path.join(outputDirectory, "agent-v3-staging-smoke.json");
+  markSmokeDiagnostic("health");
   await assertHealth(baseUrl);
 
   try {
+    markSmokeDiagnostic("principal_create");
     const runtimeEvidence = await withTemporaryPrincipal({
       create: () => createTemporaryPrincipal(secret),
-      destroy: destroyTemporaryPrincipal,
+      destroy: async (principal) => {
+        markSmokeDiagnostic("principal_cleanup");
+        try {
+          await destroyTemporaryPrincipal(principal);
+        } catch (error) {
+          captureSmokeFailure();
+          throw error;
+        }
+      },
       run: (principal) =>
         captureRuntimeEvidence({
           principal,
@@ -225,6 +360,7 @@ async function main(): Promise<void> {
     });
     const serializedSmoke = `${JSON.stringify(smoke, null, 2)}\n`;
     assertNoSecrets(serializedEvidence, serializedSmoke, secret);
+    markSmokeDiagnostic("report_write");
     await mkdir(outputDirectory, { recursive: true });
     await writeFile(runtimeEvidencePath, serializedEvidence, {
       encoding: "utf8",
@@ -252,11 +388,18 @@ async function captureRuntimeEvidence(input: {
   const cases: Array<Record<string, unknown>> = [];
   try {
     for (const testCase of ANSWER_V3_EVAL_CASES) {
+      markSmokeDiagnostic("case_setup", { caseId: testCase.id });
       const captured = await captureCase(input, testCase, openConversations);
       cases.push(captured);
     }
+  } catch (error) {
+    // Preserve the primary runtime stage before best-effort cleanup changes
+    // the current progress marker.
+    captureSmokeFailure();
+    throw error;
   } finally {
     for (const conversationId of openConversations) {
+      markSmokeDiagnostic("case_cleanup");
       await deleteConversation(input, conversationId).catch(() => undefined);
     }
   }
@@ -286,6 +429,7 @@ async function captureCase(
   let conversationId: string;
   const caseConversations: string[] = [];
   if (testCase.id === "v3-multiturn-permission-01") {
+    markSmokeDiagnostic("conversation_create", { caseId: testCase.id });
     const sourceConversationId = await createConversation(input, testCase.id);
     const targetConversationId = await createConversation(input, testCase.id);
     openConversations.add(sourceConversationId);
@@ -339,6 +483,7 @@ async function captureCase(
       deniedRunStatus: denied.runStatus
     };
   } else {
+    markSmokeDiagnostic("conversation_create", { caseId: testCase.id });
     conversationId = await createConversation(input, testCase.id);
     openConversations.add(conversationId);
     caseConversations.push(conversationId);
@@ -346,6 +491,7 @@ async function captureCase(
 
   for (const turn of testCase.turns ?? []) {
     await runChat(input, {
+      caseId: testCase.id,
       conversationId,
       prompt: turn,
       parts: [{ type: "text", text: turn }],
@@ -354,6 +500,7 @@ async function captureCase(
   }
 
   if (testCase.category === "visual") {
+    markSmokeDiagnostic("attachment_upload", { caseId: testCase.id });
     const bytes = await visualFixture(testCase.id);
     attachmentId = await uploadAttachment(input, {
       conversationId,
@@ -363,6 +510,7 @@ async function captureCase(
       requireParsed: false
     });
   } else if (testCase.category === "document_qa") {
+    markSmokeDiagnostic("attachment_upload", { caseId: testCase.id });
     const bytes = await documentFixture(testCase);
     attachmentId = await uploadAttachment(input, {
       conversationId,
@@ -380,11 +528,13 @@ async function captureCase(
       : [])
   ];
   const result = await runChat(input, {
+    caseId: testCase.id,
     conversationId,
     prompt: testCase.prompt,
     parts,
     webMode: testCase.id === "v3-text-citation-link-02" ? "always" : "auto"
   });
+  markSmokeDiagnostic("database_evidence", { caseId: testCase.id });
   const database = await loadRunEvidence(input.principal.userId, result.runId);
   if (authorizationOutcome) {
     if (authorizationOutcome.agentToolCallQueryRunId === result.runId) {
@@ -394,6 +544,7 @@ async function captureCase(
     }
   }
 
+  markSmokeDiagnostic("artifact_validation", { caseId: testCase.id });
   const artifactSpec = await validateRuntimeArtifacts(input, result, testCase);
   assertRequiredToolEvidence(testCase, database.toolAudit);
   const authorizationAudit = authorizationAudits(
@@ -434,6 +585,7 @@ async function captureCase(
   };
 
   for (const id of caseConversations) {
+    markSmokeDiagnostic("case_cleanup", { caseId: testCase.id });
     await deleteConversation(input, id);
     openConversations.delete(id);
   }
@@ -526,6 +678,7 @@ function assertRequiredToolEvidence(
 async function runChat(
   input: { principal: TemporaryPrincipal; baseUrl: URL },
   request: {
+    caseId: string;
     conversationId: string;
     prompt: string;
     parts: InputMessagePart[];
@@ -533,6 +686,7 @@ async function runChat(
   }
 ): Promise<ChatResult> {
   const requestId = randomUUID();
+  markSmokeDiagnostic("chat_request", { caseId: request.caseId });
   const response = await appFetch(input, "/api/chat", {
     method: "POST",
     headers: {
@@ -550,11 +704,16 @@ async function runChat(
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
   });
   if (!response.ok || !response.body) {
+    markSmokeDiagnostic("chat_http", {
+      caseId: request.caseId,
+      httpStatus: response.status
+    });
     throw new Error(`Agent V3 runtime case returned HTTP ${response.status}.`);
   }
   if (!response.headers.get("content-type")?.startsWith("text/event-stream")) {
     throw new Error("Agent V3 runtime case did not return SSE.");
   }
+  markSmokeDiagnostic("chat_sse_parse", { caseId: request.caseId });
   const events = parseEvents(await response.text());
   const allowed = events.filter((event) => SSE_TYPES.has(String(event.type)));
   if (allowed.length !== events.length) {
@@ -564,6 +723,13 @@ async function runChat(
   }
   const accepted = allowed[0];
   const completed = allowed.at(-1);
+  const terminalFailure = completed
+    ? runtimeTerminalFailureDiagnostic(request.caseId, completed)
+    : undefined;
+  if (terminalFailure) {
+    markSmokeDiagnostic(terminalFailure.stage, terminalFailure);
+    throw new Error("Agent V3 runtime SSE ended in a failure terminal.");
+  }
   if (
     accepted?.type !== "run.accepted" ||
     completed?.type !== "run.completed"
@@ -1144,6 +1310,12 @@ function stringValue(value: unknown, field: string): string {
   return value;
 }
 
+function diagnosticToken(value: unknown): string | undefined {
+  return typeof value === "string" && DIAGNOSTIC_TOKEN.test(value)
+    ? value
+    : undefined;
+}
+
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -1154,7 +1326,10 @@ if (directPath === fileURLToPath(import.meta.url)) {
     // Never print the thrown value: provider errors can contain request details,
     // and this release path must not disclose session material or secrets.
     console.error(
-      "Agent V3 staging runtime acceptance failed; no provenance was produced."
+      "Agent V3 staging runtime acceptance failed; no provenance was produced.",
+      JSON.stringify(
+        publicSmokeFailureDiagnostic(smokeFailureState ?? smokeDiagnosticState)
+      )
     );
     process.exitCode = 1;
   });

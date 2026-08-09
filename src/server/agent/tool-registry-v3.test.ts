@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
+const toolRegistryMocks = vi.hoisted(() => ({
+  collectLocalEvidence: vi.fn()
+}));
+
+vi.mock("@/server/chat/evidence", () => ({
+  collectLocalEvidence: toolRegistryMocks.collectLocalEvidence
+}));
+
 import type { ArtifactStorage } from "./artifact-tools";
 import { EvidenceRegistry } from "./evidence-registry";
 import { ToolRegistry } from "./tool-registry";
@@ -87,9 +95,38 @@ describe("ToolRegistry V3 exposure", () => {
     ]);
     expect(JSON.stringify(result)).not.toMatch(/signed|signature|secret/iu);
   });
+
+  it("passes the tool signal into knowledge retrieval", async () => {
+    toolRegistryMocks.collectLocalEvidence.mockResolvedValueOnce({
+      evidence: [],
+      patentReferences: 0,
+      local: { mode: "lexical", bestScore: 0 }
+    });
+    const controller = new AbortController();
+    const scoped = registry("请搜索真空泵知识", undefined, controller.signal);
+
+    await scoped.execute({
+      callId: "call-search",
+      name: "search_knowledge",
+      arguments: JSON.stringify({ query: "真空泵选型" })
+    });
+
+    const forwardedSignal = toolRegistryMocks.collectLocalEvidence.mock
+      .calls[0]?.[1] as AbortSignal;
+    expect(forwardedSignal).toEqual(expect.any(AbortSignal));
+    expect(forwardedSignal.aborted).toBe(false);
+
+    controller.abort();
+
+    expect(forwardedSignal.aborted).toBe(true);
+  });
 });
 
-function registry(question: string, artifactStorage?: ArtifactStorage) {
+function registry(
+  question: string,
+  artifactStorage?: ArtifactStorage,
+  signal?: AbortSignal
+) {
   return new ToolRegistry(new EvidenceRegistry(), {
     userId,
     conversationId,
@@ -103,7 +140,8 @@ function registry(question: string, artifactStorage?: ArtifactStorage) {
       { type: "link", url: "https://example.com/manual", label: "说明书" },
       { type: "attachment", attachmentId }
     ],
-    artifactStorage
+    artifactStorage,
+    signal
   });
 }
 
