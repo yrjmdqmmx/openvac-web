@@ -216,6 +216,30 @@ describe("AttachmentToolService image analysis", () => {
     });
     expect(analyze).toHaveBeenCalledTimes(2);
   });
+
+  it("bounds each real vision attempt so the outer tool budget can retry", async () => {
+    const analyze = vi.fn(
+      ({ signal }: Parameters<VisionProvider["analyze"]>[0]) =>
+        new Promise<never>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), {
+            once: true
+          });
+        })
+    );
+    const service = new AttachmentToolService({
+      storage: makeStorage(imageAttachment()),
+      vision: makeVisionProvider(analyze),
+      visionAttemptTimeoutMs: 5
+    });
+
+    await expect(
+      service.analyze({ ...scope, prompt: "Read the gauge" })
+    ).rejects.toMatchObject({
+      code: "VISION_PROVIDER_TIMEOUT",
+      message: "Vision analysis timed out."
+    });
+    expect(analyze).toHaveBeenCalledTimes(2);
+  });
 });
 
 function makeVisionProvider(
