@@ -203,38 +203,42 @@ describe("DeepSeek native web evidence", () => {
     );
   });
 
-  it("does not publish a verified link whose final URL contains a secret", async () => {
-    fetchMocks.fetch.mockResolvedValue({
-      url: "https://trusted.example-a.com/pump?X-Amz-Signature=secret",
-      body: "A".repeat(120),
-      fetchedAt: new Date("2026-08-09T00:00:00.000Z")
-    });
-    const candidateFinish: Extract<ResponsesStreamEvent, { type: "finish" }> = {
-      ...finish,
-      outputText: JSON.stringify({
-        candidates: [
-          {
-            url: "https://trusted.example-a.com/pump",
-            title: "Pump manual",
-            summary: "Manufacturer source"
-          }
-        ]
-      })
-    };
+  it.each(["X-Amz-Signature", "X-Goog-Signature", "sig", "session_id"])(
+    "does not publish a verified link whose final URL contains %s",
+    async (sensitiveKey) => {
+      fetchMocks.fetch.mockResolvedValue({
+        url: `https://trusted.example-a.com/pump?${sensitiveKey}=secret`,
+        body: "A".repeat(120),
+        fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+      });
+      const candidateFinish: Extract<ResponsesStreamEvent, { type: "finish" }> =
+        {
+          ...finish,
+          outputText: JSON.stringify({
+            candidates: [
+              {
+                url: "https://trusted.example-a.com/pump",
+                title: "Pump manual",
+                summary: "Manufacturer source"
+              }
+            ]
+          })
+        };
 
-    await expect(
-      discover(
-        [{ type: "web-search-status", status: "completed" }, candidateFinish],
-        [
-          {
-            domain: "example-a.com",
-            trustTier: "tier_a",
-            licenseClass: "open"
-          }
-        ]
-      )
-    ).resolves.toMatchObject({ evidenceIds: [], verifiedLinks: [] });
-  });
+      await expect(
+        discover(
+          [{ type: "web-search-status", status: "completed" }, candidateFinish],
+          [
+            {
+              domain: "example-a.com",
+              trustTier: "tier_a",
+              licenseClass: "open"
+            }
+          ]
+        )
+      ).resolves.toMatchObject({ evidenceIds: [], verifiedLinks: [] });
+    }
+  );
 
   it("binds a safely fetched authority page and tells DeepSeek the approved domains", async () => {
     let capturedInstructions = "";
@@ -352,5 +356,389 @@ describe("DeepSeek native web evidence", () => {
       evidenceIds: ["E1"],
       verifiedLinks: [{ linkId: "W1", evidenceIds: ["E1"] }]
     });
+  });
+
+  it("extracts bounded HTTPS candidates from non-JSON provider text", async () => {
+    fetchMocks.fetch.mockResolvedValue({
+      url: "https://docs.example-a.com/pump",
+      body: "Manufacturer foreline-pressure guidance. ".repeat(4),
+      fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+    });
+    const textFinish: Extract<ResponsesStreamEvent, { type: "finish" }> = {
+      ...finish,
+      outputText: [
+        "Search results:",
+        "[\u0001 Leybold   pump manual](https://docs.example-a.com/pump).",
+        "Duplicate: https://docs.example-a.com/pump,",
+        "Unapproved: https://outside.example.net/pump"
+      ].join("\n")
+    };
+
+    await expect(
+      discover(
+        [textFinish],
+        [
+          {
+            domain: "example-a.com",
+            trustTier: "tier_a",
+            licenseClass: "open"
+          }
+        ]
+      )
+    ).resolves.toMatchObject({
+      evidenceIds: ["E1"],
+      verifiedLinks: [
+        {
+          linkId: "W1",
+          label: "docs.example-a.com",
+          url: "https://docs.example-a.com/pump"
+        }
+      ]
+    });
+    expect(fetchMocks.fetch).toHaveBeenCalledTimes(1);
+    expect(fetchMocks.fetch).toHaveBeenCalledWith(
+      "https://docs.example-a.com/pump",
+      undefined
+    );
+  });
+
+  it("keeps provider annotations ahead of text fallback URLs", async () => {
+    fetchMocks.fetch.mockImplementation(async (url: string) => ({
+      url,
+      body: "Manufacturer foreline-pressure guidance. ".repeat(4),
+      fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+    }));
+    const textFinish: Extract<ResponsesStreamEvent, { type: "finish" }> = {
+      ...finish,
+      outputText: Array.from(
+        { length: 8 },
+        (_, index) => `https://docs.example-a.com/text-result-${index + 1}`
+      ).join("\n")
+    };
+
+    await expect(
+      discover(
+        [
+          {
+            type: "web-search-sources",
+            sources: [
+              {
+                url: "https://docs.example-a.com/annotation",
+                title: "Provider annotation"
+              }
+            ]
+          },
+          textFinish
+        ],
+        [
+          {
+            domain: "example-a.com",
+            trustTier: "tier_a",
+            licenseClass: "open"
+          }
+        ]
+      )
+    ).resolves.toMatchObject({
+      verifiedLinks: [
+        {
+          url: "https://docs.example-a.com/annotation",
+          label: "Provider annotation"
+        }
+      ]
+    });
+    expect(fetchMocks.fetch).toHaveBeenCalledTimes(1);
+    expect(fetchMocks.fetch).toHaveBeenCalledWith(
+      "https://docs.example-a.com/annotation",
+      undefined
+    );
+  });
+
+  it("keeps valid JSON candidates ahead of provider annotations", async () => {
+    fetchMocks.fetch.mockImplementation(async (url: string) => ({
+      url,
+      body: "Manufacturer foreline-pressure guidance. ".repeat(4),
+      fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+    }));
+    const jsonFinish: Extract<ResponsesStreamEvent, { type: "finish" }> = {
+      ...finish,
+      outputText: JSON.stringify({
+        candidates: [
+          {
+            url: "https://docs.example-a.com/json",
+            title: "JSON candidate",
+            summary: ""
+          }
+        ]
+      })
+    };
+
+    await expect(
+      discover(
+        [
+          {
+            type: "web-search-sources",
+            sources: [
+              {
+                url: "https://docs.example-a.com/annotation",
+                title: "Provider annotation"
+              }
+            ]
+          },
+          jsonFinish
+        ],
+        [
+          {
+            domain: "example-a.com",
+            trustTier: "tier_a",
+            licenseClass: "open"
+          }
+        ]
+      )
+    ).resolves.toMatchObject({
+      verifiedLinks: [
+        { url: "https://docs.example-a.com/json", label: "JSON candidate" },
+        {
+          url: "https://docs.example-a.com/annotation",
+          label: "Provider annotation"
+        }
+      ]
+    });
+    expect(fetchMocks.fetch).toHaveBeenNthCalledWith(
+      1,
+      "https://docs.example-a.com/json",
+      undefined
+    );
+    expect(fetchMocks.fetch).toHaveBeenNthCalledWith(
+      2,
+      "https://docs.example-a.com/annotation",
+      undefined
+    );
+  });
+
+  it("preserves balanced URL parentheses while trimming sentence punctuation", async () => {
+    fetchMocks.fetch.mockImplementation(async (url: string) => ({
+      url,
+      body: "Manufacturer foreline-pressure guidance. ".repeat(4),
+      fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+    }));
+
+    await expect(
+      discover(
+        [
+          {
+            ...finish,
+            outputText: "[Manual](https://docs.example-a.com/a_(b)). 中文句号。"
+          }
+        ],
+        [
+          {
+            domain: "example-a.com",
+            trustTier: "tier_a",
+            licenseClass: "open"
+          }
+        ]
+      )
+    ).resolves.toMatchObject({
+      verifiedLinks: [{ url: "https://docs.example-a.com/a_(b)" }]
+    });
+    expect(fetchMocks.fetch).toHaveBeenCalledWith(
+      "https://docs.example-a.com/a_(b)",
+      undefined
+    );
+  });
+
+  it("accepts a 2000-character URL and does not truncate a 2001-character token", async () => {
+    const prefix = "https://docs.example-a.com/";
+    const url2000 = `${prefix}${"a".repeat(2000 - prefix.length)}`;
+    const url2001 = `${url2000}a`;
+    fetchMocks.fetch.mockImplementation(async (url: string) => ({
+      url,
+      body: "Manufacturer foreline-pressure guidance. ".repeat(4),
+      fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+    }));
+    const policies = [
+      {
+        domain: "example-a.com",
+        trustTier: "tier_a" as const,
+        licenseClass: "open" as const
+      }
+    ];
+
+    await expect(
+      discover([{ ...finish, outputText: `[Manual](${url2000}).` }], policies)
+    ).resolves.toMatchObject({ evidenceIds: ["E1"] });
+    expect(fetchMocks.fetch).toHaveBeenCalledWith(url2000, undefined);
+
+    fetchMocks.fetch.mockReset();
+    await expect(
+      discover([{ ...finish, outputText: url2001 }], policies)
+    ).rejects.toThrow();
+    expect(fetchMocks.fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not accept a URL token truncated at the text scan boundary", async () => {
+    const visiblePrefix = "https://docs.example-a.com/a";
+    const outputText = `${"x".repeat(32768 - visiblePrefix.length)}${visiblePrefix}${"b".repeat(2000)}`;
+
+    await expect(
+      discover(
+        [{ ...finish, outputText }],
+        [
+          {
+            domain: "example-a.com",
+            trustTier: "tier_a",
+            licenseClass: "open"
+          }
+        ]
+      )
+    ).rejects.toThrow();
+    expect(fetchMocks.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "JSON",
+      [
+        {
+          ...finish,
+          outputText: JSON.stringify({
+            candidates: [
+              {
+                url: "https://docs.example-a.com/pump?api_key=secret",
+                title: "Private JSON candidate",
+                summary: ""
+              }
+            ]
+          })
+        }
+      ]
+    ],
+    [
+      "annotation",
+      [
+        {
+          type: "web-search-sources" as const,
+          sources: [
+            {
+              url: "https://docs.example-a.com/pump?credential=secret",
+              title: "Private annotation"
+            }
+          ]
+        },
+        { ...finish, outputText: "" }
+      ]
+    ]
+  ])("rejects sensitive %s candidates before fetch", async (_label, events) => {
+    await expect(
+      discover(events, [
+        {
+          domain: "example-a.com",
+          trustTier: "tier_a",
+          licenseClass: "open"
+        }
+      ])
+    ).resolves.toMatchObject({ evidenceIds: [], verifiedLinks: [] });
+    expect(fetchMocks.fetch).not.toHaveBeenCalled();
+  });
+
+  it("uses text fallback when malformed JSON annotations are not governable", async () => {
+    fetchMocks.fetch.mockImplementation(async (url: string) => ({
+      url,
+      body: "Manufacturer foreline-pressure guidance. ".repeat(4),
+      fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+    }));
+
+    await expect(
+      discover(
+        [
+          {
+            type: "web-search-sources",
+            sources: [
+              {
+                url: "https://outside.example.net/unapproved",
+                title: "Unapproved annotation"
+              }
+            ]
+          },
+          {
+            ...finish,
+            outputText:
+              "Not JSON, but use https://docs.example-a.com/governed-source"
+          }
+        ],
+        [
+          {
+            domain: "example-a.com",
+            trustTier: "tier_a",
+            licenseClass: "open"
+          }
+        ]
+      )
+    ).resolves.toMatchObject({
+      verifiedLinks: [{ url: "https://docs.example-a.com/governed-source" }]
+    });
+  });
+
+  it("governs at most eight text candidates and fetches at most five", async () => {
+    fetchMocks.fetch.mockImplementation(async (url: string) => ({
+      url,
+      body: "Manufacturer foreline-pressure guidance. ".repeat(4),
+      fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+    }));
+    const outputText = Array.from(
+      { length: 9 },
+      (_, index) => `https://docs.example-a.com/result-${index + 1}`
+    ).join("\n");
+
+    await expect(
+      discover(
+        [{ ...finish, outputText }],
+        [
+          {
+            domain: "example-a.com",
+            trustTier: "tier_a",
+            licenseClass: "open"
+          }
+        ]
+      )
+    ).resolves.toMatchObject({
+      evidenceIds: ["E1", "E2", "E3", "E4", "E5"]
+    });
+    expect(fetchMocks.fetch).toHaveBeenCalledTimes(5);
+    expect(fetchMocks.fetch).not.toHaveBeenCalledWith(
+      "https://docs.example-a.com/result-9",
+      undefined
+    );
+  });
+
+  it.each(["token", "sig", "X-Goog-Signature", "session_id"])(
+    "rejects %s query URLs before the governed fetch",
+    async (sensitiveKey) => {
+      const textFinish: Extract<ResponsesStreamEvent, { type: "finish" }> = {
+        ...finish,
+        outputText: `https://docs.example-a.com/pump?${sensitiveKey}=short-lived-secret`
+      };
+
+      await expect(
+        discover(
+          [textFinish],
+          [
+            {
+              domain: "example-a.com",
+              trustTier: "tier_a",
+              licenseClass: "open"
+            }
+          ]
+        )
+      ).rejects.toThrow();
+      expect(fetchMocks.fetch).not.toHaveBeenCalled();
+    }
+  );
+
+  it("fails closed when non-JSON provider text contains no HTTPS candidate", async () => {
+    await expect(
+      discover([{ ...finish, outputText: "No usable source was returned." }])
+    ).rejects.toThrow();
+    expect(fetchMocks.fetch).not.toHaveBeenCalled();
   });
 });

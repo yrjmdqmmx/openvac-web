@@ -34,6 +34,9 @@ const discoverySchema = z.object({
     )
     .max(8)
 });
+const MAX_DISCOVERY_URL_CHARACTERS = 2_000;
+const MAX_TEXT_DISCOVERY_CHARACTERS = 32_768;
+const MAX_TEXT_URL_TOKENS = 64;
 
 export type WebDomainPolicy = {
   domain: string;
@@ -209,23 +212,30 @@ export class WebEvidenceService {
       throw new Error("NATIVE_WEB_SEARCH_COUNT_INVALID");
     }
     let generatedCandidates: z.infer<typeof discoverySchema>["candidates"] = [];
+    let candidateParseError: unknown;
     if (outputText.trim()) {
       try {
         generatedCandidates = discoverySchema.parse(
           parseJson(outputText)
         ).candidates;
       } catch (error) {
-        if (annotatedSources.length === 0) throw error;
+        candidateParseError = error;
       }
     }
-    const candidates = dedupeCandidates([
-      ...generatedCandidates,
-      ...annotatedSources.map((source) => ({ ...source, summary: "" }))
-    ]).slice(0, 8);
-    const accepted = candidates.flatMap((candidate) => {
-      const policy = policyForUrl(candidate.url, input.policies);
-      return policy ? [{ ...candidate, policy }] : [];
-    });
+    let accepted = governCandidates(
+      [
+        ...generatedCandidates,
+        ...annotatedSources.map((source) => ({ ...source, summary: "" }))
+      ],
+      input.policies
+    );
+    if (accepted.length === 0 && candidateParseError) {
+      accepted = governCandidates(
+        extractTextUrlCandidates(outputText),
+        input.policies
+      );
+      if (accepted.length === 0) throw candidateParseError;
+    }
     const { evidenceIds, verifiedLinks } = await this.fetchCandidates(
       accepted,
       input.signal
@@ -340,15 +350,115 @@ function nativeWebFailureCode(
   return "NATIVE_WEB_DISCOVERY_FAILED";
 }
 
-function dedupeCandidates(
-  candidates: Array<{ url: string; title: string; summary: string }>
+function governCandidates(
+  candidates: Array<{ url: string; title: string; summary: string }>,
+  policies: WebDomainPolicy[]
 ) {
   const seen = new Set<string>();
-  return candidates.filter((candidate) => {
-    if (seen.has(candidate.url)) return false;
-    seen.add(candidate.url);
-    return true;
-  });
+  const accepted: Array<{
+    url: string;
+    title: string;
+    summary: string;
+    policy: WebDomainPolicy;
+  }> = [];
+  for (const candidate of candidates) {
+    if (candidate.url.length > MAX_DISCOVERY_URL_CHARACTERS) continue;
+    const publicUrl = parsePublicHttpsUrl(candidate.url);
+    if (
+      !publicUrl ||
+      publicUrl.href.length > MAX_DISCOVERY_URL_CHARACTERS ||
+      seen.has(publicUrl.href)
+    ) {
+      continue;
+    }
+    const policy = policyForUrl(publicUrl.href, policies);
+    if (!policy) continue;
+    seen.add(publicUrl.href);
+    accepted.push({
+      url: publicUrl.href,
+      title: sanitizeCandidateTitle(candidate.title, publicUrl),
+      summary: candidate.summary.trim().slice(0, 1_000),
+      policy
+    });
+    if (accepted.length === 8) break;
+  }
+  return accepted;
+}
+
+function extractTextUrlCandidates(
+  value: string
+): z.infer<typeof discoverySchema>["candidates"] {
+  const candidates: z.infer<typeof discoverySchema>["candidates"] = [];
+  const urlPattern = /https:\/\/[^\s<>"'`]+/giu;
+  let inspected = 0;
+  const scanValue = value.slice(
+    0,
+    MAX_TEXT_DISCOVERY_CHARACTERS + MAX_DISCOVERY_URL_CHARACTERS + 1
+  );
+  for (const match of scanValue.matchAll(urlPattern)) {
+    if (
+      match.index === undefined ||
+      match.index >= MAX_TEXT_DISCOVERY_CHARACTERS
+    ) {
+      break;
+    }
+    inspected += 1;
+    if (inspected > MAX_TEXT_URL_TOKENS) break;
+    const parsed = parseTextCandidateUrl(match[0]);
+    if (!parsed || candidates.some((item) => item.url === parsed.href)) {
+      continue;
+    }
+    candidates.push({
+      url: parsed.href,
+      title: parsed.hostname,
+      summary: ""
+    });
+    if (candidates.length === 32) break;
+  }
+  return candidates;
+}
+
+function parseTextCandidateUrl(value: string): URL | undefined {
+  const trimmed = trimTrailingUrlPunctuation(value);
+  if (trimmed.length > MAX_DISCOVERY_URL_CHARACTERS) return undefined;
+  const parsed = parsePublicHttpsUrl(trimmed);
+  return parsed && parsed.href.length <= MAX_DISCOVERY_URL_CHARACTERS
+    ? parsed
+    : undefined;
+}
+
+function trimTrailingUrlPunctuation(value: string): string {
+  let trimmed = value.replace(/[.,;:!?，。；：！？、]+$/gu, "");
+  for (const [open, close] of [
+    ["(", ")"],
+    ["[", "]"],
+    ["{", "}"]
+  ] as const) {
+    while (
+      trimmed.endsWith(close) &&
+      countCharacter(trimmed, close) > countCharacter(trimmed, open)
+    ) {
+      trimmed = trimmed.slice(0, -1);
+    }
+  }
+  return trimmed;
+}
+
+function countCharacter(value: string, expected: string): number {
+  let count = 0;
+  for (const character of value) {
+    if (character === expected) count += 1;
+  }
+  return count;
+}
+
+function sanitizeCandidateTitle(value: string, url: URL): string {
+  const title = value
+    .replace(/[\u0000-\u001f\u007f]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 300);
+  return title || url.hostname;
 }
 
 async function loadDomainPolicies(): Promise<WebDomainPolicy[]> {

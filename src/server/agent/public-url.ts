@@ -29,8 +29,10 @@ export function parsePublicHttpsUrl(
 export function hasSensitiveUrlParameters(url: URL): boolean {
   for (const key of url.searchParams.keys()) {
     if (
-      /^(?:x-amz-|x-oss-)/iu.test(key) ||
-      /^(?:signature|ossaccesskeyid|accesskeyid|expires|token)$/iu.test(key)
+      /^(?:x-amz-|x-oss-|x-goog-)/iu.test(key) ||
+      /^(?:signature|sig|ossaccesskeyid|accesskeyid|expires|token|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|apikey|auth|authorization|credential|client[_-]?secret|password|secret|session|session[_-]?id|jwt)$/iu.test(
+        key
+      )
     ) {
       return true;
     }
