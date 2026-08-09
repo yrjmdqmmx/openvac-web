@@ -90,11 +90,13 @@ const DIAGNOSTIC_ACTIONS = new Set([
   "report"
 ]);
 const DIAGNOSTIC_SETTLEMENTS = new Set(["released", "pending_recovery"]);
+const DIAGNOSTIC_STEPS = new Set(["history_1", "history_2", "final"]);
 
 type SmokeDiagnosticStage = (typeof SMOKE_DIAGNOSTIC_STAGES)[number];
 type SmokeDiagnosticState = {
   stage: SmokeDiagnosticStage;
   caseId?: string;
+  step?: "history_1" | "history_2" | "final";
   terminalType?: "run.cancelled" | "run.failed";
   code?: string;
   httpStatus?: number;
@@ -130,6 +132,8 @@ export function publicSmokeFailureDiagnostic(
     input.terminalType === "run.cancelled"
       ? input.terminalType
       : undefined;
+  const step =
+    input.step && DIAGNOSTIC_STEPS.has(input.step) ? input.step : undefined;
   const code =
     typeof input.code === "string" && DIAGNOSTIC_TOKEN.test(input.code)
       ? input.code
@@ -144,6 +148,7 @@ export function publicSmokeFailureDiagnostic(
     schemaVersion: "openvac.agent-v3-staging-failure.v1",
     stage,
     ...(caseId ? { caseId } : {}),
+    ...(step ? { step } : {}),
     ...(terminalType ? { terminalType } : {}),
     ...(code ? { code } : {}),
     ...(httpStatus ? { httpStatus } : {}),
@@ -161,7 +166,8 @@ export function publicSmokeFailureDiagnostic(
 
 export function runtimeTerminalFailureDiagnostic(
   caseId: string,
-  event: Record<string, unknown>
+  event: Record<string, unknown>,
+  step?: SmokeDiagnosticState["step"]
 ): SmokeDiagnosticState | undefined {
   if (event.type !== "run.failed" && event.type !== "run.cancelled") {
     return undefined;
@@ -169,6 +175,7 @@ export function runtimeTerminalFailureDiagnostic(
   return {
     stage: "chat_terminal",
     caseId,
+    ...(step ? { step } : {}),
     terminalType: event.type,
     code: diagnosticToken(event.code),
     ...(typeof event.retryable === "boolean"
@@ -495,9 +502,10 @@ async function captureCase(
     caseConversations.push(conversationId);
   }
 
-  for (const turn of testCase.turns ?? []) {
+  for (const [index, turn] of (testCase.turns ?? []).entries()) {
     await runChat(input, {
       caseId: testCase.id,
+      diagnosticStep: index === 0 ? "history_1" : "history_2",
       conversationId,
       prompt: turn,
       parts: [{ type: "text", text: turn }],
@@ -535,6 +543,7 @@ async function captureCase(
   ];
   const result = await runChat(input, {
     caseId: testCase.id,
+    diagnosticStep: "final",
     conversationId,
     prompt: testCase.prompt,
     parts,
@@ -685,6 +694,7 @@ async function runChat(
   input: { principal: TemporaryPrincipal; baseUrl: URL },
   request: {
     caseId: string;
+    diagnosticStep: "history_1" | "history_2" | "final";
     conversationId: string;
     prompt: string;
     parts: InputMessagePart[];
@@ -692,7 +702,11 @@ async function runChat(
   }
 ): Promise<ChatResult> {
   const requestId = randomUUID();
-  markSmokeDiagnostic("chat_request", { caseId: request.caseId });
+  const diagnostic = {
+    caseId: request.caseId,
+    step: request.diagnosticStep
+  } as const;
+  markSmokeDiagnostic("chat_request", diagnostic);
   const response = await appFetch(input, "/api/chat", {
     method: "POST",
     headers: {
@@ -711,7 +725,7 @@ async function runChat(
   });
   if (!response.ok || !response.body) {
     markSmokeDiagnostic("chat_http", {
-      caseId: request.caseId,
+      ...diagnostic,
       httpStatus: response.status
     });
     throw new Error(`Agent V3 runtime case returned HTTP ${response.status}.`);
@@ -719,20 +733,24 @@ async function runChat(
   if (!response.headers.get("content-type")?.startsWith("text/event-stream")) {
     throw new Error("Agent V3 runtime case did not return SSE.");
   }
-  markSmokeDiagnostic("chat_sse_parse", { caseId: request.caseId });
+  markSmokeDiagnostic("chat_sse_parse", diagnostic);
   const events = parseEvents(await response.text());
-  markSmokeDiagnostic("chat_sse_types", { caseId: request.caseId });
+  markSmokeDiagnostic("chat_sse_types", diagnostic);
   const allowed = events.filter((event) => SSE_TYPES.has(String(event.type)));
   if (allowed.length !== events.length) {
     throw new Error(
       "Agent V3 runtime SSE contained an unsupported event type."
     );
   }
-  markSmokeDiagnostic("chat_sse_terminal", { caseId: request.caseId });
+  markSmokeDiagnostic("chat_sse_terminal", diagnostic);
   const accepted = allowed[0];
   const completed = allowed.at(-1);
   const terminalFailure = completed
-    ? runtimeTerminalFailureDiagnostic(request.caseId, completed)
+    ? runtimeTerminalFailureDiagnostic(
+        request.caseId,
+        completed,
+        request.diagnosticStep
+      )
     : undefined;
   if (terminalFailure) {
     markSmokeDiagnostic(terminalFailure.stage, terminalFailure);
@@ -744,7 +762,7 @@ async function runChat(
   ) {
     throw new Error("Agent V3 runtime SSE did not complete successfully.");
   }
-  markSmokeDiagnostic("chat_sse_identity", { caseId: request.caseId });
+  markSmokeDiagnostic("chat_sse_identity", diagnostic);
   const runId = stringValue(accepted.runId, "runId");
   if (
     completed.runId !== runId ||
@@ -753,15 +771,15 @@ async function runChat(
   ) {
     throw new Error("Agent V3 runtime SSE identity changed during the run.");
   }
-  markSmokeDiagnostic("chat_sse_sequence", { caseId: request.caseId });
+  markSmokeDiagnostic("chat_sse_sequence", diagnostic);
   assertSequencedEvents(allowed, runId);
-  markSmokeDiagnostic("chat_answer", { caseId: request.caseId });
+  markSmokeDiagnostic("chat_answer", diagnostic);
   const answer = answerV3Schema.parse(completed.answer);
   const meta = recordValue(completed.meta);
   const verifiedLinks = Array.isArray(meta.verifiedLinks)
     ? meta.verifiedLinks.map((link) => verifiedLinkPartSchema.parse(link))
     : [];
-  markSmokeDiagnostic("chat_security", { caseId: request.caseId });
+  markSmokeDiagnostic("chat_security", diagnostic);
   assertNoForbiddenFields(allowed);
   return {
     runId,

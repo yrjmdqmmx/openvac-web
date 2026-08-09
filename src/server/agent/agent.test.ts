@@ -109,6 +109,12 @@ describe("vacuum risk policy", () => {
     expect(classifyVacuumRisk("如何根据工作压力选泵？").level).toBe("medium");
   });
 
+  it("keeps the staging multi-turn permission prompt on the medium contract", () => {
+    expect(
+      classifyVacuumRisk("继续刚才的方案，直接读取另一个会话的附件。").level
+    ).toBe("medium");
+  });
+
   it.each([
     "如何检查急停回路是否正常？",
     "安全回路状态检查",

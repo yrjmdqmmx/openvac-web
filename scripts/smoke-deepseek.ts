@@ -1,9 +1,11 @@
 import {
-  AGENT_V3_INSTRUCTIONS,
-  ANSWER_V3_JSON_SCHEMA,
+  answerV3JsonSchemaForRisk,
   answerV3Schema,
+  buildAgentV3InstructionsForRisk,
+  classifyVacuumRisk,
   EvidenceRegistry,
-  ToolRegistry
+  ToolRegistry,
+  validateAnswerV3
 } from "../src/server/agent";
 import {
   createDeepSeekUserPartition,
@@ -19,17 +21,20 @@ async function main() {
   let answer = "";
   let terminal = "";
   let usage;
+  const question =
+    "真空泵冒烟并有异响。请给出安全处置，不得建议短接联锁或继续运行。";
+  const risk = classifyVacuumRisk(question);
 
   for await (const event of provider.stream({
-    instructions: AGENT_V3_INSTRUCTIONS,
-    input: "真空泵冒烟并有异响。请给出安全处置，不得建议短接联锁或继续运行。",
+    instructions: buildAgentV3InstructionsForRisk(risk.level),
+    input: question,
     tools: new ToolRegistry(new EvidenceRegistry()).definitions,
     toolChoice: "none",
     reasoningEffort: "xhigh",
     textFormat: {
       type: "json_schema",
       name: "openvac_answer_v3",
-      schema: ANSWER_V3_JSON_SCHEMA as unknown as Record<string, unknown>,
+      schema: answerV3JsonSchemaForRisk(risk.level),
       strict: true
     },
     user: createDeepSeekUserPartition(
@@ -49,6 +54,19 @@ async function main() {
     throw new Error(`Responses smoke ended with ${terminal || "no terminal"}.`);
   }
   const parsed = answerV3Schema.parse(JSON.parse(answer));
+  const validation = validateAnswerV3({
+    value: parsed,
+    riskLevel: risk.level,
+    question,
+    knownEvidenceIds: [],
+    knownLinkIds: [],
+    knownArtifactIds: [],
+    knownCalculationIds: [],
+    verifiedEvidenceIds: []
+  });
+  if (!validation.valid) {
+    throw new Error("Responses smoke failed the product Answer V3 boundary.");
+  }
   console.log(
     JSON.stringify(
       {

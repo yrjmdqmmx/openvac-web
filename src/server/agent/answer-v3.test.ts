@@ -4,6 +4,8 @@ import type { AnswerV3 } from "@/types/chat-v3";
 
 import {
   ANSWER_V3_JSON_SCHEMA,
+  answerV3JsonSchemaForRisk,
+  buildDeterministicAttachmentScopeAnswerV3,
   buildDeterministicCalculationAnswerV3,
   buildDeterministicSafeAnswerV3,
   answerV3Blocks,
@@ -47,6 +49,21 @@ describe("Answer V3", () => {
         blocks: [{ ...directAnswer.blocks[0], rawKey: "不可透出" }]
       })
     ).toBeUndefined();
+  });
+
+  it("binds the provider schema to the server-assessed risk level", () => {
+    const schema = answerV3JsonSchemaForRisk("medium") as {
+      properties: { riskLevel: unknown };
+    };
+
+    expect(schema.properties.riskLevel).toEqual({
+      type: "string",
+      const: "medium"
+    });
+    expect(ANSWER_V3_JSON_SCHEMA.properties.riskLevel).toEqual({
+      type: "string",
+      enum: ["low", "medium", "high"]
+    });
   });
 
   it("collects references and renders a URL-free plain-text projection", () => {
@@ -212,6 +229,66 @@ describe("Answer V3", () => {
     expect(renderAnswerV3(answer)).toContain("立即停机");
     expect(renderAnswerV3(answer)).toContain("隔离电源");
     expect(renderAnswerV3(answer)).toContain("联系设备制造商");
+  });
+
+  it("builds a valid non-high fallback after answer repair is exhausted", () => {
+    const answer = buildDeterministicSafeAnswerV3(
+      "medium",
+      "结构化回答修复未完成"
+    );
+
+    expect(validateAnswerV3({ value: answer, riskLevel: "medium" }).valid).toBe(
+      true
+    );
+    expect(answer.answerKind).toBe("clarification");
+    expect(renderAnswerV3(answer)).not.toContain("已读取");
+  });
+
+  it("answers cross-conversation attachment requests from the server-owned permission policy", () => {
+    const answer = buildDeterministicAttachmentScopeAnswerV3(
+      "继续刚才的方案，直接读取另一个会话的附件。",
+      "medium"
+    );
+
+    expect(answer).toBeDefined();
+    expect(
+      validateAnswerV3({
+        value: answer,
+        riskLevel: "medium",
+        question: "继续刚才的方案，直接读取另一个会话的附件。"
+      }).valid
+    ).toBe(true);
+    expect(renderAnswerV3(answer!)).toContain("附件仅限当前会话");
+    expect(renderAnswerV3(answer!)).toContain("重新上传");
+    expect(
+      buildDeterministicAttachmentScopeAnswerV3(
+        "读取当前会话的附件并总结。",
+        "medium"
+      )
+    ).toBeUndefined();
+    expect(
+      buildDeterministicAttachmentScopeAnswerV3(
+        "另一个会话讨论了权限；请打开当前会话的附件。",
+        "medium"
+      )
+    ).toBeUndefined();
+    expect(
+      buildDeterministicAttachmentScopeAnswerV3(
+        "Please read the file from another conversation.",
+        "medium"
+      )
+    ).toBeDefined();
+    const highRisk = buildDeterministicAttachmentScopeAnswerV3(
+      "读取另一个会话的附件，其中描述设备冒烟。",
+      "high"
+    );
+    expect(highRisk).toBeDefined();
+    expect(validateAnswerV3({ value: highRisk, riskLevel: "high" }).valid).toBe(
+      true
+    );
+    expect(renderAnswerV3(highRisk!)).toContain("附件仅限当前会话");
+    expect(renderAnswerV3(highRisk!)).toContain("立即停机");
+    expect(renderAnswerV3(highRisk!)).toContain("隔离电源");
   });
 
   it("localizes deterministic calculations without exposing internal names or keys", () => {

@@ -33,13 +33,15 @@ import type {
 } from "@/types/chat-v3";
 
 import {
-  ANSWER_V3_JSON_SCHEMA,
   answerV3Blocks,
+  answerV3JsonSchemaForRisk,
+  buildDeterministicAttachmentScopeAnswerV3,
   buildDeterministicCalculationAnswerV3,
   buildDeterministicSafeAnswerV3,
   collectAnswerV3References,
   requiresExpertAnswer,
-  validateAnswerV3
+  validateAnswerV3,
+  type AnswerV3References
 } from "./answer-v3";
 import {
   AGENT_V3_INSTRUCTIONS,
@@ -524,6 +526,16 @@ export class AgentRunOrchestrator {
     outputText: string;
     signal: AbortSignal;
   }): Promise<AnswerV3 | undefined> {
+    const hasCurrentTurnAttachment = input.run.inputParts.some(
+      (part) => part.type === "attachment"
+    );
+    const attachmentScopeAnswer = hasCurrentTurnAttachment
+      ? undefined
+      : buildDeterministicAttachmentScopeAnswerV3(
+          input.run.question,
+          input.riskLevel
+        );
+    if (attachmentScopeAnswer) return attachmentScopeAnswer;
     const preferCalculationAnswer =
       input.riskLevel !== "high" && this.calculations.size > 0;
     const calculationAnswer = () =>
@@ -574,12 +586,26 @@ export class AgentRunOrchestrator {
           "生成内容未通过高风险语义安全边界。"
         );
       }
+      const candidateUsesGrounding = candidateUsesOnlyKnownGrounding(
+        validated.references,
+        this.evidence.list().map((entry) => entry.id),
+        this.calculations.keys()
+      );
+      if (!candidateUsesGrounding) {
+        return buildDeterministicSafeAnswerV3(
+          input.riskLevel,
+          "请补充设备型号、工况、单位和希望确认的具体问题。"
+        );
+      }
       const repaired = await this.repair(input, validated.errors);
       validated = validate(safeJson(repaired));
     }
     if (validated.valid) return validated.answer;
     if (preferCalculationAnswer) return calculationAnswer();
-    return undefined;
+    return buildDeterministicSafeAnswerV3(
+      input.riskLevel,
+      "请补充设备型号、工况、单位和希望确认的具体问题。"
+    );
   }
 
   private async repair(
@@ -599,12 +625,51 @@ export class AgentRunOrchestrator {
   ): Promise<string> {
     if (this.repairs >= 1) return "";
     this.repairs += 1;
+    const hasGrounding =
+      this.evidence.list().length > 0 || this.calculations.size > 0;
+    const expertRequired = requiresExpertAnswer(
+      input.run.question,
+      input.riskLevel
+    );
+    const hasVerifiedEvidence = this.evidence
+      .list()
+      .some(
+        (entry) =>
+          entry.trustTier === "tier_a" &&
+          ["reviewed", "runtime_verified"].includes(entry.reviewStatus)
+      );
+    const allowedAnswerKinds =
+      input.riskLevel === "high"
+        ? [
+            "clarification",
+            "safe_refusal",
+            ...(hasVerifiedEvidence ? ["expert"] : [])
+          ]
+        : input.riskLevel === "medium"
+          ? [
+              "clarification",
+              "safe_refusal",
+              ...(hasGrounding ? ["expert"] : [])
+            ]
+          : [
+              ...(!expertRequired ? ["direct"] : []),
+              "clarification",
+              "safe_refusal",
+              ...(hasGrounding ? ["expert"] : [])
+            ];
     const repairInput: ResponsesInputItem[] = [
       {
         type: "message",
         role: "user",
         content: JSON.stringify({
           task: "Repair the candidate into valid openvac.answer.v3 JSON. Do not add new facts, citations, links, artifacts, or calculations.",
+          requiredRiskLevel: input.riskLevel,
+          allowedAnswerKinds,
+          repairRules: [
+            "The answer riskLevel must equal requiredRiskLevel exactly.",
+            "When no allowed evidence or calculation exists, do not use answerKind expert; use clarification or safe_refusal.",
+            "Do not turn a permission denial into a claim that an attachment was accessed."
+          ],
           validationErrors: errors.slice(0, 20),
           allowedEvidenceIds: this.evidence.list().map((entry) => entry.id),
           allowedCalculationIds: [...this.calculations.keys()],
@@ -621,6 +686,7 @@ export class AgentRunOrchestrator {
       "answer_repair",
       false
     );
+    if (result.finish.status !== "completed") return "";
     return result.finish.outputText || result.outputText;
   }
 
@@ -693,7 +759,7 @@ export class AgentRunOrchestrator {
       textFormat: {
         type: "json_schema",
         name: "openvac_answer_v3",
-        schema: ANSWER_V3_JSON_SCHEMA as unknown as Record<string, unknown>,
+        schema: answerV3JsonSchemaForRisk(input.riskLevel),
         strict: true
       },
       maxOutputTokens: readPositiveInteger(
@@ -704,7 +770,7 @@ export class AgentRunOrchestrator {
       signal
     };
     // Instructions are kept out of untrusted input and applied on every call.
-    request.instructions = AGENT_V3_INSTRUCTIONS;
+    request.instructions = buildAgentV3InstructionsForRisk(input.riskLevel);
     const inputBudget = budgetProfile.inputTokenBudget;
     const estimatedInputTokens = estimateTokens(
       `${request.instructions}\n${JSON.stringify(request.input)}`
@@ -831,6 +897,30 @@ export class AgentRunOrchestrator {
   ): void {
     this.emit({ type: "tool", status, label });
   }
+}
+
+export function buildAgentV3InstructionsForRisk(riskLevel: RiskLevel): string {
+  return [
+    AGENT_V3_INSTRUCTIONS,
+    `本轮服务端风险等级已固定为 ${riskLevel}；最终答案的 riskLevel 必须原样使用该值，不得由模型重新分类。`,
+    "如果复杂或中高风险回答没有可用证据或服务端确定性计算，不得生成无依据的 expert；应使用 clarification 或 safe_refusal。"
+  ].join("\n");
+}
+
+export function candidateUsesOnlyKnownGrounding(
+  references: Pick<AnswerV3References, "evidenceIds" | "calculationIds">,
+  knownEvidenceIds: Iterable<string>,
+  knownCalculationIds: Iterable<string>
+): boolean {
+  const knownEvidence = new Set(knownEvidenceIds);
+  const knownCalculations = new Set(knownCalculationIds);
+  const evidenceIds = [...references.evidenceIds];
+  const calculationIds = [...references.calculationIds];
+  return (
+    evidenceIds.length + calculationIds.length > 0 &&
+    evidenceIds.every((id) => knownEvidence.has(id)) &&
+    calculationIds.every((id) => knownCalculations.has(id))
+  );
 }
 
 type CollectedModelResponse = {
