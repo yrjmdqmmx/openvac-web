@@ -9,6 +9,7 @@ import type { CalculationResult } from "@/types/chat";
 
 import {
   assertAuthorizedFunctionCalls,
+  extractTrustedPumpdownArguments,
   reserveNonRepeatableToolCalls,
   safeModelInvocationErrorMessage,
   safeProviderTerminalErrorCode,
@@ -53,6 +54,33 @@ describe("Agent V3 deterministic calculator routing", () => {
         []
       )
     ).toEqual({ type: "function", name: "estimate_pumpdown_time" });
+    expect(
+      extractTrustedPumpdownArguments(
+        "使用上一轮参数，估算从 100 Pa 抽到 1 Pa 的理想抽空时间，结果以秒表示。",
+        history
+      )
+    ).toEqual({
+      volume: { value: 100, unit: "L" },
+      pumpingSpeed: { value: 10, unit: "L/s" },
+      initialPressure: { value: 100, unit: "Pa" },
+      targetPressure: { value: 1, unit: "Pa" },
+      outputUnit: "s"
+    });
+  });
+
+  it("does not extract pumpdown arguments from unreferenced or ambiguous history", () => {
+    expect(
+      extractTrustedPumpdownArguments(
+        "估算从 100 Pa 抽到 1 Pa 的理想抽空时间。",
+        history
+      )
+    ).toBeUndefined();
+    expect(
+      extractTrustedPumpdownArguments(
+        "使用上一轮参数，真空计量程为 100 Pa 到 1 Pa，估算抽空时间。",
+        history
+      )
+    ).toBeUndefined();
   });
 
   it("returns to automatic routing after the required calculation completed", () => {
