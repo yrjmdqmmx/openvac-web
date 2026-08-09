@@ -36,6 +36,7 @@ const ATTACHMENT_STATUS_LABELS: Record<LocalChatAttachment["status"], string> =
     deleted: "已取消",
     cancelled: "已取消"
   };
+const USER_CANCELLED_ATTACHMENT = new Error("USER_CANCELLED_ATTACHMENT");
 
 export function ChatComposer({
   input,
@@ -122,6 +123,22 @@ export function ChatComposer({
     );
   }
 
+  async function deleteRegisteredAttachment(
+    localId: string,
+    attachmentId: string
+  ): Promise<boolean> {
+    try {
+      await cancelChatAttachment(attachmentId);
+      return true;
+    } catch (caught) {
+      const message =
+        caught instanceof Error ? caught.message : "附件删除失败，请重试。";
+      updateAttachment(localId, { status: "failed", error: message });
+      onError(message);
+      return false;
+    }
+  }
+
   async function startUpload(attachment: LocalChatAttachment) {
     const controller = new AbortController();
     controllersRef.current.set(attachment.localId, controller);
@@ -161,8 +178,18 @@ export function ChatComposer({
       }
     } finally {
       controllersRef.current.delete(attachment.localId);
-      if (controller.signal.aborted && registeredAttachmentId) {
-        await cancelChatAttachment(registeredAttachmentId);
+      if (
+        controller.signal.aborted &&
+        controller.signal.reason === USER_CANCELLED_ATTACHMENT &&
+        registeredAttachmentId
+      ) {
+        const deleted = await deleteRegisteredAttachment(
+          attachment.localId,
+          registeredAttachmentId
+        );
+        if (deleted) {
+          updateAttachment(attachment.localId, { status: "deleted" });
+        }
       }
     }
   }
@@ -318,7 +345,11 @@ export function ChatComposer({
                     type="button"
                     onClick={async () => {
                       if (attachment.attachmentId) {
-                        await cancelChatAttachment(attachment.attachmentId);
+                        const deleted = await deleteRegisteredAttachment(
+                          attachment.localId,
+                          attachment.attachmentId
+                        );
+                        if (!deleted) return;
                       }
                       updateAttachment(attachment.localId, {
                         attachmentId: undefined,
@@ -355,13 +386,22 @@ export function ChatComposer({
                     const controller = controllersRef.current.get(
                       attachment.localId
                     );
-                    controller?.abort();
+                    controller?.abort(USER_CANCELLED_ATTACHMENT);
                     updateAttachment(attachment.localId, {
                       status: "cancelled",
                       error: undefined
                     });
                     if (!controller && attachment.attachmentId) {
-                      void cancelChatAttachment(attachment.attachmentId);
+                      void deleteRegisteredAttachment(
+                        attachment.localId,
+                        attachment.attachmentId
+                      ).then((deleted) => {
+                        if (deleted) {
+                          updateAttachment(attachment.localId, {
+                            status: "deleted"
+                          });
+                        }
+                      });
                     }
                   }}
                   aria-label={`${working ? "取消上传" : "移除附件"} ${attachment.filename}`}
@@ -512,7 +552,8 @@ export function ChatComposer({
       </div>
       <p className="mt-2 px-2 text-[10px] leading-4 text-[var(--muted)]">
         附件会私密直传，并发送到阿里云模型处理；不会自动加入知识库。支持
-        PDF、DOCX、XLSX、CSV、TXT、MD、JPG、PNG，单文件不超过 25 MiB。
+        PDF、DOCX、XLSX、CSV、TXT、MD、JPG、PNG；图片不超过 10 MiB，文档不超过
+        25 MiB。
       </p>
     </form>
   );

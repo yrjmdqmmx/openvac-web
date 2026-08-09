@@ -7,6 +7,7 @@ import type {
 export const CHAT_ATTACHMENT_ACCEPT =
   ".pdf,.docx,.xlsx,.csv,.txt,.md,.jpg,.jpeg,.png";
 export const MAX_CHAT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+export const MAX_CHAT_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5;
 
 const MIME_BY_EXTENSION = {
@@ -51,7 +52,6 @@ type UploadChatAttachmentOptions = {
   onUpdate: (update: AttachmentUploadUpdate) => void;
   fetcher?: typeof fetch;
   pollIntervalMs?: number;
-  maxPolls?: number;
 };
 
 export function validateChatAttachmentFile(
@@ -70,6 +70,15 @@ export function validateChatAttachmentFile(
   }
   if (file.size > MAX_CHAT_ATTACHMENT_BYTES) {
     return { ok: false, message: "单个附件不能超过 25 MiB。" };
+  }
+  if (
+    mimeType.startsWith("image/") &&
+    file.size > MAX_CHAT_IMAGE_ATTACHMENT_BYTES
+  ) {
+    return {
+      ok: false,
+      message: "单张 JPG 或 PNG 图片不能超过 10 MiB；文档仍可上传至 25 MiB。"
+    };
   }
   return {
     ok: true,
@@ -155,21 +164,29 @@ export async function uploadChatAttachment(
   const completedPart = parseAttachmentEnvelope(
     await completed.json().catch(() => null)
   );
+  let pollingPart = initiation.attachment;
   if (completedPart) {
     options.onUpdate({ status: completedPart.status });
     if (isTerminal(completedPart.status)) return completedPart;
+    pollingPart = completedPart;
   }
 
-  return pollUntilTerminal(initiation.attachment, options, fetcher);
+  return pollUntilTerminal(pollingPart, options, fetcher);
 }
 
 export async function cancelChatAttachment(
   attachmentId: string,
   fetcher: typeof fetch = fetch
 ): Promise<void> {
-  await fetcher(`/api/chat/attachments/${encodeURIComponent(attachmentId)}`, {
-    method: "DELETE"
-  }).catch(() => undefined);
+  const response = await fetcher(
+    `/api/chat/attachments/${encodeURIComponent(attachmentId)}`,
+    {
+      method: "DELETE"
+    }
+  );
+  if (!response.ok) {
+    throw new Error(await responseError(response, "附件删除失败，请重试。"));
+  }
 }
 
 async function pollUntilTerminal(
@@ -177,26 +194,37 @@ async function pollUntilTerminal(
   options: UploadChatAttachmentOptions,
   fetcher: typeof fetch
 ): Promise<AttachmentPart> {
-  const maxPolls = options.maxPolls ?? 240;
-  const pollIntervalMs = options.pollIntervalMs ?? 1_000;
+  const pollIntervalMs = options.pollIntervalMs ?? 5_000;
   let latest = initial;
-  for (let poll = 0; poll < maxPolls; poll += 1) {
+  while (true) {
     assertNotAborted(options.signal);
     await abortableDelay(pollIntervalMs, options.signal);
-    const response = await fetcher(
-      `/api/chat/attachments/${encodeURIComponent(initial.attachmentId)}`,
-      { cache: "no-store", signal: options.signal }
-    );
-    if (!response.ok) {
-      throw new Error(await responseError(response, "无法获取附件处理状态。"));
+    let response: Response;
+    try {
+      response = await fetcher(
+        `/api/chat/attachments/${encodeURIComponent(initial.attachmentId)}`,
+        { cache: "no-store", signal: options.signal }
+      );
+    } catch {
+      assertNotAborted(options.signal);
+      continue;
     }
-    const part = parseAttachmentEnvelope(await response.json());
-    if (!part) throw new Error("附件状态响应不完整，请重试。");
+    if (!response.ok) {
+      if (response.status === 404 || response.status === 410) {
+        const deleted = { ...latest, status: "deleted" as const };
+        options.onUpdate({ status: deleted.status, error: undefined });
+        return deleted;
+      }
+      continue;
+    }
+    const part = parseAttachmentEnvelope(
+      await response.json().catch(() => null)
+    );
+    if (!part || part.attachmentId !== initial.attachmentId) continue;
     latest = part;
-    options.onUpdate({ status: latest.status });
+    options.onUpdate({ status: latest.status, error: undefined });
     if (isTerminal(latest.status)) return latest;
   }
-  throw new Error("附件处理超时，请移除后重试。");
 }
 
 function parseInitiation(

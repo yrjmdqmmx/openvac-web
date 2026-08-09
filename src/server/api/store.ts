@@ -35,6 +35,7 @@ import {
   adminTaskStates,
   auditLogs,
   backgroundTasks,
+  chatAttachments,
   citations,
   conversations,
   dailyUsage,
@@ -2364,25 +2365,53 @@ export const apiStore: ApiStore = {
       .orderBy(asc(messages.sequence));
 
     const messageIds = messageRows.map((message) => message.id);
-    const citationRows =
+    const [citationRows, attachmentRows] =
       messageIds.length === 0
-        ? []
-        : await db
-            .select({
-              messageId: messageCitations.messageId,
-              id: citations.id,
-              title: citations.title,
-              url: citations.url,
-              license: citations.license,
-              trustTier: citations.trustTier,
-              reviewStatus: citations.reviewStatus,
-              locator: citations.locator,
-              metadata: citations.metadata
-            })
-            .from(messageCitations)
-            .innerJoin(citations, eq(messageCitations.citationId, citations.id))
-            .where(inArray(messageCitations.messageId, messageIds))
-            .orderBy(asc(messageCitations.ordinal));
+        ? [[], []]
+        : await Promise.all([
+            db
+              .select({
+                messageId: messageCitations.messageId,
+                id: citations.id,
+                title: citations.title,
+                url: citations.url,
+                license: citations.license,
+                trustTier: citations.trustTier,
+                reviewStatus: citations.reviewStatus,
+                locator: citations.locator,
+                metadata: citations.metadata
+              })
+              .from(messageCitations)
+              .innerJoin(
+                citations,
+                eq(messageCitations.citationId, citations.id)
+              )
+              .where(inArray(messageCitations.messageId, messageIds))
+              .orderBy(asc(messageCitations.ordinal)),
+            db
+              .select({
+                messageId: chatAttachments.messageId,
+                attachmentId: chatAttachments.id,
+                kind: chatAttachments.kind,
+                filename: chatAttachments.originalFilename,
+                mimeType: chatAttachments.mimeType,
+                sizeBytes:
+                  sql<number>`coalesce(${chatAttachments.sizeBytes}, ${chatAttachments.declaredSizeBytes})`.mapWith(
+                    Number
+                  ),
+                status: chatAttachments.status
+              })
+              .from(chatAttachments)
+              .where(
+                and(
+                  eq(chatAttachments.userId, userId),
+                  eq(chatAttachments.conversationId, conversationId),
+                  inArray(chatAttachments.messageId, messageIds),
+                  eq(chatAttachments.deletionStatus, "active")
+                )
+              )
+              .orderBy(asc(chatAttachments.createdAt))
+          ]);
 
     const citationsByMessage = new Map<
       string,
@@ -2395,6 +2424,17 @@ export const apiStore: ApiStore = {
       citationsByMessage.set(citation.messageId, current);
     }
 
+    const attachmentsByMessage = new Map<
+      string,
+      NonNullable<ConversationDetail["messages"][number]["parts"]>
+    >();
+    for (const attachment of attachmentRows) {
+      if (!attachment.messageId) continue;
+      const current = attachmentsByMessage.get(attachment.messageId) ?? [];
+      current.push({ type: "attachment", ...attachment });
+      attachmentsByMessage.set(attachment.messageId, current);
+    }
+
     return {
       ...conversation,
       title: conversation.title ?? "新对话",
@@ -2402,7 +2442,10 @@ export const apiStore: ApiStore = {
         .map((message) =>
           serializeStoredMessage(
             message,
-            citationsByMessage.get(message.id) ?? []
+            citationsByMessage.get(message.id) ?? [],
+            (attachmentsByMessage.get(message.id) ?? []).filter(
+              (part) => part.type === "attachment"
+            )
           )
         )
         .filter(

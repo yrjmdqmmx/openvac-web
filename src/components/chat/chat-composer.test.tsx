@@ -28,7 +28,7 @@ import { ChatComposer, type ComposerLink } from "./chat-composer";
 
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
+  vi.resetAllMocks();
 });
 
 function Harness({ onSubmit = vi.fn(), onError = vi.fn() }) {
@@ -122,6 +122,58 @@ describe("ChatComposer", () => {
     await waitFor(() => expect(screen.getByText(/就绪/)).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
     expect(screen.getByText(/发送到阿里云模型处理/)).toBeInTheDocument();
-    expect(screen.getByText(/单文件不超过 25 MiB/)).toBeInTheDocument();
+    expect(screen.getByText(/图片不超过 10 MiB/)).toBeInTheDocument();
+    expect(screen.getByText(/文档不超过\s*25 MiB/)).toBeInTheDocument();
+  });
+
+  it("shows the localized 10 MiB image limit before starting an upload", () => {
+    const onError = vi.fn();
+    render(<Harness onError={onError} />);
+    const image = new File([new Uint8Array(1)], "gauge.png", {
+      type: "image/png"
+    });
+    Object.defineProperty(image, "size", { value: 10 * 1024 * 1024 + 1 });
+
+    fireEvent.change(screen.getByLabelText("添加工程附件"), {
+      target: { files: [image] }
+    });
+
+    expect(onError).toHaveBeenCalledWith(
+      "gauge.png：单张 JPG 或 PNG 图片不能超过 10 MiB；文档仍可上传至 25 MiB。"
+    );
+    expect(attachmentMocks.uploadChatAttachment).not.toHaveBeenCalled();
+  });
+
+  it("surfaces deletion failure and does not start a duplicate upload", async () => {
+    const onError = vi.fn();
+    attachmentMocks.uploadChatAttachment.mockResolvedValue({
+      type: "attachment",
+      attachmentId: "00000000-0000-4000-8000-000000000001",
+      kind: "document",
+      filename: "manual.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 6,
+      status: "failed"
+    });
+    attachmentMocks.cancelChatAttachment.mockRejectedValue(
+      new Error("附件删除暂时不可用。")
+    );
+    render(<Harness onError={onError} />);
+
+    fireEvent.change(screen.getByLabelText("添加工程附件"), {
+      target: {
+        files: [new File(["manual"], "manual.pdf", { type: "application/pdf" })]
+      }
+    });
+    const retry = await screen.findByRole("button", {
+      name: "重试附件 manual.pdf"
+    });
+    fireEvent.click(retry);
+
+    await waitFor(() =>
+      expect(onError).toHaveBeenCalledWith("附件删除暂时不可用。")
+    );
+    expect(attachmentMocks.uploadChatAttachment).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("附件删除暂时不可用。")).toBeVisible();
   });
 });

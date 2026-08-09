@@ -81,6 +81,8 @@ describe("chat attachment initiation", () => {
     ["manual.exe", "application/pdf", 10, "a".repeat(64)],
     ["manual.pdf", "image/png", 10, "a".repeat(64)],
     ["manual.pdf", "application/pdf", 25 * 1024 * 1024 + 1, "a".repeat(64)],
+    ["photo.jpg", "image/jpeg", 10 * 1024 * 1024 + 1, "a".repeat(64)],
+    ["diagram.png", "image/png", 10 * 1024 * 1024 + 1, "a".repeat(64)],
     ["manual.pdf", "application/pdf", 10, "A".repeat(64)]
   ])(
     "rejects invalid upload metadata",
@@ -129,6 +131,28 @@ describe("chat attachment initiation", () => {
     ).rejects.toMatchObject({ code: "ATTACHMENT_STORAGE_UNAVAILABLE" });
     expect(repository.initiate).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["photo.jpg", "image/jpeg", 10 * 1024 * 1024],
+    ["manual.pdf", "application/pdf", 25 * 1024 * 1024]
+  ])(
+    "accepts the exact %s size boundary",
+    async (filename, mimeType, sizeBytes) => {
+      const repository = makeRepository();
+      const storage = makeStorage();
+
+      await expect(
+        makeService(repository, storage).initiate({
+          conversationId,
+          filename,
+          mimeType,
+          sizeBytes,
+          sha256: "a".repeat(64),
+          userId: "user-1"
+        })
+      ).resolves.toMatchObject({ sizeBytes });
+    }
+  );
 
   it("sanitizes display filenames without path traversal", () => {
     expect(sanitizeChatAttachmentFilename("../../Pump manual (终版).PDF")).toBe(
@@ -232,6 +256,26 @@ describe("chat attachment completion and access", () => {
     }
   });
 
+  it("rejects a legacy image object above the effective 10 MiB provider limit", async () => {
+    const declaredSizeBytes = 10 * 1024 * 1024 + 1;
+    const target = makeTarget({
+      kind: "image",
+      mimeType: "image/jpeg",
+      declaredSizeBytes,
+      sizeBytes: declaredSizeBytes
+    });
+    const repository = makeRepository(target);
+    const storage = makeStorage({ target });
+
+    await expect(
+      makeService(repository, storage).complete({
+        attachmentId,
+        userId: "user-1"
+      })
+    ).rejects.toMatchObject({ code: "ATTACHMENT_UPLOAD_MISMATCH" });
+    expect(storage.getPrivate).not.toHaveBeenCalled();
+  });
+
   it("returns only a five-minute HTTPS access URL for an owned committed object", async () => {
     const target = makeTarget({ quotaState: "committed", status: "ready" });
     const repository = makeRepository(target);
@@ -274,6 +318,18 @@ describe("chat attachment completion and access", () => {
       })
     ).rejects.toMatchObject({ code: "ATTACHMENT_BIND_INVALID" });
     expect(repository.bindToMessage).not.toHaveBeenCalled();
+  });
+
+  it("delegates cancellation with the authenticated owner identity", async () => {
+    const repository = makeRepository();
+    await makeService(repository, makeStorage()).cancel({
+      attachmentId,
+      userId: "user-1"
+    });
+    expect(repository.deleteUnbound).toHaveBeenCalledWith(
+      attachmentId,
+      "user-1"
+    );
   });
 });
 
@@ -348,7 +404,8 @@ function makeRepository(target: ChatAttachmentTarget = makeTarget()) {
     rejectCompletion: vi.fn(async () => undefined),
     findOwned: vi.fn(async () => makeView()),
     findOwnedObject: vi.fn(async () => target),
-    bindToMessage: vi.fn(async () => [makeView({ messageId })])
+    bindToMessage: vi.fn(async () => [makeView({ messageId })]),
+    deleteUnbound: vi.fn(async () => undefined)
   } satisfies ChatAttachmentRepository;
 }
 

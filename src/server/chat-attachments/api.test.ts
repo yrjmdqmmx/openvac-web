@@ -13,6 +13,7 @@ vi.mock("@/server/auth", () => ({
 vi.mock("@/server/auth/account-cleanup", () => cleanupMocks);
 
 import {
+  handleDeleteChatAttachment,
   handleDownloadChatAttachment,
   handleGetChatAttachmentStatus,
   handleInitiateChatAttachment,
@@ -107,6 +108,23 @@ describe("chat attachment API ownership boundary", () => {
     });
   });
 
+  it("authenticates deletion and scopes it to the attachment owner", async () => {
+    const cancel = vi.fn(async () => undefined);
+    const response = await handleDeleteChatAttachment(
+      new Request(`https://openvac.test/api/chat/attachments/${attachmentId}`, {
+        method: "DELETE"
+      }),
+      attachmentId,
+      { cancel }
+    );
+
+    expect(response.status).toBe(204);
+    expect(cancel).toHaveBeenCalledWith({
+      attachmentId,
+      userId: "user-1"
+    });
+  });
+
   it.each([
     [handlePreviewChatAttachment, "preview"],
     [handleDownloadChatAttachment, "download"]
@@ -141,5 +159,20 @@ describe("chat attachment API ownership boundary", () => {
 
     expect(response.status).toBe(401);
     expect(createAccessUrl).not.toHaveBeenCalled();
+  });
+
+  it("rejects unauthenticated deletion before touching attachment state", async () => {
+    authMocks.getSession.mockResolvedValueOnce(null);
+    const cancel = vi.fn(async () => undefined);
+    const response = await handleDeleteChatAttachment(
+      new Request(`https://openvac.test/api/chat/attachments/${attachmentId}`, {
+        method: "DELETE"
+      }),
+      attachmentId,
+      { cancel }
+    );
+
+    expect(response.status).toBe(401);
+    expect(cancel).not.toHaveBeenCalled();
   });
 });

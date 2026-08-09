@@ -163,6 +163,9 @@ describeDatabase("chat attachment repository integration", () => {
     expect(
       await workerRepository.claimAttachmentParse("worker-after-bind")
     ).toBeNull();
+    await expect(
+      repository.deleteUnbound(attachmentId, ownerId)
+    ).rejects.toBeInstanceOf(ApiError);
 
     const deletion = await db.transaction((transaction) =>
       enqueueConversationStorageDeletion(transaction, {
@@ -196,6 +199,69 @@ describeDatabase("chat attachment repository integration", () => {
       objectType: "attachment",
       status: "queued"
     });
+  });
+
+  it("cancels only an owned unbound upload and durably releases its reservation", async () => {
+    const ownerId = `attachment-cancel-owner-${randomUUID()}`;
+    const otherId = `attachment-cancel-other-${randomUUID()}`;
+    userIds.push(ownerId, otherId);
+    await db.insert(users).values([
+      { id: ownerId, name: "Owner", email: `${ownerId}@example.test` },
+      { id: otherId, name: "Other", email: `${otherId}@example.test` }
+    ]);
+    const conversationId = randomUUID();
+    await db.insert(conversations).values({
+      id: conversationId,
+      userId: ownerId,
+      title: "Cancel attachment"
+    });
+    const attachmentId = randomUUID();
+    const objectKey =
+      `private/chat-attachments/abcdef0123456789abcdef01/${conversationId}/` +
+      `${attachmentId}/manual.pdf`;
+    objectKeys.push(objectKey);
+    const repository = new PostgresChatAttachmentRepository(sqlClient as never);
+    await repository.initiate({
+      id: attachmentId,
+      userId: ownerId,
+      conversationId,
+      kind: "document",
+      filename: "manual.pdf",
+      mimeType: "application/pdf",
+      declaredSizeBytes: 4_096,
+      sha256: "d".repeat(64),
+      objectKey,
+      uploadExpiresAt: new Date(Date.now() + 15 * 60 * 1_000),
+      orphanExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1_000)
+    });
+
+    await expect(
+      repository.deleteUnbound(attachmentId, otherId)
+    ).rejects.toBeInstanceOf(ApiError);
+    await repository.deleteUnbound(attachmentId, ownerId);
+
+    expect(
+      await db
+        .select()
+        .from(chatAttachments)
+        .where(eq(chatAttachments.id, attachmentId))
+    ).toHaveLength(0);
+    const [quota] = await db
+      .select()
+      .from(chatStorageAccounts)
+      .where(eq(chatStorageAccounts.userId, ownerId));
+    expect(quota).toMatchObject({ usedBytes: 0, reservedBytes: 0 });
+    const [job] = await db
+      .select()
+      .from(chatStorageDeletionJobs)
+      .where(eq(chatStorageDeletionJobs.objectKey, objectKey));
+    expect(job).toMatchObject({
+      userId: ownerId,
+      objectType: "attachment",
+      sourceId: attachmentId,
+      status: "queued"
+    });
+    expect(job?.runAt.getTime()).toBeGreaterThan(Date.now());
   });
 
   it("queues private objects before account cascade and retains anonymous cleanup work", async () => {

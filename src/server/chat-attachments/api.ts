@@ -20,6 +20,7 @@ type InitiateService = Pick<ChatAttachmentService, "initiate">;
 type CompleteService = Pick<ChatAttachmentService, "complete">;
 type StatusService = Pick<ChatAttachmentService, "status">;
 type AccessService = Pick<ChatAttachmentService, "createAccessUrl">;
+type DeleteService = Pick<ChatAttachmentService, "cancel">;
 
 export const handleInitiateChatAttachment = withApiErrors(
   async (
@@ -73,6 +74,19 @@ export const handleGetChatAttachmentStatus = withApiErrors(
         await service.status({ attachmentId: id, userId: user.id })
       )
     });
+  }
+);
+
+export const handleDeleteChatAttachment = withApiErrors(
+  async (
+    request: Request,
+    attachmentId: string,
+    service: DeleteService = defaultService
+  ): Promise<Response> => {
+    const user = await authenticate(request);
+    const id = uuidSchema.parse(attachmentId);
+    await service.cancel({ attachmentId: id, userId: user.id });
+    return new Response(null, { status: 204 });
   }
 );
 

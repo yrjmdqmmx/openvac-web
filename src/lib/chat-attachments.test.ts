@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   cancelChatAttachment,
   MAX_CHAT_ATTACHMENT_BYTES,
+  MAX_CHAT_IMAGE_ATTACHMENT_BYTES,
   uploadChatAttachment,
   validateChatAttachmentFile
 } from "./chat-attachments";
@@ -13,6 +14,22 @@ function response(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), {
     status,
     headers: { "Content-Type": "application/json" }
+  });
+}
+
+function attachmentEnvelope(status: string) {
+  return response({
+    data: {
+      attachment: {
+        type: "attachment",
+        attachmentId,
+        kind: "document",
+        filename: "pump.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 4,
+        status
+      }
+    }
   });
 }
 
@@ -138,6 +155,27 @@ describe("chat attachment adapter", () => {
       ok: false,
       message: "单个附件不能超过 25 MiB。"
     });
+
+    const imageAtLimit = new File([new Uint8Array(1)], "gauge.jpg", {
+      type: "image/jpeg"
+    });
+    Object.defineProperty(imageAtLimit, "size", {
+      value: MAX_CHAT_IMAGE_ATTACHMENT_BYTES
+    });
+    expect(validateChatAttachmentFile(imageAtLimit)).toMatchObject({
+      ok: true,
+      kind: "image"
+    });
+    const oversizedImage = new File([new Uint8Array(1)], "gauge.png", {
+      type: "image/png"
+    });
+    Object.defineProperty(oversizedImage, "size", {
+      value: MAX_CHAT_IMAGE_ATTACHMENT_BYTES + 1
+    });
+    expect(validateChatAttachmentFile(oversizedImage)).toEqual({
+      ok: false,
+      message: "单张 JPG 或 PNG 图片不能超过 10 MiB；文档仍可上传至 25 MiB。"
+    });
   });
 
   it("uses the conversation-scoped delete endpoint for cancellation", async () => {
@@ -147,5 +185,63 @@ describe("chat attachment adapter", () => {
       `/api/chat/attachments/${attachmentId}`,
       { method: "DELETE" }
     );
+  });
+
+  it("surfaces cancellation failures instead of treating them as deleted", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        response({ error: { message: "附件删除暂时不可用。" } }, 503)
+      );
+
+    await expect(cancelChatAttachment(attachmentId, fetcher)).rejects.toThrow(
+      "附件删除暂时不可用。"
+    );
+  });
+
+  it("keeps polling past the former four-minute cap and recovers from a transient error", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        response({
+          data: {
+            attachment: {
+              type: "attachment",
+              attachmentId,
+              kind: "document",
+              filename: "pump.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 4,
+              status: "initiated"
+            },
+            upload: {
+              url: "https://private-upload.example/object",
+              method: "PUT",
+              requiredHeaders: { "x-oss-object-acl": "private" }
+            }
+          }
+        })
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(attachmentEnvelope("processing"));
+    for (let poll = 0; poll < 241; poll += 1) {
+      fetcher.mockResolvedValueOnce(attachmentEnvelope("processing"));
+    }
+    fetcher
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(attachmentEnvelope("ready"));
+
+    await expect(
+      uploadChatAttachment(
+        new File(["pump"], "pump.pdf", { type: "application/pdf" }),
+        {
+          signal: new AbortController().signal,
+          fetcher,
+          pollIntervalMs: 0,
+          onUpdate: vi.fn()
+        }
+      )
+    ).resolves.toMatchObject({ status: "ready", attachmentId });
+    expect(fetcher).toHaveBeenCalledTimes(246);
   });
 });

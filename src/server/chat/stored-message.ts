@@ -13,7 +13,7 @@ import {
   inputMessagePartsSchema,
   normalizeStoredMessageParts
 } from "@/server/chat-v3/contracts";
-import type { MessagePart } from "@/types/chat-v3";
+import type { AttachmentPart, MessagePart } from "@/types/chat-v3";
 import { citationSourcePolicy } from "./citation-policy";
 
 const LICENSE_CLASSES = new Set<Citation["licenseClass"]>([
@@ -72,7 +72,8 @@ export function serializeStoredCitation(
 
 export function serializeStoredMessage(
   message: StoredMessageRecord,
-  citations: Citation[]
+  citations: Citation[],
+  hydratedAttachments: AttachmentPart[] = []
 ): ChatMessage | null {
   if (message.role !== "user" && message.role !== "assistant") {
     return null;
@@ -97,7 +98,22 @@ export function serializeStoredMessage(
     ...normalizeStoredMessageParts("", message.metadata.verifiedLinks),
     ...normalizeStoredMessageParts("", message.metadata.artifacts)
   ];
-  result.parts = dedupeMessageParts([...storedParts, ...publishedParts]);
+  const hydratedById = new Map(
+    hydratedAttachments.map((attachment) => [
+      attachment.attachmentId,
+      attachment
+    ])
+  );
+  const restoredParts = storedParts.map((part) =>
+    part.type === "attachment"
+      ? (hydratedById.get(part.attachmentId) ?? part)
+      : part
+  );
+  result.parts = dedupeMessageParts([
+    ...restoredParts,
+    ...publishedParts,
+    ...hydratedAttachments
+  ]);
 
   if (message.role === "user") {
     const inputParts = inputMessagePartsSchema.safeParse(
@@ -106,15 +122,16 @@ export function serializeStoredMessage(
     if (inputParts.success) result.inputParts = inputParts.data;
   }
 
-  if (
-    message.role === "assistant" &&
-    (message.status === "completed" || message.status === "incomplete")
-  ) {
-    result.meta = answerMetaValue(
-      message.metadata,
-      citations,
-      message.answerPayload
-    );
+  if (message.role === "assistant") {
+    if (message.status === "completed" || message.status === "incomplete") {
+      result.meta = answerMetaValue(
+        message.metadata,
+        citations,
+        message.answerPayload
+      );
+    } else if (message.status === "failed" || message.status === "cancelled") {
+      result.meta = retryMetaValue(message.metadata);
+    }
   }
 
   return result;
@@ -166,6 +183,21 @@ function answerMetaValue(
       ? { answerVersion: positiveIntegerValue(metadata.answerVersion) }
       : {}),
     ...(metadata.incomplete === true ? { incomplete: true } : {})
+  };
+}
+
+function retryMetaValue(metadata: Record<string, unknown>): AnswerMeta {
+  const turnId = stringValue(metadata.turnId);
+  const runId = stringValue(metadata.runId);
+  const answerVersion = positiveIntegerValue(metadata.answerVersion);
+  return {
+    riskLevel: "low",
+    missingInputs: [],
+    webSearched: false,
+    citations: [],
+    ...(turnId ? { turnId } : {}),
+    ...(runId ? { runId } : {}),
+    ...(answerVersion ? { answerVersion } : {})
   };
 }
 

@@ -120,6 +120,38 @@ describe("deterministic artifact renderers", () => {
     expect(renderMarkdown(spec)).toContain("a\\|b");
     expect(renderCsv(spec)).toContain('"\'@SUM(A1)"');
   });
+
+  it("renders a 10,000-character Chinese table cell across deterministic PDF pages", async () => {
+    const prefix = "超长单元格起始：";
+    const suffix = "：超长单元格结束";
+    const fillLength = 10_000 - prefix.length - suffix.length;
+    const filler = "真空泵中文诊断记录。"
+      .repeat(Math.ceil(fillLength / 10))
+      .slice(0, fillLength);
+    const longCell = `${prefix}${filler}${suffix}`;
+    const spec = createSpec({
+      formats: ["pdf"],
+      sections: [],
+      tables: [
+        {
+          title: "超长中文单元格跨页验证",
+          columns: ["检查项", "诊断记录"],
+          rows: [
+            ["分子泵", longCell],
+            ["末行", "边框与文本均保留"]
+          ]
+        }
+      ]
+    });
+
+    const first = (await renderArtifactFiles(spec))[0]!.bytes;
+    const second = (await renderArtifactFiles(spec))[0]!.bytes;
+    const document = await PDFDocument.load(first);
+
+    expect(longCell).toHaveLength(10_000);
+    expect(first).toEqual(second);
+    expect(document.getPageCount()).toBeGreaterThan(3);
+  }, 120_000);
 });
 
 describe("ArtifactService", () => {

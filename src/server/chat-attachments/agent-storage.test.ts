@@ -115,6 +115,63 @@ describe("PostgresAgentAttachmentStorage document chunks", () => {
     await expect(storage.getParsedChunks(scope)).resolves.toEqual([]);
   });
 
+  it("searches and opens a chunk beyond the first 256 without loading the document", async () => {
+    const lateChunkContent = `第 301 页的分子泵轴承诊断证据。${"诊断记录。".repeat(1_200)}`;
+    const lateChunk = {
+      ...chunkScopeRow(),
+      chunk_id: "10000000-0000-4000-8000-000000000301",
+      content: lateChunkContent,
+      locator: { type: "page", page: 301 },
+      has_chunks: true
+    };
+    const sql = makeSql(
+      [documentRow()],
+      [lateChunk],
+      [documentRow()],
+      [lateChunk]
+    );
+    const objectStorage = makeObjectStorage(new Uint8Array([9]));
+    const service = new AttachmentToolService({
+      storage: new PostgresAgentAttachmentStorage(sql, objectStorage)
+    });
+
+    const search = await service.search({
+      ...scope,
+      allowedAttachmentIds: [scope.attachmentId],
+      query: "分子泵轴承"
+    });
+    const opened = await service.open({
+      ...scope,
+      allowedAttachmentIds: [scope.attachmentId],
+      chunkId: lateChunk.chunk_id
+    });
+
+    expect(search.matches).toEqual([
+      expect.objectContaining({
+        chunkId: lateChunk.chunk_id,
+        pageNumber: 301
+      })
+    ]);
+    expect(opened).toMatchObject({
+      chunkId: lateChunk.chunk_id,
+      pageNumber: 301
+    });
+    expect(search.matches[0]!.excerpt.length).toBeLessThan(
+      lateChunkContent.length
+    );
+    expect(opened.excerpt.length).toBeLessThan(lateChunkContent.length);
+    expect(opened.excerpt).not.toBe(lateChunkContent);
+    expect(sql.unsafe).toHaveBeenCalledTimes(4);
+    expect(vi.mocked(sql.unsafe).mock.calls[1]?.[0]).toMatch(
+      /LEFT JOIN LATERAL[\s\S]+LIMIT \$7/u
+    );
+    expect(vi.mocked(sql.unsafe).mock.calls[1]?.[1]?.at(-1)).toBe(64);
+    expect(vi.mocked(sql.unsafe).mock.calls[3]?.[0]).toMatch(
+      /candidate\.id = \$5/u
+    );
+    expect(objectStorage.getPrivate).not.toHaveBeenCalled();
+  });
+
   it("fails before DocMind fallback when worker-owned chunks are missing", async () => {
     const storage = new PostgresAgentAttachmentStorage(
       makeSql(
@@ -124,7 +181,8 @@ describe("PostgresAgentAttachmentStorage document chunks", () => {
             ...chunkScopeRow(),
             chunk_id: null,
             content: null,
-            locator: null
+            locator: null,
+            has_chunks: false
           }
         ]
       ),

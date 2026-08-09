@@ -6,6 +6,7 @@ import { ApiError, notFound } from "@/server/api/errors";
 import {
   CHAT_ATTACHMENT_MIME_TYPES,
   MAX_CHAT_ATTACHMENT_BYTES,
+  MAX_CHAT_IMAGE_ATTACHMENT_BYTES,
   MAX_CHAT_ATTACHMENTS_PER_MESSAGE
 } from "@/server/chat-v3/contracts";
 import {
@@ -47,6 +48,16 @@ const initiateSchema = z
         code: "custom",
         path: ["mimeType"],
         message: "文件扩展名与内容类型不匹配。"
+      });
+    }
+    if (
+      input.mimeType.startsWith("image/") &&
+      input.sizeBytes > MAX_CHAT_IMAGE_ATTACHMENT_BYTES
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["sizeBytes"],
+        message: "单张 JPG 或 PNG 图片不能超过 10 MiB。"
       });
     }
   });
@@ -134,6 +145,7 @@ export interface ChatAttachmentRepository {
     messageId: string;
     userId: string;
   }): Promise<ChatAttachmentView[]>;
+  deleteUnbound(attachmentId: string, userId: string): Promise<void>;
 }
 
 type UuidSource = { randomUUID(): string };
@@ -308,6 +320,10 @@ export class ChatAttachmentService {
     return this.repository.bindToMessage({ ...input, attachmentIds: ids });
   }
 
+  async cancel(input: { attachmentId: string; userId: string }): Promise<void> {
+    await this.repository.deleteUnbound(input.attachmentId, input.userId);
+  }
+
   private assertUploadCapabilities(): void {
     if (
       typeof this.storage.createPrivateUploadUrl !== "function" ||
@@ -417,10 +433,14 @@ function assertStoredObjectMetadata(
 ): void {
   const metadata = lowerCaseRecord(stat.metadata);
   const contentType = stat.contentType?.split(";", 1)[0]?.trim().toLowerCase();
+  const maxBytes =
+    target.kind === "image"
+      ? MAX_CHAT_IMAGE_ATTACHMENT_BYTES
+      : MAX_CHAT_ATTACHMENT_BYTES;
   if (
     stat.key !== target.objectKey ||
     stat.sizeBytes !== target.declaredSizeBytes ||
-    stat.sizeBytes > MAX_CHAT_ATTACHMENT_BYTES ||
+    stat.sizeBytes > maxBytes ||
     contentType !== target.mimeType.toLowerCase() ||
     metadata["attachment-id"] !== target.id ||
     metadata.sha256 !== target.sha256 ||

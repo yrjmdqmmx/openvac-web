@@ -73,9 +73,10 @@ case " $* " in
   *" exec -T postgres "*)
     printf '%s\n' "\${OPENVAC_FAKE_DRAIN_STATE:-0|0|0}"
     ;;
-  *" config --services "*)
+  *"/releases/"*"/docker-compose.yml"*" config --services "*)
     printf '%s\n' web worker modeling-service modeling-worker
     ;;
+  *" config --services "*) printf '%s\n' web worker postgres migrate ;;
   *" ps -q web "*) [ ! -f "$OPENVAC_FAKE_STATE/web" ] || cat "$OPENVAC_FAKE_STATE/web" ;;
   *" ps -q worker "*) [ ! -f "$OPENVAC_FAKE_STATE/worker" ] || cat "$OPENVAC_FAKE_STATE/worker" ;;
   *" ps --all -q modeling-service "*) [ ! -f "$OPENVAC_FAKE_STATE/modeling" ] || cat "$OPENVAC_FAKE_STATE/modeling" ;;
@@ -227,6 +228,63 @@ function runDeployment(
 }
 
 describe("transactional web-only R1 cutover", { timeout: 20_000 }, () => {
+  it("migrates and activates a first install without draining or backing up a previous release", () => {
+    const fixture = createFixture();
+    rmSync(join(fixture.host, "current-release"));
+    rmSync(join(fixture.state, "web"));
+    rmSync(join(fixture.state, "worker"));
+    rmSync(join(fixture.state, "modeling"));
+    rmSync(join(fixture.state, "modeling-worker"));
+
+    const result = runDeployment(fixture);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain(
+      "No current release is recorded; treating this as a first deployment"
+    );
+    expect(readFileSync(join(fixture.host, "current-release"), "utf8")).toBe(
+      `${fixture.targetRelease}\n`
+    );
+    expect(readFileSync(join(fixture.state, "web"), "utf8")).toBe("new-web\n");
+    expect(readFileSync(join(fixture.state, "worker"), "utf8")).toBe(
+      "new-worker\n"
+    );
+    expect(
+      readFileSync(join(fixture.bundle, "deployment-receipt"), "utf8")
+    ).toContain("rollback_rehearsal=not-required\n");
+
+    const dockerLog = readFileSync(fixture.dockerLog, "utf8");
+    expect(dockerLog).not.toContain("stop -t 30 worker web");
+    expect(dockerLog).not.toContain("exec -T postgres");
+    expect(dockerLog).not.toContain("backup");
+    expect(dockerLog).toContain("run --rm migrate");
+    expect(dockerLog.match(/up -d --no-deps web worker/g)).toHaveLength(1);
+  });
+
+  it("keeps an explicitly required rollback rehearsal fail-closed on a first install", () => {
+    const fixture = createFixture();
+    rmSync(join(fixture.host, "current-release"));
+    rmSync(join(fixture.state, "web"));
+    rmSync(join(fixture.state, "worker"));
+    rmSync(join(fixture.state, "modeling"));
+    rmSync(join(fixture.state, "modeling-worker"));
+
+    const result = runDeployment(fixture, {
+      OPENVAC_R1_ROLLBACK_REHEARSAL: "true"
+    });
+
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain(
+      "the required previous-image rollback rehearsal has no managed web/worker release to restore"
+    );
+    const dockerLog = readFileSync(fixture.dockerLog, "utf8");
+    expect(dockerLog).not.toContain("run --rm migrate");
+    expect(dockerLog).not.toContain("up -d --no-deps web worker");
+    expect(() =>
+      readFileSync(join(fixture.host, "current-release"), "utf8")
+    ).toThrow();
+  });
+
   it("executes R1 -> R0 -> R1 before publishing the new release pointer", () => {
     const fixture = createFixture();
     const result = runDeployment(fixture);

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { MessagePart } from "@/types/chat-v3";
 
 export const MAX_CHAT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+export const MAX_CHAT_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5;
 export const MAX_CHAT_STORAGE_BYTES_PER_USER = 500 * 1024 * 1024;
 export const MAX_CHAT_TEXT_CHARACTERS = 16_000;

@@ -418,6 +418,65 @@ export class PostgresChatAttachmentRepository implements ChatAttachmentRepositor
       return rows.map(parseView);
     });
   }
+
+  async deleteUnbound(attachmentId: string, userId: string): Promise<void> {
+    await this.sql.begin(async (transaction) => {
+      const [row] = await transaction.unsafe(
+        `
+          SELECT ${ATTACHMENT_TARGET_SELECT}, a.upload_expires_at
+          FROM chat_attachment a
+          JOIN conversation c ON c.id = a.conversation_id
+          WHERE a.id = $1 AND a.user_id = $2 AND c.user_id = $2
+            AND a.message_id IS NULL
+            AND a.deletion_status = 'active'
+            AND c.status <> 'deleted' AND c.deleted_at IS NULL
+          FOR UPDATE OF a
+        `,
+        [attachmentId, userId]
+      );
+      const target = parseTarget(row);
+      const uploadExpiresAt = timestampValue(row?.upload_expires_at);
+      if (!target || !uploadExpiresAt) throw notFound("附件");
+
+      await transaction.unsafe(
+        `
+          INSERT INTO chat_storage_deletion_job (
+            user_id, object_type, source_id, object_key, run_at
+          ) VALUES ($1, 'attachment', $2, $3, $4)
+          ON CONFLICT (object_key) DO NOTHING
+        `,
+        [
+          userId,
+          target.id,
+          target.objectKey,
+          target.quotaState === "reserved"
+            ? new Date(
+                new Date(uploadExpiresAt).getTime() + 60_000
+              ).toISOString()
+            : new Date().toISOString()
+        ]
+      );
+
+      await transaction.unsafe(
+        `
+          UPDATE chat_storage_account
+          SET used_bytes = GREATEST(used_bytes - $2, 0),
+              reserved_bytes = GREATEST(reserved_bytes - $3, 0),
+              updated_at = NOW()
+          WHERE user_id = $1
+        `,
+        [
+          userId,
+          target.quotaState === "committed" ? target.sizeBytes : 0,
+          target.quotaState === "reserved" ? target.declaredSizeBytes : 0
+        ]
+      );
+      await transaction.unsafe(
+        "DELETE FROM chat_attachment WHERE id = $1 AND user_id = $2",
+        [attachmentId, userId]
+      );
+    });
+  }
 }
 
 export const chatAttachmentRepository = new PostgresChatAttachmentRepository();

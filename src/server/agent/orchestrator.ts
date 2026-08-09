@@ -99,6 +99,22 @@ export type AgentRunOrchestratorOptions = {
   visionProvider?: VisionProvider;
 };
 
+export async function persistAndPublishFinalAnswer<T>(input: {
+  persist: () => Promise<T>;
+  answer: AnswerV3;
+  citations: Citation[];
+  emit: (event: OrchestratorEvent) => void;
+}): Promise<T> {
+  const stored = await input.persist();
+  for (const { block, index } of answerV3Blocks(input.answer)) {
+    input.emit({ type: "block", block, index });
+  }
+  for (const citation of input.citations) {
+    input.emit({ type: "citation", citation });
+  }
+  return stored;
+}
+
 export class AgentRunOrchestrator {
   private readonly contextBuilder = new ContextBuilder();
   private readonly evidence = new EvidenceRegistry();
@@ -268,36 +284,33 @@ export class AgentRunOrchestrator {
 
     const references = collectAnswerV3References(answer);
     const usedEvidenceIds = references.evidenceIds;
-    // A block becomes visible only after the complete adaptive answer passes
-    // schema, evidence, reference and safety validation.
-    for (const { block, index } of answerV3Blocks(answer)) {
-      this.emit({ type: "block", block, index });
-    }
-    for (const citation of this.evidence.citations(usedEvidenceIds)) {
-      this.emit({ type: "citation", citation });
-    }
-
     this.stage("saving", "正在保存回答与引用快照…");
-    const stored = await this.store.complete({
-      userId: input.userId,
-      run: input.run,
+    const stored = await persistAndPublishFinalAnswer({
+      persist: () =>
+        this.store.complete({
+          userId: input.userId,
+          run: input.run,
+          answer,
+          riskLevel: input.riskLevel,
+          requestedMode: input.requestedMode,
+          resolvedMode: input.resolvedMode,
+          webMode: input.webMode,
+          webSearched: this.webSearched,
+          evidence: this.evidence,
+          usedEvidenceIds,
+          verifiedLinks: [...this.verifiedLinks.values()].filter((link) =>
+            references.linkIds.includes(link.linkId)
+          ),
+          artifacts: [...this.artifacts.values()],
+          context: context.disclosure,
+          usage: finalUsage,
+          latencyMs: Date.now() - startedAt,
+          status: incomplete ? "incomplete" : "completed",
+          counters: this.counters
+        }),
       answer,
-      riskLevel: input.riskLevel,
-      requestedMode: input.requestedMode,
-      resolvedMode: input.resolvedMode,
-      webMode: input.webMode,
-      webSearched: this.webSearched,
-      evidence: this.evidence,
-      usedEvidenceIds,
-      verifiedLinks: [...this.verifiedLinks.values()].filter((link) =>
-        references.linkIds.includes(link.linkId)
-      ),
-      artifacts: [...this.artifacts.values()],
-      context: context.disclosure,
-      usage: finalUsage,
-      latencyMs: Date.now() - startedAt,
-      status: incomplete ? "incomplete" : "completed",
-      counters: this.counters
+      citations: this.evidence.citations(usedEvidenceIds),
+      emit: this.emit
     });
     return {
       status: incomplete ? "incomplete" : "completed",

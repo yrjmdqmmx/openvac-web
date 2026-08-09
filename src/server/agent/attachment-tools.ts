@@ -14,6 +14,7 @@ const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_CHUNK_CHARACTERS = 2_400;
 const DEFAULT_CHUNK_OVERLAP = 200;
 const DEFAULT_MAX_CHUNKS = 256;
+const MAX_SEARCH_CANDIDATE_CHUNKS = 64;
 const MAX_QUERY_CHARACTERS = 2_000;
 const MAX_IMAGE_PROMPT_CHARACTERS = 2_000;
 const MAX_VISION_OUTPUT_CHARACTERS = 6_000;
@@ -56,6 +57,15 @@ export interface AttachmentStorage {
   getParsedChunks(
     scope: AttachmentAccessScope
   ): Promise<AttachmentTextChunk[] | null>;
+  searchParsedChunks?(
+    scope: AttachmentAccessScope,
+    query: string,
+    limit: number
+  ): Promise<AttachmentTextChunk[] | null>;
+  getParsedChunk?(
+    scope: AttachmentAccessScope,
+    chunkId: string
+  ): Promise<AttachmentTextChunk | null>;
   putParsedChunks(
     scope: AttachmentAccessScope,
     chunks: readonly AttachmentTextChunk[]
@@ -200,7 +210,7 @@ export class AttachmentToolService {
   async search(input: SearchAttachmentInput): Promise<SearchAttachmentOutput> {
     const query = boundedText(input.query, MAX_QUERY_CHARACTERS, "query");
     const attachment = await this.loadAuthorized(input, "document");
-    const chunks = await this.loadDocumentChunks(attachment, input.signal);
+    const chunks = await this.loadSearchChunks(attachment, query, input.signal);
     const terms = searchTerms(query);
     const matches = chunks
       .map((chunk) => ({ chunk, score: scoreChunk(chunk.text, query, terms) }))
@@ -226,12 +236,7 @@ export class AttachmentToolService {
   ): Promise<OpenAttachmentExcerptOutput> {
     const chunkId = boundedText(input.chunkId, 240, "chunkId");
     const attachment = await this.loadAuthorized(input, "document");
-    const chunks = await this.loadDocumentChunks(attachment, input.signal);
-    const chunk = chunks.find(
-      (candidate) =>
-        candidate.chunkId === chunkId &&
-        candidate.attachmentId === attachment.attachmentId
-    );
+    const chunk = await this.loadOpenedChunk(attachment, chunkId, input.signal);
     if (!chunk) {
       throw new AttachmentToolError(
         "ATTACHMENT_NOT_FOUND",
@@ -377,6 +382,50 @@ export class AttachmentToolService {
     return attachment;
   }
 
+  private async loadSearchChunks(
+    attachment: StoredAttachment,
+    query: string,
+    signal?: AbortSignal
+  ): Promise<AttachmentTextChunk[]> {
+    if (!this.storage.searchParsedChunks) {
+      return this.loadDocumentChunks(attachment, signal);
+    }
+    const cached = await this.storage.searchParsedChunks(
+      storageScope(attachment),
+      query,
+      MAX_SEARCH_CANDIDATE_CHUNKS
+    );
+    if (cached === null) {
+      return this.parseAndCacheDocument(attachment, signal);
+    }
+    return validateCachedChunks(
+      cached,
+      attachment.attachmentId,
+      MAX_SEARCH_CANDIDATE_CHUNKS,
+      true
+    );
+  }
+
+  private async loadOpenedChunk(
+    attachment: StoredAttachment,
+    chunkId: string,
+    signal?: AbortSignal
+  ): Promise<AttachmentTextChunk | undefined> {
+    if (this.storage.getParsedChunk) {
+      const cached = await this.storage.getParsedChunk(
+        storageScope(attachment),
+        chunkId
+      );
+      if (cached === null) return undefined;
+      return validateCachedChunks([cached], attachment.attachmentId, 1)[0];
+    }
+    return (await this.loadDocumentChunks(attachment, signal)).find(
+      (candidate) =>
+        candidate.chunkId === chunkId &&
+        candidate.attachmentId === attachment.attachmentId
+    );
+  }
+
   private async loadDocumentChunks(
     attachment: StoredAttachment,
     signal?: AbortSignal
@@ -390,6 +439,14 @@ export class AttachmentToolService {
         this.maxChunks
       );
     }
+    return this.parseAndCacheDocument(attachment, signal);
+  }
+
+  private async parseAndCacheDocument(
+    attachment: StoredAttachment,
+    signal?: AbortSignal
+  ): Promise<AttachmentTextChunk[]> {
+    const scope = storageScope(attachment);
     if (!this.parser) {
       throw new AttachmentToolError(
         "DOCUMENT_PARSER_UNCONFIGURED",
@@ -485,9 +542,10 @@ function chunkParsedDocument(
 function validateCachedChunks(
   chunks: readonly AttachmentTextChunk[],
   attachmentId: string,
-  maxChunks: number
+  maxChunks: number,
+  allowEmpty = false
 ): AttachmentTextChunk[] {
-  if (chunks.length === 0 || chunks.length > maxChunks) {
+  if ((!allowEmpty && chunks.length === 0) || chunks.length > maxChunks) {
     throw new AttachmentToolError(
       "DOCUMENT_PARSE_FAILED",
       "The parsed-document cache is invalid."

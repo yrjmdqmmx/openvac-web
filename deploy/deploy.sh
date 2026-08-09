@@ -670,9 +670,9 @@ if [ -e "$current_release_file" ] || [ -L "$current_release_file" ]; then
     echo "upgrade deployment requires the bundled backup script" >&2
     exit 64
   }
-  upgrade_requires_backup=true
+  managed_upgrade=true
 else
-  upgrade_requires_backup=false
+  managed_upgrade=false
   echo "No current release is recorded; treating this as a first deployment"
 fi
 
@@ -763,12 +763,11 @@ if ! apply_runtime_env; then
   exit 1
 fi
 
-if ! drain_previous_release_for_agent_v3_migration; then
-  rollback_failed_deployment "Agent V3 migration drain failed" || true
-  exit 1
-fi
-
-if [ "$upgrade_requires_backup" = true ]; then
+if [ "$managed_upgrade" = true ]; then
+  if ! drain_previous_release_for_agent_v3_migration; then
+    rollback_failed_deployment "Agent V3 migration drain failed" || true
+    exit 1
+  fi
   echo "Creating final drained pre-migration recovery backup"
   pre_migration_backup=""
   if ! pre_migration_backup="$(

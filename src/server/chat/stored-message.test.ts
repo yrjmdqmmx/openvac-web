@@ -132,6 +132,60 @@ describe("stored chat message serialization", () => {
     expect(JSON.stringify(serialized)).not.toContain("secret");
   });
 
+  it("hydrates legacy attachment IDs with owned bound attachment metadata", () => {
+    const serialized = serializeStoredMessage(
+      {
+        id: "message-legacy-attachment",
+        role: "user",
+        status: "completed",
+        content: "请检查附件",
+        metadata: {
+          inputParts: [
+            { type: "text", text: "请检查附件" },
+            {
+              type: "attachment",
+              attachmentId: "00000000-0000-4000-8000-000000000051"
+            }
+          ]
+        }
+      },
+      [],
+      [
+        {
+          type: "attachment",
+          attachmentId: "00000000-0000-4000-8000-000000000051",
+          kind: "image",
+          filename: "真空计读数.png",
+          mimeType: "image/png",
+          sizeBytes: 2048,
+          status: "ready"
+        }
+      ]
+    );
+
+    expect(serialized).toMatchObject({
+      inputParts: [
+        { type: "text", text: "请检查附件" },
+        {
+          type: "attachment",
+          attachmentId: "00000000-0000-4000-8000-000000000051"
+        }
+      ],
+      parts: [
+        { type: "text", text: "请检查附件" },
+        {
+          type: "attachment",
+          attachmentId: "00000000-0000-4000-8000-000000000051",
+          kind: "image",
+          filename: "真空计读数.png",
+          mimeType: "image/png",
+          sizeBytes: 2048,
+          status: "ready"
+        }
+      ]
+    });
+  });
+
   it("drops non-public roles and citations without a URL", () => {
     expect(
       serializeStoredMessage(
@@ -180,6 +234,48 @@ describe("stored chat message serialization", () => {
     expect(JSON.stringify(serialized)).not.toContain("modelingCards");
     expect(JSON.stringify(serialized)).not.toContain("evil.example");
   });
+
+  it.each(["failed", "cancelled"])(
+    "restores retry identifiers for %s answers without exposing provider or tool metadata",
+    (status) => {
+      const serialized = serializeStoredMessage(
+        {
+          id: `message-${status}`,
+          role: "assistant",
+          status,
+          content: "本次回答未完成，可重试。",
+          metadata: {
+            turnId: "00000000-0000-4000-8000-000000000021",
+            runId: "00000000-0000-4000-8000-000000000022",
+            answerVersion: 3,
+            provider: "private-provider",
+            toolCalls: [{ toolName: "private_tool" }]
+          },
+          answerPayload: {
+            providerResponseId: "provider-secret",
+            toolName: "private_tool"
+          }
+        },
+        []
+      );
+
+      expect(serialized).toMatchObject({
+        status: "error",
+        meta: {
+          riskLevel: "low",
+          missingInputs: [],
+          webSearched: false,
+          citations: [],
+          turnId: "00000000-0000-4000-8000-000000000021",
+          runId: "00000000-0000-4000-8000-000000000022",
+          answerVersion: 3
+        }
+      });
+      expect(JSON.stringify(serialized)).not.toMatch(
+        /private-provider|private_tool|provider-secret/u
+      );
+    }
+  );
 
   it("localizes legacy V2 calculation tool names before history reaches the UI", () => {
     const serialized = serializeStoredMessage(
