@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { DocumentParser, VisionProvider } from "@/server/providers";
+import {
+  ProviderResponseError,
+  ProviderTimeoutError,
+  type DocumentParser,
+  type VisionProvider
+} from "@/server/providers";
 
 import {
   AttachmentToolError,
@@ -141,7 +146,96 @@ describe("AttachmentToolService image analysis", () => {
     });
     expect(JSON.stringify(result)).not.toMatch(/url|bytes|signed/iu);
   });
+
+  it("retries one retryable vision failure and then returns the analysis", async () => {
+    const attachment = imageAttachment();
+    const analyze = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new ProviderResponseError("test-vision", "private provider body", {
+          status: 503,
+          retryable: true
+        })
+      )
+      .mockResolvedValueOnce({ text: "Gauge reads 1.2 Pa" });
+    const service = new AttachmentToolService({
+      storage: makeStorage(attachment),
+      vision: makeVisionProvider(analyze)
+    });
+
+    await expect(
+      service.analyze({ ...scope, prompt: "Read the gauge" })
+    ).resolves.toEqual({
+      attachmentId: "attachment-a",
+      analysis: "Gauge reads 1.2 Pa"
+    });
+    expect(analyze).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry request-invalid vision failures and exposes only a fixed code", async () => {
+    const analyze = vi.fn(async () => {
+      throw new ProviderResponseError(
+        "test-vision",
+        "private provider body request-id=secret",
+        { status: 422, retryable: false }
+      );
+    });
+    const service = new AttachmentToolService({
+      storage: makeStorage(imageAttachment()),
+      vision: makeVisionProvider(analyze)
+    });
+
+    const error = await service
+      .analyze({ ...scope, prompt: "Read the gauge" })
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      code: "VISION_PROVIDER_REQUEST_INVALID",
+      message: "Vision analysis failed."
+    });
+    expect(JSON.stringify(error)).not.toMatch(/private|request-id|secret/iu);
+    expect(analyze).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a provider timeout once and returns a fixed timeout code", async () => {
+    const analyze = vi.fn(async () => {
+      throw new ProviderTimeoutError(
+        "test-vision",
+        "private timeout request-id=secret"
+      );
+    });
+    const service = new AttachmentToolService({
+      storage: makeStorage(imageAttachment()),
+      vision: makeVisionProvider(analyze)
+    });
+
+    await expect(
+      service.analyze({ ...scope, prompt: "Read the gauge" })
+    ).rejects.toMatchObject({
+      code: "VISION_PROVIDER_TIMEOUT",
+      message: "Vision analysis timed out."
+    });
+    expect(analyze).toHaveBeenCalledTimes(2);
+  });
 });
+
+function makeVisionProvider(
+  analyze: VisionProvider["analyze"]
+): VisionProvider {
+  return {
+    id: "test-vision",
+    model: "test-model",
+    capabilities: {
+      protocol: "openai-chat-completions",
+      imageMimeTypes: ["image/jpeg", "image/png"],
+      maxImages: 1,
+      maxImageBytes: 1024,
+      maxTotalImageBytes: 1024,
+      maxResponseBytes: 1024,
+      providerMetadataExposed: false
+    },
+    analyze
+  };
+}
 
 function documentAttachment(): StoredAttachment {
   const bytes = new TextEncoder().encode("private document bytes");

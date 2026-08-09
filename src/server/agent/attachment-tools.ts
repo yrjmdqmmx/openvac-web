@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
 
 import { sanitizeEvidenceExcerpt } from "@/server/chat/evidence";
+import { ProviderError, ProviderTimeoutError } from "@/server/providers";
 import type {
   DocumentParser,
   VisionImage,
-  VisionProvider
+  VisionProvider,
+  VisionRequest,
+  VisionResult
 } from "@/server/providers";
 import type { AttachmentKind, AttachmentStatus } from "@/types/chat-v3";
 
@@ -148,6 +151,13 @@ export type AttachmentToolErrorCode =
   | "DOCUMENT_PARSE_LIMIT"
   | "INVALID_ATTACHMENT_INPUT"
   | "VISION_PROVIDER_UNCONFIGURED"
+  | "VISION_PROVIDER_AUTH_FAILED"
+  | "VISION_PROVIDER_QUOTA_EXHAUSTED"
+  | "VISION_PROVIDER_RATE_LIMITED"
+  | "VISION_PROVIDER_REQUEST_INVALID"
+  | "VISION_PROVIDER_TIMEOUT"
+  | "VISION_PROVIDER_UNAVAILABLE"
+  | "VISION_PROVIDER_FAILED"
   | "VISION_OUTPUT_INVALID";
 
 export class AttachmentToolError extends Error {
@@ -281,7 +291,7 @@ export class AttachmentToolService {
         "Image bytes are unavailable."
       );
     }
-    const result = await this.vision.analyze({
+    const result = await analyzeVisionWithOneRetry(this.vision, {
       images: [
         {
           mimeType: attachment.mimeType,
@@ -500,6 +510,59 @@ export class AttachmentToolService {
     await this.storage.putParsedChunks(scope, chunks);
     return chunks;
   }
+}
+
+async function analyzeVisionWithOneRetry(
+  provider: VisionProvider,
+  request: VisionRequest
+): Promise<VisionResult> {
+  try {
+    return await provider.analyze(request);
+  } catch (error) {
+    if (
+      !(error instanceof ProviderError) ||
+      !error.retryable ||
+      request.signal?.aborted
+    ) {
+      throw normalizeVisionProviderError(error);
+    }
+  }
+
+  try {
+    return await provider.analyze(request);
+  } catch (error) {
+    throw normalizeVisionProviderError(error);
+  }
+}
+
+function normalizeVisionProviderError(error: unknown): AttachmentToolError {
+  if (error instanceof ProviderTimeoutError) {
+    return new AttachmentToolError(
+      "VISION_PROVIDER_TIMEOUT",
+      "Vision analysis timed out."
+    );
+  }
+  if (error instanceof ProviderError) {
+    const code =
+      error.status === 401 || error.status === 403
+        ? "VISION_PROVIDER_AUTH_FAILED"
+        : error.status === 402
+          ? "VISION_PROVIDER_QUOTA_EXHAUSTED"
+          : error.status === 429
+            ? "VISION_PROVIDER_RATE_LIMITED"
+            : error.status === 400 || error.status === 422
+              ? "VISION_PROVIDER_REQUEST_INVALID"
+              : error.status !== undefined && error.status >= 500
+                ? "VISION_PROVIDER_UNAVAILABLE"
+                : error.retryable
+                  ? "VISION_PROVIDER_UNAVAILABLE"
+                  : "VISION_PROVIDER_FAILED";
+    return new AttachmentToolError(code, "Vision analysis failed.");
+  }
+  return new AttachmentToolError(
+    "VISION_PROVIDER_FAILED",
+    "Vision analysis failed."
+  );
 }
 
 function chunkParsedDocument(
