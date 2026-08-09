@@ -731,6 +731,7 @@ export class RunStore {
     toolName: string;
     argumentsDigest: string;
     resultDigest?: string;
+    calculationId?: string;
     citationIds?: string[];
     status: "completed" | "failed";
     latencyMs: number;
@@ -746,7 +747,8 @@ export class RunStore {
       resultDigest: input.resultDigest,
       sanitizedPreview: {
         evidenceCount: input.citationIds?.length ?? 0,
-        status: input.status
+        status: input.status,
+        ...(input.calculationId ? { calculationId: input.calculationId } : {})
       },
       citationIds: input.citationIds ?? [],
       status: input.status,

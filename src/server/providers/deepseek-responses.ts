@@ -38,7 +38,8 @@ export const DEEPSEEK_RESPONSES_CAPABILITIES = {
   functionTools: true,
   parallelFunctionCalls: true,
   nativeWebSearch: true,
-  structuredOutputs: true
+  structuredOutputs: true,
+  forcedFunctionResultTransport: "fresh_trusted_projection"
 } as const;
 
 export interface DeepSeekResponsesProviderOptions {

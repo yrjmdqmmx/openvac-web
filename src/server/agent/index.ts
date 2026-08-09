@@ -13,6 +13,7 @@ export * from "./orchestrator";
 export * from "./run-store";
 export * from "./retention";
 export * from "./tool-registry";
+export * from "./trusted-calculation-projection";
 export * from "./web-evidence";
 export * from "./verified-url";
 export * from "./prompt";

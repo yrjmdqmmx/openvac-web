@@ -65,6 +65,14 @@ import type { ArtifactStorage } from "./artifact-tools";
 import type { AttachmentStorage } from "./attachment-tools";
 import { ToolRegistry, type ToolExecutionResult } from "./tool-registry";
 import {
+  answerUsesOnlyProjectedCalculations,
+  boundCalculationIdFromToolResult,
+  buildTrustedCalculationFinalInput,
+  calculationsForProjection,
+  isPurePumpdownCalculationRequest,
+  trustedPumpdownProjectionFromToolTurn
+} from "./trusted-calculation-projection";
+import {
   WebEvidenceService,
   type WebDomainPolicy,
   type WebEvidenceResult
@@ -231,10 +239,13 @@ export class AgentRunOrchestrator {
       evidence: this.evidence,
       inputParts: input.run.inputParts
     });
-    let currentInput = context.input;
+    const originalContextInput = [...context.input];
+    let currentInput = originalContextInput;
     let outputText = "";
     let finalUsage: ResponsesUsage | undefined;
     let incomplete = false;
+    let forceToolFreeAnswer = false;
+    let projectedCalculationIds: Set<string> | undefined;
 
     while (true) {
       signal.throwIfAborted();
@@ -245,23 +256,81 @@ export class AgentRunOrchestrator {
         this.calculations.values(),
         input.run.inputParts
       );
-      const result = await this.requestWithOneRetry(
-        input,
-        currentInput,
-        signal,
-        `answer_${this.modelRequests + 1}`,
-        this.toolRounds < toolRoundLimit
-      );
+      let result: CollectedModelResponse;
+      try {
+        result = await this.requestWithOneRetry(
+          input,
+          currentInput,
+          signal,
+          `answer_${this.modelRequests + 1}`,
+          !forceToolFreeAnswer && this.toolRounds < toolRoundLimit
+        );
+      } catch (error) {
+        if (
+          forceToolFreeAnswer &&
+          projectedCalculationIds &&
+          error instanceof ProviderError &&
+          (error.status === 400 || error.status === 422)
+        ) {
+          const calculations = calculationsForProjection(
+            projectedCalculationIds,
+            this.calculations
+          );
+          if (!calculations) throw error;
+          outputText = JSON.stringify(
+            buildDeterministicCalculationAnswerV3(
+              calculations,
+              input.riskLevel === "medium" ? "medium" : "low"
+            )
+          );
+          incomplete = false;
+          break;
+        }
+        throw error;
+      }
       outputText = result.finish.outputText || result.outputText;
       finalUsage = result.finish.usage;
       if (result.finish.status === "failed") {
+        if (
+          forceToolFreeAnswer &&
+          projectedCalculationIds &&
+          safeProviderTerminalErrorCode(result.finish.error?.code) ===
+            "PROVIDER_REQUEST_INVALID"
+        ) {
+          const calculations = calculationsForProjection(
+            projectedCalculationIds,
+            this.calculations
+          );
+          if (calculations) {
+            outputText = JSON.stringify(
+              buildDeterministicCalculationAnswerV3(
+                calculations,
+                input.riskLevel === "medium" ? "medium" : "low"
+              )
+            );
+            incomplete = false;
+            break;
+          }
+        }
         throw new AgentRuntimeError(
           "PROVIDER_RESPONSE_FAILED",
-          result.finish.error?.message ?? "回答模型返回失败。",
+          "回答模型返回失败。",
           true
         );
       }
       assertAuthorizedFunctionCalls(result.calls, result.callableFunctionNames);
+      if (
+        result.calls.length === 0 &&
+        result.forcedFunctionName === "estimate_pumpdown_time" &&
+        this.provider.capabilities.forcedFunctionResultTransport ===
+          "fresh_trusted_projection"
+      ) {
+        throw new AgentRuntimeError(
+          "REQUIRED_TOOL_NOT_COMPLETED",
+          "模型未返回已强制要求的确定性计算调用。",
+          false
+        );
+      }
       if (result.calls.length === 0) {
         incomplete = result.finish.status === "incomplete";
         break;
@@ -283,6 +352,62 @@ export class AgentRunOrchestrator {
         result.calls,
         signal
       );
+      const requiresTrustedProjection =
+        this.provider.capabilities.forcedFunctionResultTransport ===
+          "fresh_trusted_projection" &&
+        result.forcedFunctionName === "estimate_pumpdown_time";
+      const canUseTrustedProjection =
+        requiresTrustedProjection &&
+        input.riskLevel !== "high" &&
+        input.webMode !== "always" &&
+        !requiresFreshWebEvidence(input.run.question) &&
+        isPurePumpdownCalculationRequest(input.run.question) &&
+        input.run.inputParts.every((part) => part.type === "text") &&
+        !this.tools.definitions.some(
+          (tool) => tool.type === "function" && tool.name === "create_artifact"
+        ) &&
+        this.toolRounds === 1 &&
+        this.calculations.size === 1 &&
+        result.calls.length === 1 &&
+        result.calls[0]?.name === "estimate_pumpdown_time";
+      if (requiresTrustedProjection && !canUseTrustedProjection) {
+        throw new AgentRuntimeError(
+          "TRUSTED_CALCULATION_PROJECTION_UNAVAILABLE",
+          "该请求不能安全切换到可信计算投影。",
+          false
+        );
+      }
+      if (canUseTrustedProjection) {
+        const projection = trustedPumpdownProjectionFromToolTurn({
+          calls: result.calls,
+          continuationItems: result.finish.continuationItems,
+          outputs
+        });
+        if (!projection) {
+          throw new AgentRuntimeError(
+            "TRUSTED_CALCULATION_PROJECTION_INVALID",
+            "确定性计算结果未通过可信投影边界。",
+            false
+          );
+        }
+        if (
+          this.calculations.size !== 1 ||
+          !this.calculations.has(projection.calculationId)
+        ) {
+          throw new AgentRuntimeError(
+            "TRUSTED_CALCULATION_PROJECTION_INVALID",
+            "可信计算投影与本次运行的计算记录不一致。",
+            false
+          );
+        }
+        currentInput = buildTrustedCalculationFinalInput(
+          originalContextInput,
+          projection
+        );
+        projectedCalculationIds = new Set([projection.calculationId]);
+        forceToolFreeAnswer = true;
+        continue;
+      }
       currentInput = [
         ...currentInput,
         ...result.finish.continuationItems,
@@ -298,16 +423,60 @@ export class AgentRunOrchestrator {
       signal
     });
     if (incomplete && !answer) {
-      answer = buildDeterministicSafeAnswerV3(
-        input.riskLevel,
-        "模型输出在完整 Answer V3 形成前中断，可使用“继续”恢复。"
+      const calculations = projectedCalculationIds
+        ? calculationsForProjection(projectedCalculationIds, this.calculations)
+        : undefined;
+      answer = calculations
+        ? buildDeterministicCalculationAnswerV3(
+            calculations,
+            input.riskLevel === "medium" ? "medium" : "low"
+          )
+        : buildDeterministicSafeAnswerV3(
+            input.riskLevel,
+            "模型输出在完整 Answer V3 形成前中断，可使用“继续”恢复。"
+          );
+    }
+    if (!answer && projectedCalculationIds) {
+      const calculations = calculationsForProjection(
+        projectedCalculationIds,
+        this.calculations
       );
+      if (calculations) {
+        answer = buildDeterministicCalculationAnswerV3(
+          calculations,
+          input.riskLevel === "medium" ? "medium" : "low"
+        );
+      }
     }
     if (!answer) {
       throw new AgentRuntimeError(
         "ANSWER_VALIDATION_FAILED",
         "回答未通过结构、引用或安全校验。",
         false
+      );
+    }
+    if (
+      projectedCalculationIds &&
+      !answerUsesOnlyProjectedCalculations(
+        answer,
+        projectedCalculationIds,
+        input.riskLevel
+      )
+    ) {
+      const calculations = calculationsForProjection(
+        projectedCalculationIds,
+        this.calculations
+      );
+      if (!calculations) {
+        throw new AgentRuntimeError(
+          "TRUSTED_CALCULATION_PROJECTION_INVALID",
+          "可信计算投影无法绑定到已验证的计算记录。",
+          false
+        );
+      }
+      answer = buildDeterministicCalculationAnswerV3(
+        calculations,
+        input.riskLevel === "medium" ? "medium" : "low"
       );
     }
 
@@ -578,6 +747,10 @@ export class AgentRunOrchestrator {
       toolName: name,
       argumentsDigest: digest(args),
       resultDigest: digest(String(result.outputItem.output ?? "")),
+      calculationId: boundCalculationIdFromToolResult(result, {
+        callId,
+        toolName: name
+      }),
       citationIds: result.evidenceIds,
       status: result.ok ? "completed" : "failed",
       errorCode: result.errorCode,
@@ -910,7 +1083,12 @@ export class AgentRunOrchestrator {
       outputText,
       calls,
       finish,
-      callableFunctionNames: new Set(toolPolicy.callableFunctionNames)
+      callableFunctionNames: new Set(toolPolicy.callableFunctionNames),
+      forcedFunctionName:
+        typeof toolPolicy.toolChoice === "object" &&
+        toolPolicy.toolChoice.type === "function"
+          ? toolPolicy.toolChoice.name
+          : undefined
     };
   }
 
@@ -963,12 +1141,15 @@ export class AgentRunOrchestrator {
       for await (const event of this.provider.stream(request)) {
         if (event.type === "finish") {
           if (event.status === "failed") {
+            const terminalErrorCode = safeProviderTerminalErrorCode(
+              event.error?.code
+            );
             await failModelInvocation({
               handle,
-              errorCode: event.error?.code ?? "PROVIDER_RESPONSE_FAILED",
-              errorMessage: event.error?.message ?? "Provider response failed.",
+              errorCode: terminalErrorCode,
+              errorMessage: "Provider response failed.",
               providerHttpStatus: 200,
-              providerErrorCode: event.error?.code,
+              providerErrorCode: terminalErrorCode,
               retainReservedEstimate: true
             });
           } else {
@@ -991,7 +1172,7 @@ export class AgentRunOrchestrator {
           handle,
           status: request.signal?.aborted ? "cancelled" : "failed",
           errorCode: errorCode(error),
-          errorMessage: safeInternalError(error),
+          errorMessage: safeModelInvocationErrorMessage(error),
           providerHttpStatus:
             error instanceof ProviderError ? error.status : undefined,
           providerErrorCode:
@@ -1045,6 +1226,7 @@ type CollectedModelResponse = {
   calls: Array<{ callId: string; name: string; arguments: string }>;
   finish: Extract<ResponsesStreamEvent, { type: "finish" }>;
   callableFunctionNames: ReadonlySet<string>;
+  forcedFunctionName?: string;
 };
 
 export function localizeKnownCalculationBlocks(
@@ -1440,10 +1622,31 @@ function errorCode(error: unknown): string {
   return error instanceof Error ? error.name : "UNKNOWN_ERROR";
 }
 
-function safeInternalError(error: unknown): string {
-  return error instanceof Error
-    ? error.message.slice(0, 1_000)
-    : "Unknown provider error.";
+export function safeModelInvocationErrorMessage(error: unknown): string {
+  if (error instanceof ProviderError) {
+    return error.status === undefined
+      ? "Provider request failed."
+      : `Provider request failed with HTTP ${error.status}.`;
+  }
+  if (error instanceof AgentRuntimeError) return error.message.slice(0, 1_000);
+  return "Unexpected internal error.";
+}
+
+export function safeProviderTerminalErrorCode(value: unknown): string {
+  switch (value) {
+    case "server_error":
+      return "PROVIDER_SERVER_ERROR";
+    case "rate_limit_error":
+      return "PROVIDER_RATE_LIMITED";
+    case "invalid_request_error":
+      return "PROVIDER_REQUEST_INVALID";
+    case "authentication_error":
+      return "PROVIDER_AUTH_FAILED";
+    case "insufficient_quota":
+      return "PROVIDER_QUOTA_EXHAUSTED";
+    default:
+      return "PROVIDER_RESPONSE_FAILED";
+  }
 }
 
 export class AgentRuntimeError extends Error {

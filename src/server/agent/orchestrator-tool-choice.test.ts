@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import type { ResponsesInputItem, ResponsesTool } from "@/server/providers";
+import {
+  ProviderError,
+  type ResponsesInputItem,
+  type ResponsesTool
+} from "@/server/providers";
 import type { CalculationResult } from "@/types/chat";
 
 import {
   assertAuthorizedFunctionCalls,
   reserveNonRepeatableToolCalls,
+  safeModelInvocationErrorMessage,
+  safeProviderTerminalErrorCode,
   selectAnswerToolRequestPolicy,
   selectAnswerToolChoice,
   selectAnswerToolRoundLimit,
@@ -22,6 +28,23 @@ const history: ResponsesInputItem[] = [
 ];
 
 describe("Agent V3 deterministic calculator routing", () => {
+  it("never persists provider response text as an invocation error", () => {
+    const value = safeModelInvocationErrorMessage(
+      new ProviderError("secret body request-id=private", {
+        provider: "deepseek-responses",
+        status: 422
+      })
+    );
+    expect(value).toBe("Provider request failed with HTTP 422.");
+    expect(value).not.toMatch(/secret|request-id|private/u);
+    expect(safeProviderTerminalErrorCode("server_error")).toBe(
+      "PROVIDER_SERVER_ERROR"
+    );
+    expect(
+      safeProviderTerminalErrorCode("secret request-id=private response")
+    ).toBe("PROVIDER_RESPONSE_FAILED");
+  });
+
   it("forces pumpdown calculation when the current question and history provide all inputs", () => {
     expect(
       selectAnswerToolChoice(
