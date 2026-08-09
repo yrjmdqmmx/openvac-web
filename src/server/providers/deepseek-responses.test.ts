@@ -258,10 +258,145 @@ describe("DeepSeekResponsesProvider", () => {
           parameters: { type: "object" }
         }
       ],
-      reasoning: { effort: "high" }
+      reasoning: { effort: "none" }
     });
     expect(sentBody).not.toHaveProperty("text");
     expect(sentBody).not.toHaveProperty("tools.0.strict");
+  });
+
+  it("restores high reasoning and structured text after a non-thinking forced tool leg", async () => {
+    const sentBodies: Array<Record<string, unknown>> = [];
+    const responses = [
+      streamFromStrings([
+        event("response.created", 0, { response: { id: "resp-tool-first" } }),
+        event("response.completed", 1, {
+          response: {
+            id: "resp-tool-first",
+            output: [
+              {
+                type: "function_call",
+                id: "fc-pumpdown",
+                call_id: "call-pumpdown",
+                name: "estimate_pumpdown_time",
+                arguments:
+                  '{"volume":{"value":100,"unit":"L"},"pumpingSpeed":{"value":10,"unit":"L/s"},"initialPressure":{"value":100,"unit":"Pa"},"targetPressure":{"value":1,"unit":"Pa"}}'
+              }
+            ]
+          }
+        })
+      ]),
+      streamFromStrings([
+        event("response.created", 0, { response: { id: "resp-tool-final" } }),
+        event("response.completed", 1, {
+          response: {
+            id: "resp-tool-final",
+            output: [
+              {
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: '{"ok":true}' }]
+              }
+            ]
+          }
+        })
+      ])
+    ];
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        sentBodies.push(
+          JSON.parse(String(init?.body)) as Record<string, unknown>
+        );
+        const response = responses[sentBodies.length - 1];
+        if (!response) throw new Error("Unexpected provider request.");
+        return new Response(response);
+      })
+    });
+    const tool = {
+      type: "function" as const,
+      name: "estimate_pumpdown_time",
+      description: "Calculate pumpdown time",
+      parameters: { type: "object" },
+      strict: true
+    };
+    const userMessage = {
+      type: "message",
+      role: "user",
+      content: "Calculate pumpdown time"
+    };
+
+    const firstEvents = await collect(
+      provider.stream({
+        input: [userMessage],
+        tools: [tool],
+        toolChoice: { type: "function", name: tool.name },
+        reasoningEffort: "high",
+        textFormat: {
+          type: "json_schema",
+          name: "answer_v3",
+          schema: { type: "object" },
+          strict: true
+        },
+        user: "ov1_safe-user"
+      })
+    );
+    const firstFinish = firstEvents.find((event) => event.type === "finish");
+    const firstCall = firstEvents.find(
+      (event) => event.type === "function-call"
+    );
+    if (
+      !firstFinish ||
+      firstFinish.type !== "finish" ||
+      !firstCall ||
+      firstCall.type !== "function-call"
+    ) {
+      throw new Error("Forced tool fixture did not finish with one call.");
+    }
+
+    await collect(
+      provider.stream({
+        input: [
+          userMessage,
+          ...firstFinish.continuationItems,
+          {
+            type: "function_call_output",
+            call_id: firstCall.callId,
+            output: '{"ok":true}'
+          }
+        ],
+        toolChoice: "none",
+        reasoningEffort: "high",
+        textFormat: {
+          type: "json_schema",
+          name: "answer_v3",
+          schema: { type: "object" },
+          strict: true
+        },
+        user: "ov1_safe-user"
+      })
+    );
+
+    expect(sentBodies[0]).toMatchObject({
+      tool_choice: "required",
+      reasoning: { effort: "none" }
+    });
+    expect(sentBodies[0]).not.toHaveProperty("text");
+    expect(sentBodies[1]).toMatchObject({
+      tool_choice: "none",
+      reasoning: { effort: "high" },
+      text: {
+        format: {
+          type: "json_schema",
+          name: "answer_v3",
+          schema: { type: "object" }
+        }
+      }
+    });
+    expect(sentBodies[1]).toHaveProperty("input.1.type", "function_call");
+    expect(sentBodies[1]).toHaveProperty(
+      "input.2.type",
+      "function_call_output"
+    );
   });
 
   it("rejects an unresolved forced function before fetch", async () => {
