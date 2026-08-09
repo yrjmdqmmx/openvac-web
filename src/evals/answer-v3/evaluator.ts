@@ -281,12 +281,14 @@ function permissionAuditMatches(
       name: audit.name,
       permission: audit.permission,
       executed: audit.executed,
+      ...("status" in audit && audit.status ? { status: audit.status } : {}),
       ...(audit.denialReason ? { denialReason: audit.denialReason } : {})
     }));
   const normalizedExpected = expected.map((audit) => ({
     name: audit.name,
     permission: audit.permission,
     executed: audit.executed,
+    ...(audit.status ? { status: audit.status } : {}),
     ...(audit.denialReason ? { denialReason: audit.denialReason } : {})
   }));
   return sameJsonSet(actual, normalizedExpected);

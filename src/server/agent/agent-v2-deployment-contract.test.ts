@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -16,8 +16,9 @@ const requiredAgentEnvironment = [
   "MODEL_INPUT_COST_MICROS_PER_MILLION_TOKENS",
   "MODEL_OUTPUT_COST_MICROS_PER_MILLION_TOKENS",
   "MODEL_PRICE_VERSION",
-  "ALIBABA_WEB_SEARCH_COST_MICROS_PER_CALL",
-  "ALIBABA_WEB_SEARCH_PRICE_VERSION",
+  "WEB_SEARCH_PER_USER_DAILY_LIMIT",
+  "WEB_SEARCH_GLOBAL_DAILY_LIMIT",
+  "WEB_SEARCH_ALLOWED_DOMAINS",
   "QWEN_VL_API_KEY",
   "QWEN_VL_BASE_URL",
   "QWEN_VL_ALLOWED_HOSTS",
@@ -61,5 +62,30 @@ describe("Agent deployment contract", () => {
 
     expect(orchestrator).toContain("effectiveAgentRunTimeoutMs");
     expect(orchestrator).toContain("budgetProfile.maxToolRounds");
+  });
+
+  it("uses only DeepSeek native web search while keeping disabled rollback aliases", () => {
+    const root = process.cwd();
+    const example = readFileSync(join(root, ".env.example"), "utf8");
+    const compose = readFileSync(join(root, "docker-compose.yml"), "utf8");
+    const webEvidence = readFileSync(
+      join(root, "src/server/agent/web-evidence.ts"),
+      "utf8"
+    );
+    const orchestrator = readFileSync(
+      join(root, "src/server/agent/orchestrator.ts"),
+      "utf8"
+    );
+
+    expect(
+      existsSync(join(root, "src/server/providers/alibaba-web-search.ts"))
+    ).toBe(false);
+    expect(`${webEvidence}\n${orchestrator}`).not.toMatch(
+      /getWebSearchProvider|AlibabaWebSearchProvider|alibaba-fallback|web_fallback/u
+    );
+    expect(example).not.toContain("DASHSCOPE_NATIVE_ENDPOINT");
+    expect(compose).not.toContain("DASHSCOPE_NATIVE_ENDPOINT");
+    expect(example).toContain("ALIBABA_WEB_SEARCH_ENABLED=false");
+    expect(compose).toContain('ALIBABA_WEB_SEARCH_ENABLED: "false"');
   });
 });

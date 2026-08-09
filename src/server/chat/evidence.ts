@@ -10,17 +10,7 @@ import {
   POSTGRES_LEXICAL_RETRIEVAL_SQL
 } from "@/server/knowledge/lexical";
 import { retrievePatentMetadataReferences } from "@/server/knowledge/metadata-reference";
-import { SafeWebFetcher } from "@/server/knowledge/web-fetch";
-import { getEmbeddingProvider, getWebSearchProvider } from "@/server/providers";
-import {
-  commitQuota,
-  QuotaExceededError,
-  releaseQuota,
-  reserveWebSearchQuota
-} from "@/server/quota";
-
-const TIME_SENSITIVE =
-  /(?:最新|目前|现在|当前|价格|库存|停产|在售|新型号|新版|更新|公告)/u;
+import { getEmbeddingProvider } from "@/server/providers";
 const DEFAULT_QUERY_EMBEDDING_TIMEOUT_MS = 8_000;
 const MAX_QUERY_EMBEDDING_TIMEOUT_MS = 15_000;
 
@@ -39,127 +29,11 @@ export async function collectEvidence(input: {
 }): Promise<EvidenceResult> {
   input.onStage?.("正在检索 OpenVac 知识库…");
   const localResult = await collectLocalEvidence(input.question, input.signal);
-  const { patentReferences, local, evidence: localEvidence } = localResult;
-
-  const insufficient =
-    (patentReferences === 0 &&
-      (localEvidence.length < 2 || local.bestScore < 0.016)) ||
-    TIME_SENSITIVE.test(input.question);
-
-  if (!insufficient || process.env.ALIBABA_WEB_SEARCH_ENABLED !== "true") {
-    return {
-      evidence: localEvidence,
-      webSearched: false,
-      retrievalMode: local.mode
-    };
-  }
-
-  input.onStage?.("本地证据不足，正在检索权威站点…");
-  let leaseId: string | undefined;
-  let searchQuotaCommitted = false;
-  try {
-    const reservation = await reserveWebSearchQuota({
-      userId: input.userId,
-      clientRequestId: `${input.clientRequestId}:web`,
-      metadata: { reason: "local_evidence_insufficient" }
-    });
-    leaseId = reservation.leaseId;
-    if (reservation.idempotent || reservation.status !== "reserved") {
-      return {
-        evidence: localEvidence,
-        webSearched: false,
-        retrievalMode: local.mode
-      };
-    }
-
-    // A search reservation measures an outbound paid attempt. Commit before
-    // handing control to the provider so downstream failures cannot be used
-    // to recycle the same global paid-search budget.
-    const committedReservation = await commitQuota({
-      leaseId,
-      userId: input.userId
-    });
-    if (committedReservation.status !== "committed") {
-      throw new Error("联网搜索额度未能确认提交。");
-    }
-    searchQuotaCommitted = true;
-
-    const search = await getWebSearchProvider().search({
-      query: input.question,
-      forced: true,
-      signal: input.signal
-    });
-    if (
-      !search.searched ||
-      search.searchCalls !== 1 ||
-      search.sources.length < 1
-    ) {
-      throw new Error("联网搜索未返回可追溯来源。");
-    }
-
-    const allowedDomains = parseDomains(
-      process.env.ALIBABA_WEB_SEARCH_ALLOWED_DOMAINS
-    );
-    const fetcher = new SafeWebFetcher({
-      allowedDomains,
-      maxBytes: 1_000_000,
-      timeoutMs: 8_000,
-      maxRedirects: 2
-    });
-    const fetched: GroundingEvidence[] = [];
-    for (const source of search.sources.slice(0, 3)) {
-      try {
-        const page = await fetcher.fetch(source.url, input.signal);
-        const excerpt = htmlToPlainText(page.body);
-        if (excerpt.length < 80) continue;
-        fetched.push(
-          sanitizeGroundingEvidence(
-            {
-              citation: {
-                sourceId: `web:${stableSourceKey(source.url)}`,
-                title: source.title,
-                publisher: source.siteName ?? new URL(source.url).hostname,
-                url: page.url,
-                fetchedAt: page.fetchedAt,
-                licenseClass: "metadata_only"
-              },
-              excerpt
-            },
-            2_600
-          )
-        );
-      } catch {
-        // A single source failing DNS, content-type, redirect, or byte checks
-        // must not weaken the protections for the remaining sources.
-      }
-    }
-
-    if (fetched.length === 0) {
-      throw new Error("权威搜索结果无法通过安全抓取和正文验证。");
-    }
-    return {
-      evidence: deduplicateEvidence([...localEvidence, ...fetched]).slice(0, 8),
-      webSearched: true,
-      retrievalMode: local.mode
-    };
-  } catch (error) {
-    if (leaseId && !searchQuotaCommitted) {
-      await releaseQuota({
-        leaseId,
-        userId: input.userId,
-        reason: "search_failed_or_unverified"
-      }).catch(() => undefined);
-    }
-    if (!(error instanceof QuotaExceededError)) {
-      // Search failure is an intentional degradation path. The answer prompt
-      // will state that no direct evidence was available.
-    }
-    return {
-      evidence: localEvidence,
-      webSearched: false,
-      retrievalMode: local.mode
-    };
-  }
+  return {
+    evidence: localResult.evidence,
+    webSearched: false,
+    retrievalMode: localResult.local.mode
+  };
 }
 
 export async function collectLocalEvidence(
@@ -449,13 +323,6 @@ function citationFetchedAt(value: unknown): string | Date {
   return typeof fetchedAt === "string" ? fetchedAt : new Date(0);
 }
 
-function parseDomains(value: string | undefined) {
-  return (value ?? "")
-    .split(",")
-    .map((domain) => domain.trim().toLowerCase())
-    .filter(Boolean);
-}
-
 function deduplicateEvidence(evidence: GroundingEvidence[]) {
   const seen = new Set<string>();
   return evidence.filter((item) => {
@@ -468,31 +335,4 @@ function deduplicateEvidence(evidence: GroundingEvidence[]) {
 function boundText(value: string, maximum: number) {
   const compact = value.replace(/\s+/g, " ").trim();
   return compact.length <= maximum ? compact : `${compact.slice(0, maximum)}…`;
-}
-
-function htmlToPlainText(value: string) {
-  return boundText(
-    value
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, " ")
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/giu, " ")
-      .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/giu, " ")
-      .replace(/<!--[\s\S]*?-->/gu, " ")
-      .replace(/<[^>]+>/gu, " ")
-      .replace(/&nbsp;/giu, " ")
-      .replace(/&amp;/giu, "&")
-      .replace(/&lt;/giu, "<")
-      .replace(/&gt;/giu, ">")
-      .replace(/&quot;/giu, '"')
-      .replace(/&#39;/giu, "'"),
-    12_000
-  );
-}
-
-function stableSourceKey(url: string) {
-  let hash = 2166136261;
-  for (const char of url) {
-    hash ^= char.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
 }

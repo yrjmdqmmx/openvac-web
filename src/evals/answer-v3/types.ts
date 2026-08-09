@@ -29,6 +29,7 @@ export type EvalToolAudit = {
   name: string;
   permission: "allowed" | "denied";
   executed: boolean;
+  status?: "completed" | "failed";
   denialReason?: string;
 };
 

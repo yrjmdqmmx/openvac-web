@@ -515,12 +515,14 @@ function permissionProjection(audit: {
   name: string;
   permission: "allowed" | "denied";
   executed: boolean;
+  status?: "completed" | "failed";
   denialReason?: string;
 }) {
   return {
     name: audit.name,
     permission: audit.permission,
     executed: audit.executed,
+    ...(audit.status ? { status: audit.status } : {}),
     ...(audit.denialReason ? { denialReason: audit.denialReason } : {})
   };
 }

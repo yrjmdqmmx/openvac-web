@@ -49,7 +49,11 @@ function fixtureOutput(testCase: AnswerV3EvalCase): AnswerV3CandidateOutput {
         };
   const blocks: AnswerBlock[] = [firstBlock];
   if (testCase.expected.linkIds.length > 0) {
-    blocks.push({ type: "link_reference", linkId: "L1", label: "厂家手册" });
+    blocks.push({
+      type: "link_reference",
+      linkId: testCase.expected.linkIds[0]!,
+      label: "厂家手册"
+    });
   }
   if (testCase.expected.artifactKind) {
     blocks.push({

@@ -5,6 +5,8 @@ import {
 } from "@/server/knowledge/web-fetch";
 import type { VerifiedLinkPart } from "@/types/chat-v3";
 
+import { parsePublicHttpsUrl } from "./public-url";
+
 const MAX_LINKS_PER_TURN = 16;
 const MAX_LINK_ID_CHARACTERS = 160;
 const MAX_LABEL_CHARACTERS = 240;
@@ -168,43 +170,14 @@ function safePublicLabel(value: string | undefined, fallback: string): string {
 }
 
 function parseTurnUrl(input: string): URL {
-  let url: URL;
-  try {
-    url = new URL(input);
-  } catch (cause) {
-    throw new VerifiedUrlError(
-      "INVALID_TURN_LINKS",
-      "Current-turn links must be valid HTTPS URLs.",
-      { cause }
-    );
-  }
-  if (
-    url.href.length > 2_048 ||
-    url.protocol !== "https:" ||
-    url.username ||
-    url.password ||
-    (url.port && url.port !== "443") ||
-    hasSensitiveUrlParameters(url)
-  ) {
+  const url = parsePublicHttpsUrl(input);
+  if (!url) {
     throw new VerifiedUrlError(
       "INVALID_TURN_LINKS",
       "Current-turn links must use credential-free HTTPS on the default port."
     );
   }
-  url.hash = "";
   return url;
-}
-
-function hasSensitiveUrlParameters(url: URL): boolean {
-  for (const key of url.searchParams.keys()) {
-    if (
-      /^(?:x-amz-|x-oss-)/iu.test(key) ||
-      /^(?:signature|ossaccesskeyid|accesskeyid|expires|token)$/iu.test(key)
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function extractReadableText(body: string, contentType: string): string {

@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import {
   completeModelInvocation,
   failModelInvocation,
-  recordExternalProviderInvocation,
   startModelInvocation,
   type InvocationHandle
 } from "@/server/operations/model-runtime";
@@ -15,6 +14,7 @@ import {
   type ResponsesStreamRequest,
   type ResponsesUsage
 } from "@/server/providers";
+import { QuotaExceededError } from "@/server/quota";
 import type { DocumentParser, VisionProvider } from "@/server/providers";
 import type {
   AgentStage,
@@ -38,6 +38,7 @@ import {
   buildDeterministicAttachmentScopeAnswerV3,
   buildDeterministicCalculationAnswerV3,
   buildDeterministicSafeAnswerV3,
+  buildDeterministicWebUnavailableAnswerV3,
   collectAnswerV3References,
   requiresExpertAnswer,
   validateAnswerV3,
@@ -53,13 +54,18 @@ import { localizeCalculation } from "./calculation-localization";
 import {
   agentRunBudgetProfile,
   effectiveAgentRunTimeoutMs,
+  requiresFreshWebEvidence,
   shouldUseWeb
 } from "./mode-policy";
 import { RunStore, type CreatedRun } from "./run-store";
 import type { ArtifactStorage } from "./artifact-tools";
 import type { AttachmentStorage } from "./attachment-tools";
 import { ToolRegistry, type ToolExecutionResult } from "./tool-registry";
-import { WebEvidenceService } from "./web-evidence";
+import {
+  WebEvidenceService,
+  type WebDomainPolicy,
+  type WebEvidenceResult
+} from "./web-evidence";
 
 const MAX_TOOL_CALLS = 8;
 const MAX_PARALLEL_TOOLS = 2;
@@ -99,6 +105,7 @@ export type AgentRunOrchestratorOptions = {
   artifactStorage?: ArtifactStorage;
   documentParser?: DocumentParser;
   visionProvider?: VisionProvider;
+  webDomainPolicyLoader?: () => Promise<WebDomainPolicy[]>;
 };
 
 export async function persistAndPublishFinalAnswer<T>(input: {
@@ -133,6 +140,8 @@ export class AgentRunOrchestrator {
   private repairs = 0;
   private toolSequence = 0;
   private webSearched = false;
+  private webSearchFailure:
+    "quota_exhausted" | "no_validated_evidence" | undefined;
   private readonly verifiedLinks = new Map<string, VerifiedLinkPart>();
   private readonly artifacts = new Map<string, ArtifactPart>();
   private readonly invocationByPhase = new Map<string, string>();
@@ -167,7 +176,7 @@ export class AgentRunOrchestrator {
   }): Promise<OrchestratorResult> {
     const startedAt = Date.now();
     const budgetProfile = agentRunBudgetProfile(input.requestedMode);
-    const modeTimeoutMs = effectiveAgentRunTimeoutMs(input.requestedMode);
+    const modeTimeoutMs = effectiveAgentRunTimeoutMs(input.resolvedMode);
     const timeoutSignal = AbortSignal.timeout(modeTimeoutMs);
     const signal = AbortSignal.any([input.signal, timeoutSignal]);
 
@@ -187,6 +196,7 @@ export class AgentRunOrchestrator {
     this.stage("analyzing", "正在分析问题风险与所需依据…");
     signal.throwIfAborted();
     await this.proactiveKnowledgeSearch(input.run, signal);
+    signal.throwIfAborted();
 
     const shouldSearchWeb = shouldUseWeb({
       webMode: input.webMode,
@@ -198,6 +208,7 @@ export class AgentRunOrchestrator {
     if (shouldSearchWeb && this.toolCalls < MAX_TOOL_CALLS) {
       await this.proactiveWebSearch(input, signal);
     }
+    signal.throwIfAborted();
 
     this.stage("reasoning", "正在结合对话、证据与可用工具…");
     const context = await this.contextBuilder.build({
@@ -378,33 +389,54 @@ export class AgentRunOrchestrator {
       this.provider,
       this.evidence,
       (request) => this.meteredStream(input, request, "web_discovery"),
-      (event) =>
-        recordExternalProviderInvocation({
-          userId: input.userId,
-          conversationId: input.run.conversationId,
-          messageId: input.run.assistantMessageId,
-          agentRunId: input.run.runId,
-          clientRequestId: `${input.clientRequestId}:alibaba-web`,
-          provider: "alibaba-web-search",
-          model: process.env.ALIBABA_WEB_SEARCH_MODEL ?? "qwen-plus",
-          purpose: "web_search",
-          phase: "web_fallback",
-          costMicros: readOptionalNonNegativeInteger(
-            "ALIBABA_WEB_SEARCH_COST_MICROS_PER_CALL"
-          ),
-          priceVersion: process.env.ALIBABA_WEB_SEARCH_PRICE_VERSION,
-          ...event
-        })
+      this.adapters.webDomainPolicyLoader
     );
-    const result = await web.search({
-      question: input.run.question,
-      userId: input.userId,
-      userPartition: input.userPartition,
-      clientRequestId: input.clientRequestId,
-      signal
-    });
+    let result: WebEvidenceResult;
+    try {
+      result = await web.search({
+        question: input.run.question,
+        userId: input.userId,
+        userPartition: input.userPartition,
+        clientRequestId: input.clientRequestId,
+        signal
+      });
+    } catch (error) {
+      const quotaPolicy = webSearchQuotaPolicy(error, input.webMode);
+      if (!quotaPolicy) throw error;
+      this.toolCalls += 1;
+      await this.store.recordToolCall({
+        runId: input.run.runId,
+        round: 1,
+        sequence: ++this.toolSequence,
+        callId,
+        toolName: "web_search",
+        argumentsDigest: digest(input.run.question),
+        resultDigest: digest("WEB_SEARCH_QUOTA_EXCEEDED"),
+        citationIds: [],
+        status: "failed",
+        latencyMs: Date.now() - startedAt,
+        errorCode: "WEB_SEARCH_QUOTA_EXCEEDED"
+      });
+      this.stage("validating_sources", "正在执行来源分级与安全抓取…");
+      this.tool("failed", "web_search", "联网搜索额度已用尽，未引入联网依据");
+      if (quotaPolicy === "fail_required_web") {
+        throw new AgentRuntimeError(
+          "WEB_SEARCH_QUOTA_EXCEEDED",
+          "用户明确要求联网搜索，但本次联网额度已用尽。",
+          false
+        );
+      }
+      this.webSearchFailure = "quota_exhausted";
+      return;
+    }
     this.toolCalls += 1;
     this.webSearched = result.searched;
+    for (const link of result.verifiedLinks) {
+      this.verifiedLinks.set(link.linkId, link);
+    }
+    if (result.evidenceIds.length === 0) {
+      this.webSearchFailure ??= "no_validated_evidence";
+    }
     await this.store.recordToolCall({
       runId: input.run.runId,
       round: 1,
@@ -415,7 +447,8 @@ export class AgentRunOrchestrator {
       resultDigest: digest(
         JSON.stringify({
           provider: result.provider,
-          evidenceIds: result.evidenceIds
+          evidenceIds: result.evidenceIds,
+          linkIds: result.verifiedLinks.map((link) => link.linkId)
         })
       ),
       citationIds: result.evidenceIds,
@@ -543,6 +576,20 @@ export class AgentRunOrchestrator {
         [...this.calculations.values()],
         input.riskLevel === "medium" ? "medium" : "low"
       );
+    if (this.webSearchFailure && preferCalculationAnswer) {
+      return calculationAnswer();
+    }
+    const requiresWebQuotaFallback = (references: AnswerV3References) =>
+      Boolean(this.webSearchFailure) &&
+      (input.webMode === "always" ||
+        requiresFreshWebEvidence(input.run.question)) &&
+      references.calculationIds.length === 0 &&
+      !references.evidenceIds.some((id) => {
+        const entry = this.evidence.get(id);
+        return entry
+          ? isCurrentTurnRuntimeEvidenceSource(entry.originalSourceId)
+          : false;
+      });
     const validate = (value: unknown) =>
       validateAnswerV3({
         value: localizeKnownCalculationBlocks(value, this.calculations),
@@ -600,8 +647,25 @@ export class AgentRunOrchestrator {
       const repaired = await this.repair(input, validated.errors);
       validated = validate(safeJson(repaired));
     }
-    if (validated.valid) return validated.answer;
+    if (validated.valid) {
+      return requiresWebQuotaFallback(validated.references)
+        ? buildDeterministicWebUnavailableAnswerV3(
+            input.riskLevel,
+            this.webSearchFailure
+          )
+        : validated.answer;
+    }
     if (preferCalculationAnswer) return calculationAnswer();
+    if (
+      this.webSearchFailure &&
+      (input.webMode === "always" ||
+        requiresFreshWebEvidence(input.run.question))
+    ) {
+      return buildDeterministicWebUnavailableAnswerV3(
+        input.riskLevel,
+        this.webSearchFailure
+      );
+    }
     return buildDeterministicSafeAnswerV3(
       input.riskLevel,
       "请补充设备型号、工况、单位和希望确认的具体问题。"
@@ -1068,13 +1132,6 @@ function readPositiveInteger(name: string, fallback: number): number {
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
-function readOptionalNonNegativeInteger(name: string): number | undefined {
-  const raw = process.env[name];
-  if (raw === undefined || raw.trim() === "") return undefined;
-  const value = Number.parseInt(raw, 10);
-  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
-}
-
 function errorCode(error: unknown): string {
   if (
     error &&
@@ -1102,4 +1159,28 @@ export class AgentRuntimeError extends Error {
     super(message);
     this.name = "AgentRuntimeError";
   }
+}
+
+export function webSearchQuotaPolicy(
+  error: unknown,
+  webMode: WebMode
+): "continue_without_web" | "fail_required_web" | undefined {
+  if (
+    !(error instanceof QuotaExceededError) ||
+    error.resource !== "web_search"
+  ) {
+    return undefined;
+  }
+  return webMode === "always" ? "fail_required_web" : "continue_without_web";
+}
+
+export function isCurrentTurnRuntimeEvidenceSource(sourceId: string): boolean {
+  return /^(?:attachment:|image-analysis:|turn-link:)/u.test(sourceId);
+}
+
+export function isAgentRunTimeoutError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "TimeoutError" || error.name === "AbortError")
+  );
 }

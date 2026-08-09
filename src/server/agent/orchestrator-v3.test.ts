@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import type { CalculationResult, Citation } from "@/types/chat";
 import type { AnswerV3 } from "@/types/chat-v3";
+import { QuotaExceededError } from "@/server/quota";
 
 import {
   localizeKnownCalculationBlocks,
   buildAgentV3InstructionsForRisk,
   candidateUsesOnlyKnownGrounding,
   persistAndPublishFinalAnswer,
+  webSearchQuotaPolicy,
   type OrchestratorEvent
 } from "./orchestrator";
 
@@ -171,5 +173,31 @@ describe("Agent V3 orchestrator output boundary", () => {
     expect(serialized).not.toContain("calculate_throughput");
     expect(serialized).not.toContain("normalizedInputs");
     expect(serialized).not.toContain("pressurePa");
+  });
+
+  it("degrades only automatic web search when the web-search quota is exhausted", () => {
+    const exceeded = new QuotaExceededError({
+      resource: "web_search",
+      scopeType: "user",
+      limit: 5,
+      resetAt: new Date("2026-08-10T00:00:00.000Z")
+    });
+
+    expect(webSearchQuotaPolicy(exceeded, "auto")).toBe("continue_without_web");
+    expect(webSearchQuotaPolicy(exceeded, "always")).toBe("fail_required_web");
+    expect(
+      webSearchQuotaPolicy(
+        new QuotaExceededError({
+          resource: "answer",
+          scopeType: "user",
+          limit: 20,
+          resetAt: new Date("2026-08-10T00:00:00.000Z")
+        }),
+        "auto"
+      )
+    ).toBeUndefined();
+    expect(
+      webSearchQuotaPolicy(new Error("database unavailable"), "auto")
+    ).toBeUndefined();
   });
 });

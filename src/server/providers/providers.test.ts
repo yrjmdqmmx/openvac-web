@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { AlibabaEmbeddingProvider } from "./alibaba-embedding";
-import { AlibabaWebSearchProvider } from "./alibaba-web-search";
 import { DeepSeekModelProvider, parseSseJson } from "./deepseek";
 import {
   ConfigurationError,
@@ -196,78 +195,6 @@ describe("AlibabaEmbeddingProvider", () => {
   });
 });
 
-describe("AlibabaWebSearchProvider", () => {
-  it("uses turbo, checks search_info, and retains only whitelisted sources", async () => {
-    let sentBody: Record<string, unknown> = {};
-    const fetchMock = vi.fn(
-      async (_url: string | URL | Request, init?: RequestInit) => {
-        sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        return Response.json({
-          request_id: "req-1",
-          output: {
-            choices: [{ message: { content: "摘要" } }],
-            search_info: {
-              search_results: [
-                {
-                  index: 1,
-                  title: "CERN",
-                  url: "https://cds.cern.ch/record/1"
-                },
-                {
-                  index: 2,
-                  title: "Untrusted",
-                  url: "https://evil.example/report"
-                }
-              ]
-            }
-          },
-          usage: { plugins: { search: { count: 1 } } }
-        });
-      }
-    );
-    const provider = new AlibabaWebSearchProvider({
-      apiKey: "test-key",
-      enabled: true,
-      allowedDomains: ["cds.cern.ch", "nist.gov"],
-      fetch: fetchMock
-    });
-
-    const result = await provider.search({
-      query: "真空泵",
-      allowedDomains: ["cds.cern.ch", "untrusted.example"]
-    });
-
-    expect(result.sources).toHaveLength(1);
-    expect(result.sources[0]?.url).toContain("cds.cern.ch");
-    const parameters = sentBody.parameters as Record<string, unknown>;
-    const options = parameters.search_options as Record<string, unknown>;
-    expect(options).toMatchObject({
-      search_strategy: "turbo",
-      enable_source: true,
-      forced_search: true,
-      assigned_site_list: ["cds.cern.ch"]
-    });
-  });
-
-  it("fails a forced search that lacks confirmed search_info", async () => {
-    const provider = new AlibabaWebSearchProvider({
-      apiKey: "test-key",
-      enabled: true,
-      allowedDomains: ["nist.gov"],
-      fetch: vi.fn(async () =>
-        Response.json({
-          output: { choices: [{ message: { content: "model answer" } }] },
-          usage: {}
-        })
-      )
-    });
-
-    await expect(provider.search({ query: "vacuum" })).rejects.toBeInstanceOf(
-      ProviderResponseError
-    );
-  });
-});
-
 describe("provider construction", () => {
   it("constructs the DirectMail provider with its runtime SDK linked", () => {
     expect(() => new AlibabaDirectMailProvider({})).not.toThrow();
@@ -364,20 +291,6 @@ describe("provider wall-clock deadlines", () => {
     });
 
     await expect(provider.embed(["test"])).rejects.toBeInstanceOf(
-      ProviderTimeoutError
-    );
-  });
-
-  it("bounds a web-search request", async () => {
-    const provider = new AlibabaWebSearchProvider({
-      apiKey: "test-key",
-      enabled: true,
-      allowedDomains: ["nist.gov"],
-      requestTimeoutMs: 10,
-      fetch: vi.fn(abortAwareNeverFetch)
-    });
-
-    await expect(provider.search({ query: "test" })).rejects.toBeInstanceOf(
       ProviderTimeoutError
     );
   });

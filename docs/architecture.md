@@ -9,9 +9,9 @@
 4. PostgreSQL full-text search and pgvector similarity are fused into a ranked
    evidence set.
 5. If eligible local evidence is insufficient or stale, a separate web-search
-   lease is reserved and committed immediately before the paid outbound
-   attempt. DashScope `turbo` search is restricted to the authority allowlist
-   and must report exactly one `search_info` call.
+   lease is reserved and committed immediately before one DeepSeek Responses
+   native `web_search` call. The stream must report exactly one completed web
+   search call.
 6. Any fetched page is revalidated for HTTPS, authority hostname, DNS address,
    redirect target, response type, response size, and timeout.
 7. DeepSeek V4 Flash receives an explicitly untrusted JSON data envelope.
@@ -29,7 +29,7 @@ an edit, rejection, source disable, or archive removes it from retrieval.
 
 - `ModelProvider`
 - `EmbeddingProvider`
-- `WebSearchProvider`
+- DeepSeek Responses native `web_search`
 - `DocumentParser`
 - `EmailProvider`
 - `ObjectStorage`

@@ -682,7 +682,11 @@ function assertRequiredToolEvidence(
           ? ["create_artifact"]
           : testCase.id === "v3-text-citation-link-02"
             ? ["web_search"]
-            : [];
+            : (testCase.expected.permissionAudit ?? [])
+                .filter(
+                  (audit) => audit.permission === "allowed" && audit.executed
+                )
+                .map((audit) => audit.name);
   for (const name of required) {
     if (!completed.has(name)) {
       throw new Error(`Runtime case ${testCase.id} did not complete ${name}.`);

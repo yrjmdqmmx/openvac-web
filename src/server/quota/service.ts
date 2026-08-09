@@ -38,11 +38,13 @@ export function quotaLimitsFromEnvironment(): QuotaLimits {
   return {
     answerDaily: positiveInteger(process.env.ANSWER_DAILY_LIMIT, 20),
     webSearchUserDaily: positiveInteger(
-      process.env.ALIBABA_WEB_SEARCH_PER_USER_DAILY_LIMIT,
+      process.env.WEB_SEARCH_PER_USER_DAILY_LIMIT ??
+        process.env.ALIBABA_WEB_SEARCH_PER_USER_DAILY_LIMIT,
       5
     ),
     webSearchGlobalDaily: positiveInteger(
-      process.env.ALIBABA_WEB_SEARCH_GLOBAL_DAILY_LIMIT,
+      process.env.WEB_SEARCH_GLOBAL_DAILY_LIMIT ??
+        process.env.ALIBABA_WEB_SEARCH_GLOBAL_DAILY_LIMIT,
       500
     ),
     modelAttemptUserDaily: positiveInteger(

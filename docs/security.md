@@ -4,7 +4,7 @@
 
 - Browser input is untrusted.
 - Provider output is untrusted until section and citation validation passes.
-- Web-search URLs are untrusted even when returned by Alibaba Cloud.
+- Web-search URLs are untrusted even when returned by DeepSeek native search.
 - Uploaded admin knowledge is untrusted until parsing, malware controls,
   licence review, and human content review complete.
 - Administrator UI visibility is not an authorisation boundary; every

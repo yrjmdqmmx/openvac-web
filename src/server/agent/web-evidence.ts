@@ -6,13 +6,10 @@ import { db } from "@/server/db";
 import { webDomainPolicies } from "@/server/db/schema";
 import { SafeWebFetcher } from "@/server/knowledge/web-fetch";
 import {
-  getWebSearchProvider,
   type ResponsesProvider,
   type ResponsesStreamEvent,
   type ResponsesStreamRequest,
-  type ResponsesUsage,
-  type WebSearchResult,
-  type WebSearchSource
+  type ResponsesUsage
 } from "@/server/providers";
 import {
   commitQuota,
@@ -20,8 +17,10 @@ import {
   reserveWebSearchQuota
 } from "@/server/quota";
 import type { SourceTrustTier } from "@/types/chat";
+import type { VerifiedLinkPart } from "@/types/chat-v3";
 
 import { defaultTierADomains, EvidenceRegistry } from "./evidence-registry";
+import { parsePublicHttpsUrl } from "./public-url";
 import { sanitizeGroundingEvidence } from "../chat/evidence";
 
 const discoverySchema = z.object({
@@ -58,7 +57,7 @@ const DISCOVERY_JSON_SCHEMA = {
   }
 };
 
-type DomainPolicy = {
+export type WebDomainPolicy = {
   domain: string;
   trustTier: SourceTrustTier;
   licenseClass:
@@ -80,8 +79,9 @@ export type WebProviderInvocation = {
 
 export type WebEvidenceResult = {
   evidenceIds: string[];
+  verifiedLinks: VerifiedLinkPart[];
   searched: boolean;
-  provider: "deepseek-native" | "alibaba-fallback" | "none";
+  provider: "deepseek-native" | "none";
   invocations: WebProviderInvocation[];
 };
 
@@ -93,12 +93,9 @@ export class WebEvidenceService {
       request: ResponsesStreamRequest
     ) => AsyncIterable<ResponsesStreamEvent> = (request) =>
       responses.stream(request),
-    private readonly observeFallback: (event: {
-      status: "succeeded" | "failed";
-      providerRequestId?: string;
-      latencyMs: number;
-      errorCode?: string;
-    }) => Promise<void> = async () => undefined
+    private readonly loadPolicies: () => Promise<
+      WebDomainPolicy[]
+    > = loadDomainPolicies
   ) {}
 
   async search(input: {
@@ -108,6 +105,9 @@ export class WebEvidenceService {
     clientRequestId: string;
     signal?: AbortSignal;
   }): Promise<WebEvidenceResult> {
+    input.signal?.throwIfAborted();
+    const policies = await this.loadPolicies();
+    input.signal?.throwIfAborted();
     let leaseId: string | undefined;
     let committed = false;
     try {
@@ -120,11 +120,13 @@ export class WebEvidenceService {
       if (reservation.idempotent || reservation.status !== "reserved") {
         return {
           evidenceIds: [],
+          verifiedLinks: [],
           searched: false,
           provider: "none",
           invocations: []
         };
       }
+      input.signal?.throwIfAborted();
       const committedReservation = await commitQuota({
         leaseId,
         userId: input.userId
@@ -134,23 +136,23 @@ export class WebEvidenceService {
       }
       committed = true;
 
-      const policies = await loadDomainPolicies();
       const native = await this.discoverNative({ ...input, policies }).catch(
-        () => undefined
-      );
-      if (native && native.evidenceIds.length > 0) return native;
-
-      const fallback = await this.searchAlibaba({ ...input, policies }).catch(
-        () => undefined
-      );
-      return (
-        fallback ?? {
-          evidenceIds: [],
-          searched: true,
-          provider: "none",
-          invocations: native?.invocations ?? []
+        (error: unknown) => {
+          if (input.signal?.aborted) {
+            throw input.signal.reason ?? error;
+          }
+          return undefined;
         }
       );
+      if (native) return native;
+
+      return {
+        evidenceIds: [],
+        verifiedLinks: [],
+        searched: false,
+        provider: "none",
+        invocations: []
+      };
     } finally {
       if (leaseId && !committed) {
         await releaseQuota({
@@ -166,10 +168,11 @@ export class WebEvidenceService {
     question: string;
     userPartition: string;
     signal?: AbortSignal;
-    policies: DomainPolicy[];
+    policies: WebDomainPolicy[];
   }): Promise<WebEvidenceResult> {
     let outputText = "";
     let invocation: WebProviderInvocation | undefined;
+    let completedSearchCalls = 0;
     for await (const event of this.streamResponses({
       instructions: [
         "Use web search only to discover candidate sources for the user's question.",
@@ -191,6 +194,9 @@ export class WebEvidenceService {
       signal: input.signal
     })) {
       if (event.type === "text-delta") outputText += event.text;
+      if (event.type === "web-search-status" && event.status === "completed") {
+        completedSearchCalls += 1;
+      }
       if (event.type === "finish") {
         outputText = event.outputText || outputText;
         invocation = {
@@ -206,129 +212,113 @@ export class WebEvidenceService {
     if (!invocation || invocation.status !== "completed") {
       throw new Error("NATIVE_WEB_DISCOVERY_FAILED");
     }
+    if (completedSearchCalls !== 1) {
+      throw new Error("NATIVE_WEB_SEARCH_COUNT_INVALID");
+    }
     const candidates = discoverySchema.parse(parseJson(outputText)).candidates;
     const accepted = candidates.flatMap((candidate) => {
       const policy = policyForUrl(candidate.url, input.policies);
       return policy ? [{ ...candidate, policy }] : [];
     });
-    const evidenceIds = await this.fetchCandidates(accepted, input.signal);
+    const { evidenceIds, verifiedLinks } = await this.fetchCandidates(
+      accepted,
+      input.signal
+    );
     return {
       evidenceIds,
+      verifiedLinks,
       searched: true,
       provider: "deepseek-native",
       invocations: [invocation]
     };
   }
 
-  private async searchAlibaba(input: {
-    question: string;
-    signal?: AbortSignal;
-    policies: DomainPolicy[];
-  }): Promise<WebEvidenceResult> {
-    const startedAt = Date.now();
-    let result: WebSearchResult;
-    try {
-      const allowedDomains = input.policies.map((policy) => policy.domain);
-      result = await getWebSearchProvider().search({
-        query: input.question,
-        allowedDomains,
-        forced: true,
-        signal: input.signal
-      });
-      await this.observeFallback({
-        status: "succeeded",
-        providerRequestId: result.requestId,
-        latencyMs: Date.now() - startedAt
-      });
-    } catch (error) {
-      await this.observeFallback({
-        status: "failed",
-        latencyMs: Date.now() - startedAt,
-        errorCode:
-          error &&
-          typeof error === "object" &&
-          "code" in error &&
-          typeof error.code === "string"
-            ? error.code
-            : "ALIBABA_SEARCH_FAILED"
-      });
-      throw error;
-    }
-    const accepted = result.sources.flatMap((source) => {
-      const policy = policyForUrl(source.url, input.policies);
-      return policy ? [{ ...source, summary: "", policy }] : [];
-    });
-    return {
-      evidenceIds: await this.fetchCandidates(accepted, input.signal),
-      searched: result.searched,
-      provider: "alibaba-fallback",
-      invocations: []
-    };
-  }
-
   private async fetchCandidates(
-    candidates: Array<
-      Pick<WebSearchSource, "title" | "url"> & {
-        summary: string;
-        policy: DomainPolicy;
-      }
-    >,
+    candidates: Array<{
+      title: string;
+      url: string;
+      summary: string;
+      policy: WebDomainPolicy;
+    }>,
     signal?: AbortSignal
-  ): Promise<string[]> {
-    if (candidates.length === 0) return [];
-    const fetcher = new SafeWebFetcher({
-      allowedDomains: [
-        ...new Set(candidates.map((item) => item.policy.domain))
-      ],
-      maxBytes: 1_000_000,
-      timeoutMs: 8_000,
-      totalTimeoutMs: 12_000,
-      maxRedirects: 2
-    });
+  ): Promise<{
+    evidenceIds: string[];
+    verifiedLinks: VerifiedLinkPart[];
+  }> {
+    if (candidates.length === 0) {
+      return { evidenceIds: [], verifiedLinks: [] };
+    }
     const ids: string[] = [];
+    const verifiedLinks: VerifiedLinkPart[] = [];
     for (const candidate of candidates.slice(0, 5)) {
       try {
+        const fetcher = new SafeWebFetcher({
+          allowedDomains: [candidate.policy.domain],
+          maxBytes: 1_000_000,
+          timeoutMs: 8_000,
+          totalTimeoutMs: 12_000,
+          maxRedirects: 2
+        });
         const page = await fetcher.fetch(candidate.url, signal);
+        const publicUrl = parsePublicHttpsUrl(page.url);
+        const finalPolicy = publicUrl
+          ? policyForUrl(publicUrl.href, [candidate.policy])
+          : undefined;
+        if (!publicUrl || !finalPolicy) continue;
         const excerpt = htmlToPlainText(page.body);
         if (excerpt.length < 80) continue;
         const excerptLimit =
-          candidate.policy.licenseClass === "open" ||
-          candidate.policy.licenseClass === "public_domain" ||
-          candidate.policy.licenseClass === "private_authorized"
+          finalPolicy.licenseClass === "open" ||
+          finalPolicy.licenseClass === "public_domain" ||
+          finalPolicy.licenseClass === "private_authorized"
             ? 2_600
             : 480;
         const id = this.evidence.add(
           sanitizeGroundingEvidence(
             {
               citation: {
-                sourceId: `web:${urlDigest(page.url)}`,
+                sourceId: `web:${urlDigest(publicUrl.href)}`,
                 title: candidate.title,
-                publisher: new URL(page.url).hostname,
-                url: page.url,
+                publisher: publicUrl.hostname,
+                url: publicUrl.href,
                 fetchedAt: page.fetchedAt,
-                licenseClass: candidate.policy.licenseClass
+                licenseClass: finalPolicy.licenseClass
               },
               excerpt
             },
             excerptLimit
           ),
           {
-            trustTier: candidate.policy.trustTier,
+            trustTier: finalPolicy.trustTier,
             reviewStatus: "runtime_verified",
             runtimeValidated: true
           }
         );
-        if (id) ids.push(id);
+        if (id && !ids.includes(id)) {
+          const hostname = publicUrl.hostname.toLowerCase();
+          const linkId = `W${verifiedLinks.length + 1}`;
+          this.evidence.bindVerifiedLink(id, linkId, hostname);
+          ids.push(id);
+          verifiedLinks.push({
+            type: "verified_link",
+            linkId,
+            url: publicUrl.href,
+            label:
+              this.evidence.get(id)?.evidence.citation.title ?? candidate.title,
+            hostname,
+            status: "verified"
+          });
+        }
       } catch {
         // Each candidate independently passes HTTPS, DNS, redirect, byte and
         // content-type checks. A rejected candidate cannot enter evidence.
       }
     }
-    return ids;
+    return { evidenceIds: ids, verifiedLinks };
   }
 }
 
-async function loadDomainPolicies(): Promise<DomainPolicy[]> {
+async function loadDomainPolicies(): Promise<WebDomainPolicy[]> {
   const configured = await db
     .select({
       domain: webDomainPolicies.domain,
@@ -337,7 +327,7 @@ async function loadDomainPolicies(): Promise<DomainPolicy[]> {
     })
     .from(webDomainPolicies)
     .where(eq(webDomainPolicies.enabled, true));
-  const defaults: DomainPolicy[] = defaultTierADomains.map((domain) => ({
+  const defaults: WebDomainPolicy[] = defaultTierADomains.map((domain) => ({
     domain,
     trustTier: "tier_a",
     licenseClass: domain.endsWith(".gov") ? "public_domain" : "metadata_only"
@@ -356,8 +346,8 @@ async function loadDomainPolicies(): Promise<DomainPolicy[]> {
 
 function policyForUrl(
   url: string,
-  policies: DomainPolicy[]
-): DomainPolicy | undefined {
+  policies: WebDomainPolicy[]
+): WebDomainPolicy | undefined {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -383,7 +373,7 @@ function isAllowedFinalTier(tier: string): tier is "tier_a" | "tier_b" {
   return tier === "tier_a" || tier === "tier_b";
 }
 
-function normalizeLicense(value: string): DomainPolicy["licenseClass"] {
+function normalizeLicense(value: string): WebDomainPolicy["licenseClass"] {
   return [
     "open",
     "public_domain",
@@ -391,7 +381,7 @@ function normalizeLicense(value: string): DomainPolicy["licenseClass"] {
     "private_authorized",
     "unknown"
   ].includes(value)
-    ? (value as DomainPolicy["licenseClass"])
+    ? (value as WebDomainPolicy["licenseClass"])
     : "unknown";
 }
 

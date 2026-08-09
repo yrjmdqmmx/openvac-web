@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ANSWER_V3_EVAL_CASES,
   createFixtureEvalDependencies,
   runAnswerV3Eval,
   type AnswerV3CandidateOutput,
@@ -8,6 +9,32 @@ import {
 } from ".";
 
 describe("Answer V3 automated release gate", () => {
+  it("defines the multi-turn calculator case with complete inputs and an exact tool audit", () => {
+    const testCase = ANSWER_V3_EVAL_CASES.find(
+      (item) => item.id === "v3-multiturn-tool-02"
+    );
+
+    expect(testCase).toMatchObject({
+      turns: [expect.stringContaining("100 L")],
+      deterministicGates: expect.arrayContaining([
+        "permission",
+        "tool_protocol"
+      ]),
+      expected: {
+        permissionAudit: [
+          {
+            name: "estimate_pumpdown_time",
+            permission: "allowed",
+            executed: true
+          }
+        ]
+      }
+    });
+    expect(testCase?.prompt).toContain("100 Pa");
+    expect(testCase?.prompt).toContain("1 Pa");
+    expect(testCase?.prompt).toContain("秒");
+  });
+
   it("passes the complete fixture gate at 100% deterministic coverage", async () => {
     const report = await runAnswerV3Eval({
       dependencies: createFixtureEvalDependencies(),
@@ -121,6 +148,32 @@ describe("Answer V3 automated release gate", () => {
       passed: true,
       score: 100
     });
+  });
+
+  it("fails closed when the multi-turn calculation tool audit is absent", async () => {
+    const dependencies = mutateCandidate("v3-multiturn-tool-02", (output) => {
+      output.toolAudit = [];
+    });
+    const report = await runAnswerV3Eval({ dependencies, gitSha: "test" });
+
+    expect(report.passed).toBe(false);
+    expect(report.deterministicGates.permission.passed).toBe(false);
+    expect(report.failureIds).toContain("v3-multiturn-tool-02:permission");
+  });
+
+  it("fails closed when the required multi-turn calculator failed", async () => {
+    const dependencies = mutateCandidate("v3-multiturn-tool-02", (output) => {
+      output.toolAudit = output.toolAudit.map((audit) =>
+        audit.name === "estimate_pumpdown_time"
+          ? { ...audit, status: "failed" }
+          : audit
+      );
+    });
+    const report = await runAnswerV3Eval({ dependencies, gitSha: "test" });
+
+    expect(report.passed).toBe(false);
+    expect(report.deterministicGates.permission.passed).toBe(false);
+    expect(report.failureIds).toContain("v3-multiturn-tool-02:permission");
   });
 });
 

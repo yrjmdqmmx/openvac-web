@@ -526,6 +526,32 @@ export function buildDeterministicSafeAnswerV3(
   };
 }
 
+export function buildDeterministicWebUnavailableAnswerV3(
+  risk: AgentV3RiskLevel | { level: AgentV3RiskLevel },
+  reason: "quota_exhausted" | "no_validated_evidence" = "no_validated_evidence"
+): AnswerV3 {
+  const message =
+    reason === "quota_exhausted"
+      ? "本次 DeepSeek 联网搜索额度已用尽，无法核验需要联网确认的信息。请稍后重试。"
+      : "本次 DeepSeek 联网搜索未获得可核验的来源，无法核验需要联网确认的信息。请稍后重试。";
+  const fallback = buildDeterministicSafeAnswerV3(
+    risk,
+    reason === "quota_exhausted"
+      ? "本次 DeepSeek 联网搜索额度已用尽，请稍后重试。"
+      : "本次 DeepSeek 联网搜索未获得可核验的来源，请稍后重试。"
+  );
+  const notice = {
+    type: "paragraph" as const,
+    text: message,
+    evidenceIds: []
+  };
+  return {
+    ...fallback,
+    blocks:
+      fallback.riskLevel === "high" ? [notice, ...fallback.blocks] : [notice]
+  };
+}
+
 export function buildDeterministicAttachmentScopeAnswerV3(
   question: string,
   riskLevel: AgentV3RiskLevel

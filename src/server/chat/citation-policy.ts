@@ -4,7 +4,8 @@ import { hostnameAllowed, normalizeDomain } from "@/server/providers/runtime";
 export function citationSourcePolicy(
   url: string,
   licenseClass: Citation["licenseClass"],
-  configuredDomains = process.env.ALIBABA_WEB_SEARCH_ALLOWED_DOMAINS
+  configuredDomains = process.env.WEB_SEARCH_ALLOWED_DOMAINS ??
+    process.env.ALIBABA_WEB_SEARCH_ALLOWED_DOMAINS
 ): NonNullable<Citation["sourcePolicy"]> {
   if (licenseClass === "private_authorized" || licenseClass === "unknown") {
     return "blocked";

@@ -7,6 +7,7 @@ import {
   answerV3Blocks,
   answerSections,
   classifyVacuumRisk,
+  isAgentRunTimeoutError,
   resolveAgentMode,
   RunStore,
   RunStoreError,
@@ -853,10 +854,17 @@ function publicErrorCode(error: unknown): string {
     if (error.status === 402) return "PROVIDER_BILLING_REQUIRED";
     return "PROVIDER_UNAVAILABLE";
   }
+  if (isAgentRunTimeoutError(error)) return "AGENT_RUN_TIMEOUT";
   return "AGENT_RUN_FAILED";
 }
 
 function publicErrorMessage(error: unknown): string {
+  if (
+    error instanceof AgentRuntimeError &&
+    error.code === "WEB_SEARCH_QUOTA_EXCEEDED"
+  ) {
+    return "本次 DeepSeek 联网搜索额度已用尽，未执行其他联网服务；请稍后重试。";
+  }
   if (error instanceof AgentRuntimeError && !error.retryable) {
     return "本次回答未通过结构、引用或安全校验，成功回答额度已归还。";
   }
@@ -888,6 +896,7 @@ function safeStoredError(error: unknown): string {
 function isRetryable(error: unknown): boolean {
   if (error instanceof AgentRuntimeError) return error.retryable;
   if (error instanceof ProviderError) return error.retryable;
+  if (isAgentRunTimeoutError(error)) return true;
   return false;
 }
 
