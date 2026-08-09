@@ -69,7 +69,7 @@ import {
   boundCalculationIdFromToolResult,
   buildTrustedCalculationFinalInput,
   calculationsForProjection,
-  isPurePumpdownCalculationRequest,
+  trustedPumpdownEligibilityFailure,
   trustedPumpdownProjectionFromToolTurn
 } from "./trusted-calculation-projection";
 import {
@@ -356,23 +356,28 @@ export class AgentRunOrchestrator {
         this.provider.capabilities.forcedFunctionResultTransport ===
           "fresh_trusted_projection" &&
         result.forcedFunctionName === "estimate_pumpdown_time";
+      const projectionEligibilityFailure = requiresTrustedProjection
+        ? trustedPumpdownEligibilityFailure({
+            riskLevel: input.riskLevel,
+            webRequired:
+              input.webMode === "always" ||
+              requiresFreshWebEvidence(input.run.question),
+            question: input.run.question,
+            inputPartTypes: input.run.inputParts.map((part) => part.type),
+            hasArtifactIntent: this.tools.definitions.some(
+              (tool) =>
+                tool.type === "function" && tool.name === "create_artifact"
+            ),
+            toolRounds: this.toolRounds,
+            calculationCount: this.calculations.size,
+            calls: result.calls
+          })
+        : undefined;
       const canUseTrustedProjection =
-        requiresTrustedProjection &&
-        input.riskLevel !== "high" &&
-        input.webMode !== "always" &&
-        !requiresFreshWebEvidence(input.run.question) &&
-        isPurePumpdownCalculationRequest(input.run.question) &&
-        input.run.inputParts.every((part) => part.type === "text") &&
-        !this.tools.definitions.some(
-          (tool) => tool.type === "function" && tool.name === "create_artifact"
-        ) &&
-        this.toolRounds === 1 &&
-        this.calculations.size === 1 &&
-        result.calls.length === 1 &&
-        result.calls[0]?.name === "estimate_pumpdown_time";
-      if (requiresTrustedProjection && !canUseTrustedProjection) {
+        requiresTrustedProjection && projectionEligibilityFailure === undefined;
+      if (requiresTrustedProjection && projectionEligibilityFailure) {
         throw new AgentRuntimeError(
-          "TRUSTED_CALCULATION_PROJECTION_UNAVAILABLE",
+          projectionEligibilityFailure,
           "该请求不能安全切换到可信计算投影。",
           false
         );
