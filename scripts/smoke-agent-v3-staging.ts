@@ -66,6 +66,12 @@ const SMOKE_DIAGNOSTIC_STAGES = [
   "chat_request",
   "chat_http",
   "chat_sse_parse",
+  "chat_sse_types",
+  "chat_sse_terminal",
+  "chat_sse_identity",
+  "chat_sse_sequence",
+  "chat_answer",
+  "chat_security",
   "chat_terminal",
   "database_evidence",
   "artifact_validation",
@@ -715,12 +721,14 @@ async function runChat(
   }
   markSmokeDiagnostic("chat_sse_parse", { caseId: request.caseId });
   const events = parseEvents(await response.text());
+  markSmokeDiagnostic("chat_sse_types", { caseId: request.caseId });
   const allowed = events.filter((event) => SSE_TYPES.has(String(event.type)));
   if (allowed.length !== events.length) {
     throw new Error(
       "Agent V3 runtime SSE contained an unsupported event type."
     );
   }
+  markSmokeDiagnostic("chat_sse_terminal", { caseId: request.caseId });
   const accepted = allowed[0];
   const completed = allowed.at(-1);
   const terminalFailure = completed
@@ -736,6 +744,7 @@ async function runChat(
   ) {
     throw new Error("Agent V3 runtime SSE did not complete successfully.");
   }
+  markSmokeDiagnostic("chat_sse_identity", { caseId: request.caseId });
   const runId = stringValue(accepted.runId, "runId");
   if (
     completed.runId !== runId ||
@@ -744,12 +753,15 @@ async function runChat(
   ) {
     throw new Error("Agent V3 runtime SSE identity changed during the run.");
   }
+  markSmokeDiagnostic("chat_sse_sequence", { caseId: request.caseId });
   assertSequencedEvents(allowed, runId);
+  markSmokeDiagnostic("chat_answer", { caseId: request.caseId });
   const answer = answerV3Schema.parse(completed.answer);
   const meta = recordValue(completed.meta);
   const verifiedLinks = Array.isArray(meta.verifiedLinks)
     ? meta.verifiedLinks.map((link) => verifiedLinkPartSchema.parse(link))
     : [];
+  markSmokeDiagnostic("chat_security", { caseId: request.caseId });
   assertNoForbiddenFields(allowed);
   return {
     runId,
@@ -1253,14 +1265,26 @@ async function documentFixture(
   return pdf.bytes;
 }
 
-function assertNoForbiddenFields(events: unknown): void {
-  if (
-    /(?:object[_-]?key|signed[_-]?url|reasoning(?:_content)?|provider[_-]?request[_-]?id|rawarguments|toolarguments|tooloutput|internalprompt|systemprompt)/iu.test(
-      JSON.stringify(events)
-    )
-  ) {
+const FORBIDDEN_PUBLIC_FIELD =
+  /^(?:object[_-]?key|signed[_-]?url|reasoning[_-]?content|provider[_-]?request[_-]?id|raw[_-]?arguments|tool[_-]?arguments|tool[_-]?output|internal[_-]?prompt|system[_-]?prompt)$/iu;
+
+export function assertNoForbiddenFields(value: unknown): void {
+  if (hasForbiddenPublicField(value, new Set<object>())) {
     throw new Error("Agent V3 runtime SSE exposed a forbidden internal field.");
   }
+}
+
+function hasForbiddenPublicField(value: unknown, seen: Set<object>): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.some((entry) => hasForbiddenPublicField(entry, seen));
+  }
+  return Object.entries(value).some(
+    ([key, entry]) =>
+      FORBIDDEN_PUBLIC_FIELD.test(key) || hasForbiddenPublicField(entry, seen)
+  );
 }
 
 function assertNoSecrets(

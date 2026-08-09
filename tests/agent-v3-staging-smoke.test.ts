@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   AGENT_V3_STAGING_ORIGIN,
+  assertNoForbiddenFields,
   publicSmokeFailureDiagnostic,
   publicSmokeReport,
   runtimeTerminalFailureDiagnostic,
@@ -143,5 +144,29 @@ describe("Agent V3 staging runtime smoke safety", () => {
     expect(JSON.stringify(publicSmokeFailureDiagnostic(terminal!))).not.toMatch(
       /message|runId|secret detail/iu
     );
+  });
+
+  it("allows the public reasoning stage without allowing private provider fields", () => {
+    expect(() =>
+      assertNoForbiddenFields([
+        {
+          type: "stage.changed",
+          stage: "reasoning",
+          label: "正在结合对话与证据",
+          runId: "run-1",
+          sequence: 2
+        }
+      ])
+    ).not.toThrow();
+
+    for (const value of [
+      { reasoning_content: "private" },
+      { nested: { providerRequestId: "provider-request" } },
+      { nested: [{ tool_arguments: "{}" }] }
+    ]) {
+      expect(() => assertNoForbiddenFields(value)).toThrow(
+        "Agent V3 runtime SSE exposed a forbidden internal field."
+      );
+    }
   });
 });
