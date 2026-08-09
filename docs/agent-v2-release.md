@@ -23,9 +23,20 @@ DEEPSEEK_USER_PARTITION_SECRET=
 MODEL_INPUT_COST_MICROS_PER_MILLION_TOKENS=
 MODEL_OUTPUT_COST_MICROS_PER_MILLION_TOKENS=
 MODEL_PRICE_VERSION=
-ALIBABA_WEB_SEARCH_COST_MICROS_PER_CALL=
-ALIBABA_WEB_SEARCH_PRICE_VERSION=
+WEB_SEARCH_PER_USER_DAILY_LIMIT=5
+WEB_SEARCH_GLOBAL_DAILY_LIMIT=500
+WEB_SEARCH_ALLOWED_DOMAINS=cds.cern.ch,nist.gov,hse.gov.uk,iso.org,leybold.com,leybold.cn,pfeiffer-vacuum.com,edwardsvacuum.com,buschvacuum.com,atlascopco.com
+ALIBABA_WEB_SEARCH_ENABLED=false
+ALIBABA_WEB_SEARCH_PER_USER_DAILY_LIMIT=5
+ALIBABA_WEB_SEARCH_GLOBAL_DAILY_LIMIT=500
+ALIBABA_WEB_SEARCH_ALLOWED_DOMAINS=cds.cern.ch,nist.gov,hse.gov.uk,iso.org,leybold.com,leybold.cn,pfeiffer-vacuum.com,edwardsvacuum.com,buschvacuum.com,atlascopco.com
 ```
+
+The `ALIBABA_WEB_SEARCH_*` values in this historical file are rollback-only
+configuration aliases for a previous image. Current Compose maps the generic
+`WEB_SEARCH_*` limits and domains into those aliases and forces
+`ALIBABA_WEB_SEARCH_ENABLED=false`; the current image calls only DeepSeek's
+native `web_search` tool.
 
 `DEEPSEEK_USER_PARTITION_SECRET` must contain at least 32 random bytes and must
 not be reused as an authentication, database, or modeling secret. The Responses

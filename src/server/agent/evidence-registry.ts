@@ -27,6 +27,8 @@ export type RegisteredEvidence = {
   reviewStatus: SourceReviewStatus;
   runtimeValidated: boolean;
   citationVisible: boolean;
+  linkId?: string;
+  linkHostname?: string;
 };
 
 export class EvidenceRegistry {
@@ -118,6 +120,13 @@ export class EvidenceRegistry {
     return this.entries.get(id);
   }
 
+  bindVerifiedLink(id: string, linkId: string, hostname: string): void {
+    const entry = this.entries.get(id);
+    if (!entry) throw new TypeError(`Unknown evidence id: ${id}`);
+    entry.linkId = linkId;
+    entry.linkHostname = hostname;
+  }
+
   list(): RegisteredEvidence[] {
     return [...this.entries.values()];
   }
@@ -150,6 +159,8 @@ export class EvidenceRegistry {
     excerpt: string;
     trustTier: Exclude<SourceTrustTier, "tier_c" | "blocked">;
     reviewStatus: SourceReviewStatus;
+    linkId?: string;
+    linkHostname?: string;
   }> {
     return this.list().map((entry) => ({
       evidenceId: entry.id,
@@ -161,7 +172,10 @@ export class EvidenceRegistry {
         SourceTrustTier,
         "tier_c" | "blocked"
       >,
-      reviewStatus: entry.reviewStatus
+      reviewStatus: entry.reviewStatus,
+      ...(entry.linkId
+        ? { linkId: entry.linkId, linkHostname: entry.linkHostname }
+        : {})
     }));
   }
 

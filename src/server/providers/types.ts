@@ -220,34 +220,6 @@ export interface EmbeddingProvider {
   embed(texts: string[], signal?: AbortSignal): Promise<EmbeddingResult>;
 }
 
-export interface WebSearchRequest {
-  query: string;
-  allowedDomains?: string[];
-  forced?: boolean;
-  signal?: AbortSignal;
-}
-
-export interface WebSearchSource {
-  index: number;
-  title: string;
-  url: string;
-  siteName?: string;
-  icon?: string;
-}
-
-export interface WebSearchResult {
-  requestId?: string;
-  synthesis: string;
-  searched: boolean;
-  searchCalls: number;
-  sources: WebSearchSource[];
-}
-
-export interface WebSearchProvider {
-  readonly id: string;
-  search(request: WebSearchRequest): Promise<WebSearchResult>;
-}
-
 export interface DocumentParseRequest {
   url?: string;
   bytes?: Uint8Array;

@@ -33,8 +33,8 @@ to problem reports, or provide real-time/emergency support.
 - Better Auth with verified email/password accounts
 - Drizzle ORM, PostgreSQL 17, and pgvector (1024 dimensions)
 - DeepSeek V4 Flash behind a replaceable server-side `ModelProvider`
-- Alibaba Cloud adapters for embeddings, web search, document parsing,
-  transactional mail, and private object storage
+- DeepSeek Responses native web search, plus Alibaba Cloud adapters for
+  embeddings, document parsing, transactional mail, and private object storage
 - a Node worker for OCR, review-gated ingestion, chunking, and embeddings
 - Docker Compose for `web`, the knowledge worker, `migrate`, and `postgres`
 
@@ -111,10 +111,11 @@ the lease, while model, retrieval, cancellation, or persistence errors release
 it. The interface never exposes a remaining counter. It only reports the next
 reset time when the limit is exhausted.
 
-Web search is local-evidence-first and separately limited to five paid outbound
-attempts per account and 500 globally per Beijing day. Its lease is committed
-before the provider call, so a downstream failure cannot recycle paid global
-capacity. Duplicate request IDs never start another search.
+DeepSeek native web search is local-evidence-first and separately limited to
+five paid outbound attempts per account and 500 globally per Beijing day. Its
+lease is committed immediately before the provider call, so a downstream
+failure cannot recycle paid global capacity. Duplicate request IDs never start
+another search.
 
 ## Knowledge licensing
 

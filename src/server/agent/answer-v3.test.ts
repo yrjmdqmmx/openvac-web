@@ -8,6 +8,7 @@ import {
   buildDeterministicAttachmentScopeAnswerV3,
   buildDeterministicCalculationAnswerV3,
   buildDeterministicSafeAnswerV3,
+  buildDeterministicWebUnavailableAnswerV3,
   answerV3Blocks,
   collectAnswerV3References,
   renderAnswerV3,
@@ -242,6 +243,20 @@ describe("Answer V3", () => {
     );
     expect(answer.answerKind).toBe("clarification");
     expect(renderAnswerV3(answer)).not.toContain("已读取");
+  });
+
+  it("does not invent time-sensitive facts when required web evidence is unavailable", () => {
+    const low = buildDeterministicWebUnavailableAnswerV3("low");
+    const high = buildDeterministicWebUnavailableAnswerV3("high");
+
+    expect(validateAnswerV3({ value: low, riskLevel: "low" }).valid).toBe(true);
+    expect(renderAnswerV3(low)).toContain("无法核验");
+    expect(renderAnswerV3(low)).not.toContain("最新型号");
+    expect(validateAnswerV3({ value: high, riskLevel: "high" }).valid).toBe(
+      true
+    );
+    expect(renderAnswerV3(high)).toContain("无法核验");
+    expect(renderAnswerV3(high)).toContain("立即停机");
   });
 
   it("answers cross-conversation attachment requests from the server-owned permission policy", () => {

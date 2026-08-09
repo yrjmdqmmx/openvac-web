@@ -32,6 +32,7 @@ import { inputMessagePartsSchema } from "@/server/chat-v3/contracts";
 import { safeParseAnswerV2, sanitizeStoredAnswerV2 } from "./answer-v2";
 import { renderAnswerV3, safeParseAnswerV3 } from "./answer-v3";
 import { EvidenceRegistry } from "./evidence-registry";
+import { parsePublicHttpsUrl } from "./public-url";
 import { recoverStaleAgentRuns } from "./retention";
 import {
   cleanupRunArtifactsInTransaction,
@@ -1078,22 +1079,8 @@ function safeStoredVerifiedLinks(value: unknown): VerifiedLinkPart[] {
     ) {
       return [];
     }
-    let url: URL;
-    try {
-      url = new URL(record.url);
-    } catch {
-      return [];
-    }
-    if (
-      url.protocol !== "https:" ||
-      url.username ||
-      url.password ||
-      (url.port && url.port !== "443") ||
-      url.hostname !== record.hostname ||
-      hasSensitiveUrlParameters(url)
-    ) {
-      return [];
-    }
+    const url = parsePublicHttpsUrl(record.url, record.hostname);
+    if (!url) return [];
     return [
       {
         type: "verified_link" as const,
@@ -1142,18 +1129,6 @@ function safeStoredArtifacts(value: unknown): ArtifactPart[] {
     }
     return [record as ArtifactPart];
   });
-}
-
-function hasSensitiveUrlParameters(url: URL): boolean {
-  for (const key of url.searchParams.keys()) {
-    if (
-      /^(?:x-amz-|x-oss-)/iu.test(key) ||
-      /^(?:signature|ossaccesskeyid|accesskeyid|expires|token)$/iu.test(key)
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 export class RunStoreError extends Error {

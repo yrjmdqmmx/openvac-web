@@ -100,6 +100,25 @@ describe("Answer V3 runtime-evidence adapter", () => {
       }
     ],
     [
+      "missing required multi-turn calculator",
+      (value: RuntimeEvidence) => {
+        const item = runtimeCase(value, "v3-multiturn-tool-02");
+        item.toolAudit = item.toolAudit.filter(
+          (audit) => audit.name !== "estimate_pumpdown_time"
+        );
+      }
+    ],
+    [
+      "failed required multi-turn calculator",
+      (value: RuntimeEvidence) => {
+        const item = runtimeCase(value, "v3-multiturn-tool-02");
+        const audit = item.toolAudit.find(
+          (entry) => entry.name === "estimate_pumpdown_time"
+        )!;
+        audit.status = "failed";
+      }
+    ],
+    [
       "wrong permission tool",
       (value: RuntimeEvidence) => {
         const item = runtimeCase(value, "v3-document-manual-01");

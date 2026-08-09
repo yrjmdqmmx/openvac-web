@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   agentRunBudgetProfile,
+  effectiveAgentRunTimeoutMs,
   estimateTokens,
   executeCalculator,
   EvidenceRegistry,
   inferTrustTier,
+  isAgentRunTimeoutError,
   requiresGroundedEvidence,
   resolveAgentMode,
   shouldUseWeb,
@@ -97,6 +99,12 @@ describe("Agent V2: 40 multi-turn, budget, and memory policy cases", () => {
       outputTokenEnvironmentName: "AGENT_AUTO_MAX_OUTPUT_TOKENS",
       outputTokenFallback: 4_096
     });
+    expect(
+      effectiveAgentRunTimeoutMs(resolved, {
+        AGENT_AUTO_TIMEOUT_MS: "120000",
+        AGENT_DEEP_TIMEOUT_MS: "180000"
+      })
+    ).toBe(180_000);
   });
 
   it("uses expanded limits only when the user explicitly requests deep mode", () => {
@@ -126,6 +134,18 @@ describe("Agent V2: 40 multi-turn, budget, and memory policy cases", () => {
     );
     expect(resolver?.("auto", { AGENT_AUTO_TIMEOUT_MS: "150000" })).toBe(
       150_000
+    );
+  });
+
+  it("recognizes the private run deadline without swallowing unrelated errors", () => {
+    expect(
+      isAgentRunTimeoutError(new DOMException("deadline", "TimeoutError"))
+    ).toBe(true);
+    expect(
+      isAgentRunTimeoutError(new DOMException("aborted", "AbortError"))
+    ).toBe(true);
+    expect(isAgentRunTimeoutError(new Error("database unavailable"))).toBe(
+      false
     );
   });
 });

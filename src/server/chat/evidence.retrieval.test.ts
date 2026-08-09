@@ -26,11 +26,10 @@ vi.mock("@/server/providers", () => ({
     model: "test-embedding",
     dimensions: 1024,
     embed: retrievalMocks.embed
-  })),
-  getWebSearchProvider: vi.fn()
+  }))
 }));
 
-import { collectLocalEvidence } from "./evidence";
+import { collectEvidence, collectLocalEvidence } from "./evidence";
 
 describe("local query embedding deadline", () => {
   beforeEach(() => {
@@ -72,6 +71,22 @@ describe("local query embedding deadline", () => {
     expect(retrievalMocks.sqlUnsafe).toHaveBeenCalledWith("LEXICAL_RETRIEVAL", [
       ["真空泵"]
     ]);
+  });
+
+  it("keeps the legacy evidence wrapper local-only for time-sensitive prompts", async () => {
+    retrievalMocks.embed.mockResolvedValue({
+      vectors: [[0.1, 0.2, 0.3]],
+      usage: { promptTokens: 3 }
+    });
+
+    const result = await collectEvidence({
+      question: "目前最新的真空泵型号是什么？",
+      userId: "user-1",
+      clientRequestId: "request-1"
+    });
+
+    expect(result.webSearched).toBe(false);
+    expect(result.retrievalMode).toMatch(/hybrid|lexical|none/u);
   });
 
   it("caps a configured query embedding deadline at fifteen seconds", async () => {

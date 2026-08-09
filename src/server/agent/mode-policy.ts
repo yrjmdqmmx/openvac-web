@@ -39,10 +39,14 @@ export function shouldUseWeb(input: {
 }): boolean {
   if (input.webMode === "always") return true;
   return (
-    TIME_SENSITIVE.test(input.question) ||
+    requiresFreshWebEvidence(input.question) ||
     input.localEvidenceCount === 0 ||
     (input.riskLevel === "high" && input.resolvedMode === "deep")
   );
+}
+
+export function requiresFreshWebEvidence(question: string): boolean {
+  return TIME_SENSITIVE.test(question.normalize("NFKC"));
 }
 
 export function agentRunBudgetProfile(
@@ -69,10 +73,10 @@ export function agentRunBudgetProfile(
 }
 
 export function effectiveAgentRunTimeoutMs(
-  requestedMode: RequestedAgentMode,
+  mode: RequestedAgentMode | ResolvedAgentMode,
   environment: Record<string, string | undefined> = process.env
 ): number {
-  const profile = agentRunBudgetProfile(requestedMode);
+  const profile = agentRunBudgetProfile(mode === "deep" ? "deep" : "auto");
   const configured = Number.parseInt(
     environment[profile.timeoutEnvironmentName] ?? "",
     10

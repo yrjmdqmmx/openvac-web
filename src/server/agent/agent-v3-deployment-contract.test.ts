@@ -89,6 +89,7 @@ describe("Agent V3 deployment contract", () => {
     expect(chatRoute).not.toContain("postLegacyChat");
     expect(chatRoute).not.toContain("agentResponsesV3Enabled");
     expect(agentHttp).toContain("protocolVersion: z.literal(3)");
+    expect(agentHttp).toContain("本次 DeepSeek 联网搜索额度已用尽");
     expect(agentHttp).not.toContain("protocolVersion: z.literal(2)");
     expect(exampleEnvironment).not.toContain("AGENT_RESPONSES_V2");
     expect(compose).not.toContain("AGENT_RESPONSES_V2");

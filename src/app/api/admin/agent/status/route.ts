@@ -135,12 +135,6 @@ export const GET = withApiErrors(async (request: Request) => {
         process.env.MODEL_OUTPUT_COST_MICROS_PER_MILLION_TOKENS &&
         process.env.MODEL_PRICE_VERSION
       ),
-      fallbackPricingConfigured:
-        process.env.ALIBABA_WEB_SEARCH_ENABLED !== "true" ||
-        Boolean(
-          process.env.ALIBABA_WEB_SEARCH_COST_MICROS_PER_CALL &&
-          process.env.ALIBABA_WEB_SEARCH_PRICE_VERSION
-        ),
       budgetPolicyConfigured: Boolean(budgets[0]?.value)
     },
     metrics24h: {

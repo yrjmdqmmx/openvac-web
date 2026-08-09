@@ -47,7 +47,8 @@ export type StoredMessageRecord = {
 
 export function serializeStoredCitation(
   citation: StoredCitationRecord,
-  allowedDomains = process.env.ALIBABA_WEB_SEARCH_ALLOWED_DOMAINS
+  allowedDomains = process.env.WEB_SEARCH_ALLOWED_DOMAINS ??
+    process.env.ALIBABA_WEB_SEARCH_ALLOWED_DOMAINS
 ): Citation | null {
   if (!citation.url) return null;
 
