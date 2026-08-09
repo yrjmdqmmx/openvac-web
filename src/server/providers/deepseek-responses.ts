@@ -158,7 +158,16 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
       let firstEventLatencyMs: number | undefined;
       let outputText = "";
       const emittedCalls = new Set<string>();
-      let streamedCompletedWebSearchCount = 0;
+      const streamedCompletedWebSearchIds = new Set<string>();
+      const streamedFailedWebSearchIds = new Set<string>();
+      let sawAnonymousStreamedWebSearchCompletion = false;
+      let sawAnonymousStreamedWebSearchFailure = false;
+      let sawExplicitWebSearchFailure = false;
+      const streamedWebSourceGroups: Array<{
+        callId?: string;
+        sources: Array<{ url: string; title: string }>;
+      }> = [];
+      const forcedWebSearch = isForcedWebSearch(request);
 
       for await (const rawEvent of parseSseJson(response.body)) {
         const event = asRecord(rawEvent);
@@ -209,7 +218,8 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
 
         if (eventType === "response.output_item.done") {
           const item = asRecord(event.item);
-          if (pickString(item, ["type"]) === "function_call") {
+          const itemType = pickString(item, ["type"]);
+          if (itemType === "function_call") {
             const callId = pickString(item, ["call_id"]);
             const name = pickString(item, ["name"]);
             const args = pickString(item, ["arguments"]);
@@ -227,14 +237,49 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
                 arguments: args
               };
             }
+          } else if (
+            itemType === "web_search_call" &&
+            pickString(item, ["status"]) === "completed"
+          ) {
+            const callId = webSearchCallId(item);
+            if (callId) streamedCompletedWebSearchIds.add(callId);
+            else sawAnonymousStreamedWebSearchCompletion = true;
+            streamedWebSourceGroups.push({
+              ...(callId ? { callId } : {}),
+              sources: extractWebSearchSources([{ ...item, type: itemType }])
+            });
+          } else if (
+            itemType === "web_search_call" &&
+            pickString(item, ["status"]) !== undefined
+          ) {
+            const callId = webSearchCallId(item);
+            if (callId) streamedFailedWebSearchIds.add(callId);
+            else sawAnonymousStreamedWebSearchFailure = true;
+            sawExplicitWebSearchFailure = true;
           }
+          continue;
+        }
+
+        if (isWebSearchFailureEvent(eventType)) {
+          const callId = webSearchEventCallId(event);
+          if (callId) streamedFailedWebSearchIds.add(callId);
+          else sawAnonymousStreamedWebSearchFailure = true;
+          sawExplicitWebSearchFailure = true;
           continue;
         }
 
         const webStatus = webSearchStatus(eventType);
         if (webStatus) {
-          if (webStatus === "completed") streamedCompletedWebSearchCount += 1;
-          yield { type: "web-search-status", status: webStatus };
+          const callId = webSearchEventCallId(event);
+          if (webStatus === "completed") {
+            if (callId) streamedCompletedWebSearchIds.add(callId);
+            else sawAnonymousStreamedWebSearchCompletion = true;
+          }
+          yield {
+            type: "web-search-status",
+            status: webStatus,
+            ...(callId ? { callId } : {})
+          };
           continue;
         }
 
@@ -245,23 +290,74 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
           }
           const continuationItems = responseOutputItems(responseRecord);
           const terminalOutputText = extractOutputText(continuationItems);
-          const webSources = extractWebSearchSources(continuationItems);
-          const terminalCompletedWebSearchCount =
-            completedWebSearchCallCount(continuationItems);
-          const additionalCompletedWebSearchCount = Math.max(
-            0,
-            terminalCompletedWebSearchCount - streamedCompletedWebSearchCount
+          const terminalFailedWebSearchIds =
+            nonCompletedWebSearchCallIds(continuationItems);
+          const hasAnonymousTerminalWebSearchFailure =
+            hasAnonymousNonCompletedWebSearchCall(continuationItems);
+          const hasAnonymousWebSearchFailure =
+            sawAnonymousStreamedWebSearchFailure ||
+            hasAnonymousTerminalWebSearchFailure;
+          const invalidatedWebSearchIds = new Set([
+            ...streamedFailedWebSearchIds,
+            ...terminalFailedWebSearchIds
+          ]);
+          const streamedCompletedWebSearchCount = saturatedWebSearchCount(
+            [...streamedCompletedWebSearchIds].filter(
+              (callId) => !invalidatedWebSearchIds.has(callId)
+            ).length +
+              (sawAnonymousStreamedWebSearchCompletion &&
+              !hasAnonymousWebSearchFailure
+                ? 1
+                : 0)
           );
-          for (
-            let index = 0;
-            index < additionalCompletedWebSearchCount;
-            index += 1
-          ) {
-            yield { type: "web-search-status", status: "completed" };
+          const terminalCompletedWebSearchCount = completedWebSearchCallCount(
+            continuationItems,
+            invalidatedWebSearchIds,
+            hasAnonymousWebSearchFailure
+          );
+          const hasExplicitWebSearchFailure =
+            sawExplicitWebSearchFailure ||
+            hasNonCompletedWebSearchCall(continuationItems);
+          const webSources: Array<{ url: string; title: string }> = [];
+          for (const group of streamedWebSourceGroups) {
+            if (
+              (group.callId && invalidatedWebSearchIds.has(group.callId)) ||
+              (!group.callId && hasAnonymousWebSearchFailure)
+            ) {
+              continue;
+            }
+            appendUniqueWebSources(webSources, group.sources);
           }
+          appendUniqueWebSources(
+            webSources,
+            extractWebSearchSources(continuationItems, {
+              includeAnnotations: !hasExplicitWebSearchFailure,
+              invalidatedIds: invalidatedWebSearchIds,
+              excludeAnonymousCalls: hasAnonymousWebSearchFailure
+            })
+          );
+          const explicitCompletedWebSearchCalls = saturatedWebSearchCount(
+            Math.max(
+              streamedCompletedWebSearchCount,
+              terminalCompletedWebSearchCount
+            )
+          );
+          const completedWebSearchCalls =
+            explicitCompletedWebSearchCalls > 0
+              ? explicitCompletedWebSearchCalls
+              : terminalStatus === "completed" &&
+                  forcedWebSearch &&
+                  !hasExplicitWebSearchFailure &&
+                  webSources.length > 0
+                ? 1
+                : 0;
           const incompleteRecord = asRecord(responseRecord.incomplete_details);
           const errorRecord = asRecord(responseRecord.error ?? event.error);
-          if (terminalStatus === "completed" && webSources.length > 0) {
+          if (
+            terminalStatus === "completed" &&
+            completedWebSearchCalls > 0 &&
+            webSources.length > 0
+          ) {
             yield { type: "web-search-sources", sources: webSources };
           }
           yield {
@@ -282,7 +378,8 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
               ? { error: parseFailure(errorRecord) }
               : {}),
             providerRequestId,
-            firstEventLatencyMs
+            firstEventLatencyMs,
+            completedWebSearchCalls
           };
           return;
         }
@@ -360,6 +457,14 @@ function webSearchStatus(
   return undefined;
 }
 
+function isWebSearchFailureEvent(eventType: string): boolean {
+  return (
+    eventType === "response.web_search_call.failed" ||
+    eventType === "response.web_search_call.incomplete" ||
+    eventType === "response.web_search_call.cancelled"
+  );
+}
+
 function responseOutputItems(
   response: Record<string, unknown>
 ): ResponsesInputItem[] {
@@ -390,7 +495,12 @@ function extractOutputText(items: ResponsesInputItem[]): string {
 }
 
 function extractWebSearchSources(
-  items: ResponsesInputItem[]
+  items: ResponsesInputItem[],
+  options: {
+    includeAnnotations?: boolean;
+    invalidatedIds?: ReadonlySet<string>;
+    excludeAnonymousCalls?: boolean;
+  } = {}
 ): Array<{ url: string; title: string }> {
   const sources: Array<{ url: string; title: string }> = [];
   const seen = new Set<string>();
@@ -419,13 +529,26 @@ function extractWebSearchSources(
   for (const item of items) {
     if (item.type === "web_search_call") {
       if (pickString(item, ["status"]) !== "completed") continue;
+      const callId = webSearchCallId(item);
+      if (
+        (callId && options.invalidatedIds?.has(callId)) ||
+        (!callId && options.excludeAnonymousCalls)
+      ) {
+        continue;
+      }
       const action = asRecord(item.action);
       const actionSources = Array.isArray(action.sources) ? action.sources : [];
       const itemSources = Array.isArray(item.sources) ? item.sources : [];
       if (addSources([...actionSources, ...itemSources])) return sources;
       continue;
     }
-    if (item.type !== "message" || !Array.isArray(item.content)) continue;
+    if (
+      options.includeAnnotations === false ||
+      item.type !== "message" ||
+      !Array.isArray(item.content)
+    ) {
+      continue;
+    }
     for (const value of item.content) {
       const content = asRecord(value);
       if (!Array.isArray(content.annotations)) continue;
@@ -443,11 +566,105 @@ function extractWebSearchSources(
   return sources;
 }
 
-function completedWebSearchCallCount(items: ResponsesInputItem[]): number {
-  return items.filter((item) => {
-    if (item.type !== "web_search_call") return false;
-    return pickString(item, ["status"]) === "completed";
-  }).length;
+function completedWebSearchCallCount(
+  items: ResponsesInputItem[],
+  invalidatedIds: ReadonlySet<string> = new Set(),
+  excludeAnonymous = false
+): number {
+  const ids = new Set<string>();
+  let anonymous = 0;
+  for (const item of items) {
+    if (
+      item.type !== "web_search_call" ||
+      pickString(item, ["status"]) !== "completed"
+    ) {
+      continue;
+    }
+    const callId = webSearchCallId(item);
+    if (callId) {
+      if (!invalidatedIds.has(callId)) ids.add(callId);
+    } else if (!excludeAnonymous) {
+      anonymous += 1;
+    }
+  }
+  return saturatedWebSearchCount(ids.size + anonymous);
+}
+
+function nonCompletedWebSearchCallIds(
+  items: ResponsesInputItem[]
+): Set<string> {
+  const ids = new Set<string>();
+  for (const item of items) {
+    if (
+      item.type !== "web_search_call" ||
+      pickString(item, ["status"]) === undefined ||
+      pickString(item, ["status"]) === "completed"
+    ) {
+      continue;
+    }
+    const callId = webSearchCallId(item);
+    if (callId) ids.add(callId);
+  }
+  return ids;
+}
+
+function hasNonCompletedWebSearchCall(items: ResponsesInputItem[]): boolean {
+  return items.some(
+    (item) =>
+      item.type === "web_search_call" &&
+      pickString(item, ["status"]) !== undefined &&
+      pickString(item, ["status"]) !== "completed"
+  );
+}
+
+function hasAnonymousNonCompletedWebSearchCall(
+  items: ResponsesInputItem[]
+): boolean {
+  return items.some(
+    (item) =>
+      item.type === "web_search_call" &&
+      pickString(item, ["status"]) !== undefined &&
+      pickString(item, ["status"]) !== "completed" &&
+      webSearchCallId(item) === undefined
+  );
+}
+
+function webSearchCallId(value: Record<string, unknown>): string | undefined {
+  return pickString(value, ["id", "item_id", "call_id"]);
+}
+
+function webSearchEventCallId(
+  event: Record<string, unknown>
+): string | undefined {
+  return (
+    webSearchCallId(event) || webSearchCallId(asRecord(event.item)) || undefined
+  );
+}
+
+function saturatedWebSearchCount(value: number): number {
+  return Math.min(9, Math.max(0, value));
+}
+
+function isForcedWebSearch(request: ResponsesStreamRequest): boolean {
+  return (
+    typeof request.toolChoice === "object" &&
+    (request.toolChoice.type === "web_search" ||
+      request.toolChoice.type === "web_search_2025_08_26")
+  );
+}
+
+function appendUniqueWebSources(
+  target: Array<{ url: string; title: string }>,
+  incoming: Array<{ url: string; title: string }>
+): void {
+  const seen = new Set(target.map((source) => source.url));
+  for (const source of incoming) {
+    if (target.length >= 16) return;
+    if (seen.has(source.url)) continue;
+    target.push(source);
+    seen.add(source.url);
+    if (target.length >= 16) return;
+  }
 }
 
 function parseResponsesUsage(value: unknown): ResponsesUsage | undefined {

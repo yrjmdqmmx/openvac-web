@@ -162,7 +162,7 @@ export class WebEvidenceService {
       .slice(0, 64);
     let outputText = "";
     let invocation: WebProviderInvocation | undefined;
-    let completedSearchCalls = 0;
+    let completedSearchCalls: number | undefined;
     const annotatedSources: Array<{ url: string; title: string }> = [];
     for await (const event of this.streamResponses({
       instructions: [
@@ -181,9 +181,6 @@ export class WebEvidenceService {
       signal: input.signal
     })) {
       if (event.type === "text-delta") outputText += event.text;
-      if (event.type === "web-search-status" && event.status === "completed") {
-        completedSearchCalls += 1;
-      }
       if (event.type === "web-search-sources") {
         annotatedSources.push(...event.sources);
       }
@@ -197,12 +194,18 @@ export class WebEvidenceService {
           usage: event.usage,
           firstEventLatencyMs: event.firstEventLatencyMs
         };
+        completedSearchCalls = event.completedWebSearchCalls;
       }
     }
     if (!invocation || invocation.status !== "completed") {
       throw new Error("NATIVE_WEB_DISCOVERY_FAILED");
     }
-    if (completedSearchCalls < 1 || completedSearchCalls > 8) {
+    if (
+      !Number.isSafeInteger(completedSearchCalls) ||
+      completedSearchCalls === undefined ||
+      completedSearchCalls < 1 ||
+      completedSearchCalls > 9
+    ) {
       throw new Error("NATIVE_WEB_SEARCH_COUNT_INVALID");
     }
     let generatedCandidates: z.infer<typeof discoverySchema>["candidates"] = [];

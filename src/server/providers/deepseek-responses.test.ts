@@ -245,9 +245,9 @@ describe("DeepSeekResponsesProvider", () => {
       })
     );
 
-    expect(events).toContainEqual({
-      type: "web-search-status",
-      status: "completed"
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      completedWebSearchCalls: 1
     });
     expect(events).toContainEqual({
       type: "web-search-sources",
@@ -313,12 +313,514 @@ describe("DeepSeekResponsesProvider", () => {
     }
   );
 
+  it("uses native URL annotations as proof only for a completed forced-web response", async () => {
+    const body = streamFromStrings([
+      event("response.created", 0, { response: { id: "resp-web-annotation" } }),
+      event("response.completed", 1, {
+        response: {
+          id: "resp-web-annotation",
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [
+                {
+                  type: "output_text",
+                  text: "",
+                  annotations: [
+                    {
+                      type: "url_citation",
+                      url: "https://www.leybold.com/manual",
+                      title: "Leybold manual"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      })
+    ]);
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => new Response(body))
+    });
+
+    const events = await collect(
+      provider.stream({
+        input: "Find manuals",
+        tools: [{ type: "web_search" }],
+        toolChoice: { type: "web_search" },
+        user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+      })
+    );
+
+    expect(events).toContainEqual({
+      type: "web-search-sources",
+      sources: [
+        {
+          url: "https://www.leybold.com/manual",
+          title: "Leybold manual"
+        }
+      ]
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      completedWebSearchCalls: 1
+    });
+  });
+
+  it("does not let URL annotations override an explicit failed web-search call", async () => {
+    const body = streamFromStrings([
+      event("response.created", 0, {
+        response: { id: "resp-web-failed-annotation" }
+      }),
+      event("response.completed", 1, {
+        response: {
+          id: "resp-web-failed-annotation",
+          output: [
+            {
+              type: "web_search_call",
+              id: "search-failed-1",
+              status: "failed"
+            },
+            {
+              type: "message",
+              role: "assistant",
+              content: [
+                {
+                  type: "output_text",
+                  text: "",
+                  annotations: [
+                    {
+                      type: "url_citation",
+                      url: "https://www.leybold.com/manual",
+                      title: "Leybold manual"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      })
+    ]);
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => new Response(body))
+    });
+
+    const events = await collect(
+      provider.stream({
+        input: "Find manuals",
+        tools: [{ type: "web_search" }],
+        toolChoice: { type: "web_search" },
+        user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+      })
+    );
+
+    expect(events).not.toContainEqual(
+      expect.objectContaining({ type: "web-search-sources" })
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      completedWebSearchCalls: 0
+    });
+  });
+
+  it.each([
+    ["streamed status", "response.web_search_call.completed"],
+    ["completed output item", "response.output_item.done"]
+  ] as const)(
+    "lets terminal failure override an earlier same-id %s proof",
+    async (_label, proofEventType) => {
+      const proofEvent =
+        proofEventType === "response.output_item.done"
+          ? event(proofEventType, 1, {
+              item: {
+                type: "web_search_call",
+                id: "search-conflict-1",
+                status: "completed",
+                action: {
+                  sources: [
+                    {
+                      url: "https://www.leybold.com/old",
+                      title: "Old result"
+                    }
+                  ]
+                }
+              }
+            })
+          : event(proofEventType, 1, { item_id: "search-conflict-1" });
+      const body = streamFromStrings([
+        event("response.created", 0, {
+          response: { id: "resp-web-conflict" }
+        }),
+        proofEvent,
+        event("response.completed", 2, {
+          response: {
+            id: "resp-web-conflict",
+            output: [
+              {
+                type: "web_search_call",
+                id: "search-conflict-1",
+                status: "failed"
+              },
+              {
+                type: "message",
+                role: "assistant",
+                content: [
+                  {
+                    type: "output_text",
+                    text: "",
+                    annotations: [
+                      {
+                        type: "url_citation",
+                        url: "https://www.leybold.com/manual",
+                        title: "Leybold manual"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        })
+      ]);
+      const provider = new DeepSeekResponsesProvider({
+        apiKey: "test-key",
+        fetch: vi.fn(async () => new Response(body))
+      });
+
+      const events = await collect(
+        provider.stream({
+          input: "Find manuals",
+          tools: [{ type: "web_search" }],
+          toolChoice: { type: "web_search" },
+          user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+        })
+      );
+
+      expect(events).not.toContainEqual(
+        expect.objectContaining({ type: "web-search-sources" })
+      );
+      expect(events.at(-1)).toMatchObject({
+        type: "finish",
+        completedWebSearchCalls: 0
+      });
+    }
+  );
+
+  it.each(["failed", "incomplete", "cancelled"] as const)(
+    "lets a same-id %s event override an earlier completion event",
+    async (status) => {
+      const body = streamFromStrings([
+        event("response.created", 0, {
+          response: { id: "resp-web-event-conflict" }
+        }),
+        event("response.web_search_call.completed", 1, {
+          item_id: "search-event-conflict-1"
+        }),
+        event(`response.web_search_call.${status}`, 2, {
+          item_id: "search-event-conflict-1"
+        }),
+        event("response.completed", 3, {
+          response: { id: "resp-web-event-conflict", output: [] }
+        })
+      ]);
+      const provider = new DeepSeekResponsesProvider({
+        apiKey: "test-key",
+        fetch: vi.fn(async () => new Response(body))
+      });
+
+      const events = await collect(
+        provider.stream({
+          input: "Find manuals",
+          tools: [{ type: "web_search" }],
+          toolChoice: { type: "web_search" },
+          user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+        })
+      );
+
+      expect(events.at(-1)).toMatchObject({
+        type: "finish",
+        completedWebSearchCalls: 0
+      });
+    }
+  );
+
+  it("lets an anonymous terminal failure override anonymous streamed completion", async () => {
+    const body = streamFromStrings([
+      event("response.created", 0, {
+        response: { id: "resp-web-anonymous-conflict" }
+      }),
+      event("response.output_item.done", 1, {
+        item: {
+          type: "web_search_call",
+          status: "completed",
+          action: {
+            sources: [
+              {
+                url: "https://www.leybold.com/old",
+                title: "Old result"
+              }
+            ]
+          }
+        }
+      }),
+      event("response.completed", 2, {
+        response: {
+          id: "resp-web-anonymous-conflict",
+          output: [{ type: "web_search_call", status: "failed" }]
+        }
+      })
+    ]);
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => new Response(body))
+    });
+
+    const events = await collect(
+      provider.stream({
+        input: "Find manuals",
+        tools: [{ type: "web_search" }],
+        toolChoice: { type: "web_search" },
+        user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+      })
+    );
+
+    expect(events).not.toContainEqual(
+      expect.objectContaining({ type: "web-search-sources" })
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      completedWebSearchCalls: 0
+    });
+  });
+
+  it("lets anonymous terminal failure override anonymous terminal completion", async () => {
+    const body = streamFromStrings([
+      event("response.created", 0, {
+        response: { id: "resp-web-anonymous-terminal-conflict" }
+      }),
+      event("response.completed", 1, {
+        response: {
+          id: "resp-web-anonymous-terminal-conflict",
+          output: [
+            {
+              type: "web_search_call",
+              status: "completed",
+              action: {
+                sources: [
+                  {
+                    url: "https://www.leybold.com/old",
+                    title: "Old result"
+                  }
+                ]
+              }
+            },
+            { type: "web_search_call", status: "failed" }
+          ]
+        }
+      })
+    ]);
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => new Response(body))
+    });
+
+    const events = await collect(
+      provider.stream({
+        input: "Find manuals",
+        tools: [{ type: "web_search" }],
+        toolChoice: { type: "web_search" },
+        user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+      })
+    );
+
+    expect(events).not.toContainEqual(
+      expect.objectContaining({ type: "web-search-sources" })
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      completedWebSearchCalls: 0
+    });
+  });
+
+  it("lets anonymous failed event override anonymous terminal completion", async () => {
+    const body = streamFromStrings([
+      event("response.created", 0, {
+        response: { id: "resp-web-anonymous-event-conflict" }
+      }),
+      event("response.web_search_call.failed", 1),
+      event("response.completed", 2, {
+        response: {
+          id: "resp-web-anonymous-event-conflict",
+          output: [
+            {
+              type: "web_search_call",
+              status: "completed",
+              action: {
+                sources: [
+                  {
+                    url: "https://www.leybold.com/old",
+                    title: "Old result"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      })
+    ]);
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => new Response(body))
+    });
+
+    const events = await collect(
+      provider.stream({
+        input: "Find manuals",
+        tools: [{ type: "web_search" }],
+        toolChoice: { type: "web_search" },
+        user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+      })
+    );
+
+    expect(events).not.toContainEqual(
+      expect.objectContaining({ type: "web-search-sources" })
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      completedWebSearchCalls: 0
+    });
+  });
+
+  it("does not publish terminal sources from an invalidated call id", async () => {
+    const body = streamFromStrings([
+      event("response.created", 0, {
+        response: { id: "resp-web-terminal-conflict" }
+      }),
+      event("response.completed", 1, {
+        response: {
+          id: "resp-web-terminal-conflict",
+          output: [
+            {
+              type: "web_search_call",
+              id: "search-a",
+              status: "completed",
+              action: {
+                sources: [
+                  {
+                    url: "https://www.leybold.com/invalidated",
+                    title: "Invalidated result"
+                  }
+                ]
+              }
+            },
+            { type: "web_search_call", id: "search-a", status: "failed" },
+            {
+              type: "web_search_call",
+              id: "search-b",
+              status: "completed",
+              action: {
+                sources: [
+                  {
+                    url: "https://www.pfeiffer-vacuum.com/valid",
+                    title: "Valid result"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      })
+    ]);
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => new Response(body))
+    });
+
+    const events = await collect(
+      provider.stream({
+        input: "Find manuals",
+        tools: [{ type: "web_search" }],
+        toolChoice: { type: "web_search" },
+        user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+      })
+    );
+
+    expect(events).toContainEqual({
+      type: "web-search-sources",
+      sources: [
+        {
+          url: "https://www.pfeiffer-vacuum.com/valid",
+          title: "Valid result"
+        }
+      ]
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      completedWebSearchCalls: 1
+    });
+  });
+
+  it("does not treat URL annotations as search proof without forced web search", async () => {
+    const body = streamFromStrings([
+      event("response.created", 0, { response: { id: "resp-web-unforced" } }),
+      event("response.completed", 1, {
+        response: {
+          id: "resp-web-unforced",
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [
+                {
+                  type: "output_text",
+                  text: "",
+                  annotations: [
+                    {
+                      type: "url_citation",
+                      url: "https://www.leybold.com/manual",
+                      title: "Leybold manual"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      })
+    ]);
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => new Response(body))
+    });
+
+    const events = await collect(
+      provider.stream({
+        input: "Find manuals",
+        tools: [{ type: "web_search" }],
+        toolChoice: "auto",
+        user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+      })
+    );
+
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      completedWebSearchCalls: 0
+    });
+  });
+
   it.each([2, 9])(
     "normalizes streamed and terminal completion proofs to %i calls",
     async (terminalCount) => {
       const body = streamFromStrings([
         event("response.created", 0, { response: { id: "resp-web-count" } }),
-        event("response.web_search_call.completed", 1),
+        event("response.web_search_call.completed", 1, {
+          item_id: "search-1"
+        }),
         event("response.completed", 2, {
           response: {
             id: "resp-web-count",
@@ -345,14 +847,112 @@ describe("DeepSeekResponsesProvider", () => {
         })
       );
 
-      expect(
-        events.filter(
-          (item) =>
-            item.type === "web-search-status" && item.status === "completed"
-        )
-      ).toHaveLength(terminalCount);
+      expect(events.at(-1)).toMatchObject({
+        type: "finish",
+        completedWebSearchCalls: terminalCount
+      });
     }
   );
+
+  it("deduplicates repeated streamed and terminal completion proofs by call id", async () => {
+    const body = streamFromStrings([
+      event("response.created", 0, { response: { id: "resp-web-dedupe" } }),
+      event("response.web_search_call.completed", 1, {
+        item_id: "search-1"
+      }),
+      event("response.web_search_call.completed", 2, {
+        item_id: "search-1"
+      }),
+      event("response.completed", 3, {
+        response: {
+          id: "resp-web-dedupe",
+          output: [
+            {
+              type: "web_search_call",
+              id: "search-1",
+              status: "completed",
+              action: { sources: [] }
+            },
+            {
+              type: "web_search_call",
+              id: "search-1",
+              status: "completed",
+              action: { sources: [] }
+            }
+          ]
+        }
+      })
+    ]);
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => new Response(body))
+    });
+
+    const events = await collect(
+      provider.stream({
+        input: "Find manuals",
+        tools: [{ type: "web_search" }],
+        toolChoice: { type: "web_search" },
+        user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+      })
+    );
+
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      completedWebSearchCalls: 1
+    });
+  });
+
+  it("accepts a completed web search proved only by output_item.done", async () => {
+    const body = streamFromStrings([
+      event("response.created", 0, { response: { id: "resp-web-done" } }),
+      event("response.output_item.done", 1, {
+        item: {
+          type: "web_search_call",
+          id: "search-done-1",
+          status: "completed",
+          action: {
+            sources: [
+              {
+                url: "https://www.leybold.com/manual",
+                title: "Leybold manual"
+              }
+            ]
+          }
+        }
+      }),
+      event("response.completed", 2, {
+        response: { id: "resp-web-done", output: [] }
+      })
+    ]);
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => new Response(body))
+    });
+
+    const events = await collect(
+      provider.stream({
+        input: "Find manuals",
+        tools: [{ type: "web_search" }],
+        toolChoice: { type: "web_search" },
+        user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+      })
+    );
+
+    expect(events).toContainEqual({
+      type: "web-search-sources",
+      sources: [
+        {
+          url: "https://www.leybold.com/manual",
+          title: "Leybold manual"
+        }
+      ]
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      completedWebSearchCalls: 1
+    });
+  });
 
   it("drops duplicate events and rejects a backwards sequence", async () => {
     const provider = new DeepSeekResponsesProvider({

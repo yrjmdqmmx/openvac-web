@@ -172,6 +172,7 @@ export type ResponsesStreamEvent =
   | {
       type: "web-search-status";
       status: "in_progress" | "searching" | "completed";
+      callId?: string;
     }
   | {
       type: "web-search-sources";
@@ -188,6 +189,12 @@ export type ResponsesStreamEvent =
       error?: ResponsesFailure;
       providerRequestId?: string;
       firstEventLatencyMs?: number;
+      /**
+       * Saturated, provider-normalized proof of completed native web-search
+       * calls. `9` means nine or more provider-internal calls. Consumers must
+       * treat this as execution proof, not as the number of outbound requests.
+       */
+      completedWebSearchCalls?: number;
     };
 
 export interface ResponsesProvider {
