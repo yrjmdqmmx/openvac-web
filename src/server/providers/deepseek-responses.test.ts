@@ -264,7 +264,7 @@ describe("DeepSeekResponsesProvider", () => {
     expect(sentBody).not.toHaveProperty("tools.0.strict");
   });
 
-  it("restores high reasoning and structured text after a non-thinking forced tool leg", async () => {
+  it("restores high structured output from a fresh trusted calculation input", async () => {
     const sentBodies: Array<Record<string, unknown>> = [];
     const responses = [
       streamFromStrings([
@@ -340,16 +340,10 @@ describe("DeepSeekResponsesProvider", () => {
         user: "ov1_safe-user"
       })
     );
-    const firstFinish = firstEvents.find((event) => event.type === "finish");
     const firstCall = firstEvents.find(
       (event) => event.type === "function-call"
     );
-    if (
-      !firstFinish ||
-      firstFinish.type !== "finish" ||
-      !firstCall ||
-      firstCall.type !== "function-call"
-    ) {
+    if (!firstCall || firstCall.type !== "function-call") {
       throw new Error("Forced tool fixture did not finish with one call.");
     }
 
@@ -357,14 +351,13 @@ describe("DeepSeekResponsesProvider", () => {
       provider.stream({
         input: [
           userMessage,
-          ...firstFinish.continuationItems,
           {
-            type: "function_call_output",
-            call_id: firstCall.callId,
-            output: '{"ok":true}'
+            type: "message",
+            role: "system",
+            content:
+              '{"schemaVersion":"openvac.trusted-calculation-context.v1","dataOnly":true,"requiredCalculationIds":["calc_00000000000000000000"]}'
           }
         ],
-        tools: [tool],
         toolChoice: "none",
         reasoningEffort: "high",
         textFormat: {
@@ -384,13 +377,6 @@ describe("DeepSeekResponsesProvider", () => {
     expect(sentBodies[0]).not.toHaveProperty("text");
     expect(sentBodies[1]).toMatchObject({
       tool_choice: "none",
-      tools: [
-        {
-          type: "function",
-          name: "estimate_pumpdown_time",
-          parameters: { type: "object" }
-        }
-      ],
       reasoning: { effort: "high" },
       text: {
         format: {
@@ -400,10 +386,10 @@ describe("DeepSeekResponsesProvider", () => {
         }
       }
     });
-    expect(sentBodies[1]).toHaveProperty("input.1.type", "function_call");
-    expect(sentBodies[1]).toHaveProperty(
-      "input.2.type",
-      "function_call_output"
+    expect(sentBodies[1]).not.toHaveProperty("tools");
+    expect(sentBodies[1]).not.toHaveProperty("input.1.call_id");
+    expect(JSON.stringify(sentBodies[1].input)).not.toMatch(
+      /function_call|reasoning/u
     );
   });
 

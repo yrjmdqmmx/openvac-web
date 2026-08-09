@@ -212,6 +212,8 @@ export type ResponsesCapabilities = {
   parallelFunctionCalls: true;
   nativeWebSearch: true;
   structuredOutputs: true;
+  forcedFunctionResultTransport:
+    "native_continuation" | "fresh_trusted_projection";
 };
 
 export interface EmbeddingResult {

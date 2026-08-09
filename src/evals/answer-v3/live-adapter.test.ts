@@ -434,7 +434,8 @@ function fakeDeepSeek(): ResponsesProvider {
       functionTools: true,
       parallelFunctionCalls: true,
       nativeWebSearch: true,
-      structuredOutputs: true
+      structuredOutputs: true,
+      forcedFunctionResultTransport: "fresh_trusted_projection"
     },
     async *stream(_request: ResponsesStreamRequest) {
       void _request;

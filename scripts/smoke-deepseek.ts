@@ -1,10 +1,13 @@
 import {
   answerV3JsonSchemaForRisk,
   answerV3Schema,
+  answerUsesOnlyProjectedCalculations,
+  buildTrustedCalculationFinalInput,
   buildAgentV3InstructionsForRisk,
   classifyVacuumRisk,
   EvidenceRegistry,
-  ToolRegistry
+  ToolRegistry,
+  trustedPumpdownProjectionFromToolTurn
 } from "../src/server/agent";
 import {
   createDeepSeekUserPartition,
@@ -135,7 +138,11 @@ async function collectProbe(
 async function runToolContinuationProbe(
   provider: DeepSeekResponsesProvider,
   userPartition: string
-): Promise<{ terminal: "completed"; callCount: 1; pairing: "passed" }> {
+): Promise<{
+  terminal: "completed";
+  callCount: 1;
+  resultTransport: "trusted_projection";
+}> {
   const question =
     "腔体体积 100 L、等效抽速 10 L/s；估算从 100 Pa 抽到 1 Pa 的理想抽空时间。";
   const risk = classifyVacuumRisk(question);
@@ -183,18 +190,19 @@ async function runToolContinuationProbe(
   if (!execution.ok) {
     throw new DeepSeekSmokeFailure("TOOL_EXECUTION_FAILED");
   }
-  const continuationTool = registry.definitions.find(
-    (tool) => tool.type === "function" && tool.name === call.name
-  );
-  if (!continuationTool) {
+  const projection = trustedPumpdownProjectionFromToolTurn({
+    calls: first.calls,
+    continuationItems: first.continuationItems,
+    outputs: [execution]
+  });
+  if (!projection) {
     throw new DeepSeekSmokeFailure("TOOL_CONTINUATION_INVALID");
   }
   let final: ProbeResult;
   try {
     final = await collectProbe(provider, {
       instructions: buildAgentV3InstructionsForRisk(risk.level),
-      input: [...input, ...first.continuationItems, execution.outputItem],
-      tools: [continuationTool],
+      input: buildTrustedCalculationFinalInput(input, projection),
       toolChoice: "none",
       reasoningEffort: "high",
       textFormat: {
@@ -221,11 +229,20 @@ async function runToolContinuationProbe(
   if (
     final.terminal !== "completed" ||
     final.calls.length !== 0 ||
-    !answerV3Schema.safeParse(parsed).success
+    !answerV3Schema.safeParse(parsed).success ||
+    !answerUsesOnlyProjectedCalculations(
+      answerV3Schema.parse(parsed),
+      new Set([projection.calculationId]),
+      risk.level
+    )
   ) {
     throw new DeepSeekSmokeFailure("TOOL_CONTINUATION_INVALID");
   }
-  return { terminal: "completed", callCount: 1, pairing: "passed" };
+  return {
+    terminal: "completed",
+    callCount: 1,
+    resultTransport: "trusted_projection"
+  };
 }
 
 main().catch((error) => {
