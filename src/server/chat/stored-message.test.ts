@@ -115,4 +115,36 @@ describe("stored chat message serialization", () => {
     expect(JSON.stringify(serialized)).not.toContain("modelingCards");
     expect(JSON.stringify(serialized)).not.toContain("evil.example");
   });
+
+  it("localizes legacy V2 calculation tool names before history reaches the UI", () => {
+    const serialized = serializeStoredMessage(
+      {
+        id: "message-calculation",
+        role: "assistant",
+        status: "completed",
+        content: "legacy projection",
+        metadata: { riskLevel: "low" },
+        answerPayload: {
+          schemaVersion: "openvac.answer.v2",
+          answerKind: "grounded",
+          conclusion: [
+            {
+              text: "estimate_pumpdown_time 计算结果。",
+              evidenceIds: []
+            }
+          ],
+          assumptions: [],
+          evidence: [],
+          missingInputs: [],
+          nextSteps: [],
+          calculationRefs: ["calc_1"]
+        }
+      },
+      []
+    );
+
+    const projection = JSON.stringify(serialized);
+    expect(projection).toContain("抽空时间估算");
+    expect(projection).not.toContain("estimate_pumpdown_time");
+  });
 });

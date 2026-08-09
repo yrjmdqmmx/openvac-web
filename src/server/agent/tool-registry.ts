@@ -2,19 +2,41 @@ import { z } from "zod";
 
 import type {
   ResponsesFunctionTool,
-  ResponsesInputItem
+  ResponsesInputItem,
+  VisionProvider,
+  DocumentParser
 } from "@/server/providers";
+import { getDocumentParser, getVisionProvider } from "@/server/providers";
 import { collectLocalEvidence } from "@/server/chat/evidence";
+import { artifactSpecSchema } from "@/server/chat-v3/contracts";
 import type { CalculationResult } from "@/types/chat";
+import type {
+  ArtifactPart,
+  ArtifactSpec,
+  InputMessagePart,
+  VerifiedLinkPart
+} from "@/types/chat-v3";
 
+import {
+  ArtifactToolService,
+  hasExplicitArtifactIntent,
+  type ArtifactStorage,
+  UnconfiguredArtifactStorage
+} from "./artifact-tools";
+import {
+  AttachmentToolService,
+  type AttachmentStorage,
+  UnconfiguredAttachmentStorage
+} from "./attachment-tools";
 import {
   calculatorSchemas,
   executeCalculator,
   type CalculatorName
 } from "./calculators";
 import { EvidenceRegistry, inferTrustTier } from "./evidence-registry";
+import { VerifiedUrlReader } from "./verified-url";
 
-const DEFAULT_TIMEOUT_MS = 8_000;
+const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_ARGUMENT_BYTES = 32 * 1024;
 const MAX_RESULT_BYTES = 32 * 1024;
 
@@ -24,17 +46,60 @@ const searchKnowledgeSchema = z.object({
 const openEvidenceSchema = z.object({
   evidenceId: z.string().regex(/^E\d+$/)
 });
+const readVerifiedUrlSchema = z.object({
+  linkId: z.string().regex(/^L\d+$/u)
+});
+const searchAttachmentSchema = z.object({
+  attachmentId: z.string().uuid(),
+  query: z.string().trim().min(1).max(2_000)
+});
+const openAttachmentExcerptSchema = z.object({
+  attachmentId: z.string().uuid(),
+  chunkId: z.string().trim().min(1).max(240)
+});
+const analyzeImageSchema = z.object({
+  attachmentId: z.string().uuid(),
+  prompt: z.string().trim().min(1).max(2_000)
+});
+const createArtifactSchema = artifactSpecSchema.omit({ sourceTurnId: true });
 
 export type ToolExecutionResult = {
   ok: boolean;
   outputItem: ResponsesInputItem;
   evidenceIds: string[];
   calculations: CalculationResult[];
+  verifiedLinks: VerifiedLinkPart[];
+  artifacts: ArtifactPart[];
   missingInputs: string[];
 };
 
+export type ToolRegistryOptions = {
+  userId: string;
+  conversationId: string;
+  turnId: string;
+  question: string;
+  inputParts: readonly InputMessagePart[];
+  signal?: AbortSignal;
+  attachmentStorage?: AttachmentStorage;
+  artifactStorage?: ArtifactStorage;
+  documentParser?: DocumentParser;
+  visionProvider?: VisionProvider;
+  attachmentService?: AttachmentToolService;
+  artifactService?: ArtifactToolService;
+  verifiedUrlReader?: VerifiedUrlReader;
+  timeoutMs?: number;
+};
+
 export class ToolRegistry {
-  readonly definitions: ResponsesFunctionTool[] = [
+  readonly definitions: ResponsesFunctionTool[];
+  private readonly options?: ToolRegistryOptions;
+  private readonly attachmentIds: string[];
+  private readonly attachmentService?: AttachmentToolService;
+  private readonly artifactService?: ArtifactToolService;
+  private readonly verifiedUrlReader?: VerifiedUrlReader;
+  private readonly timeoutMs: number;
+
+  private static readonly baseDefinitions: ResponsesFunctionTool[] = [
     {
       type: "function",
       name: "search_knowledge",
@@ -64,8 +129,59 @@ export class ToolRegistry {
 
   constructor(
     private readonly evidence: EvidenceRegistry,
-    private readonly timeoutMs = DEFAULT_TIMEOUT_MS
-  ) {}
+    options?: ToolRegistryOptions
+  ) {
+    this.options = options;
+    this.timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.attachmentIds = options
+      ? options.inputParts.flatMap((part) =>
+          part.type === "attachment" ? [part.attachmentId] : []
+        )
+      : [];
+    let linkSequence = 0;
+    const links = options
+      ? options.inputParts.flatMap((part) =>
+          part.type === "link"
+            ? [
+                {
+                  linkId: `L${(linkSequence += 1)}`,
+                  url: part.url,
+                  label: part.label
+                }
+              ]
+            : []
+        )
+      : [];
+    this.verifiedUrlReader = options
+      ? (options.verifiedUrlReader ??
+        (links.length
+          ? new VerifiedUrlReader({ turnId: options.turnId, links })
+          : undefined))
+      : undefined;
+    this.attachmentService = options
+      ? (options.attachmentService ??
+        new AttachmentToolService({
+          storage:
+            options.attachmentStorage ?? new UnconfiguredAttachmentStorage(),
+          parser: options.documentParser ?? getDocumentParser(),
+          vision: options.visionProvider ?? getVisionProvider()
+        }))
+      : undefined;
+    this.artifactService = options
+      ? (options.artifactService ??
+        new ArtifactToolService(
+          options.artifactStorage ?? new UnconfiguredArtifactStorage()
+        ))
+      : undefined;
+    this.definitions = [
+      ...ToolRegistry.baseDefinitions,
+      ...(this.verifiedUrlReader ? [readVerifiedUrlDefinition()] : []),
+      ...(this.attachmentIds.length ? attachmentDefinitions() : []),
+      ...(options && hasExplicitArtifactIntent(options.question)
+        ? [createArtifactDefinition()]
+        : [])
+    ];
+  }
 
   async execute(input: {
     callId: string;
@@ -88,8 +204,12 @@ export class ToolRegistry {
       });
     }
 
+    const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
+    const signal = this.options?.signal
+      ? AbortSignal.any([this.options.signal, timeoutSignal])
+      : timeoutSignal;
     return withTimeout(
-      this.executeValidated(input.callId, input.name, raw),
+      this.executeValidated(input.callId, input.name, raw, signal),
       this.timeoutMs
     ).catch(() =>
       this.output(input.callId, {
@@ -102,7 +222,8 @@ export class ToolRegistry {
   private async executeValidated(
     callId: string,
     name: string,
-    raw: unknown
+    raw: unknown,
+    signal: AbortSignal
   ): Promise<ToolExecutionResult> {
     if (name === "search_knowledge") {
       const parsed = searchKnowledgeSchema.safeParse(raw);
@@ -142,6 +263,226 @@ export class ToolRegistry {
         entry ? [entry.evidenceId] : []
       );
     }
+    if (name === "read_verified_url") {
+      const parsed = readVerifiedUrlSchema.safeParse(raw);
+      if (!parsed.success) return this.invalid(callId, parsed.error);
+      if (!this.options || !this.verifiedUrlReader) {
+        return this.output(callId, {
+          ok: false,
+          error: "LINK_NOT_AVAILABLE"
+        });
+      }
+      try {
+        const result = await this.verifiedUrlReader.read({
+          turnId: this.options.turnId,
+          linkId: parsed.data.linkId,
+          signal
+        });
+        const evidenceId = this.evidence.addPrivate({
+          sourceId: `turn-link:${this.options.turnId}:${result.link.linkId}`,
+          title: result.link.label,
+          publisher: result.link.hostname,
+          excerpt: result.text,
+          reviewStatus: "runtime_verified",
+          runtimeValidated: true
+        });
+        return this.output(
+          callId,
+          {
+            ok: true,
+            linkId: result.link.linkId,
+            evidence: this.evidence
+              .modelIndex()
+              .filter((entry) => entry.evidenceId === evidenceId)
+          },
+          [evidenceId],
+          [],
+          [],
+          [result.link]
+        );
+      } catch (error) {
+        return this.output(callId, {
+          ok: false,
+          error: toolErrorCode(error)
+        });
+      }
+    }
+    if (name === "search_attachment") {
+      const parsed = searchAttachmentSchema.safeParse(raw);
+      if (!parsed.success) return this.invalid(callId, parsed.error);
+      if (!this.options || !this.attachmentService) {
+        return this.output(callId, {
+          ok: false,
+          error: "ATTACHMENT_NOT_AVAILABLE"
+        });
+      }
+      try {
+        const result = await this.attachmentService.search({
+          userId: this.options.userId,
+          conversationId: this.options.conversationId,
+          allowedAttachmentIds: this.attachmentIds,
+          ...parsed.data,
+          signal
+        });
+        const evidenceIds = result.matches.map((match) =>
+          this.evidence.addPrivate({
+            sourceId: `attachment:${result.attachmentId}:${match.chunkId}`,
+            title: "私有附件摘录",
+            excerpt: match.excerpt,
+            locator:
+              match.pageNumber === undefined
+                ? match.chunkId
+                : `第 ${match.pageNumber} 页`
+          })
+        );
+        return this.output(
+          callId,
+          {
+            ok: true,
+            evidence: this.evidence
+              .modelIndex()
+              .filter((entry) => evidenceIds.includes(entry.evidenceId))
+          },
+          evidenceIds
+        );
+      } catch (error) {
+        return this.output(callId, {
+          ok: false,
+          error: toolErrorCode(error)
+        });
+      }
+    }
+    if (name === "open_attachment_excerpt") {
+      const parsed = openAttachmentExcerptSchema.safeParse(raw);
+      if (!parsed.success) return this.invalid(callId, parsed.error);
+      if (!this.options || !this.attachmentService) {
+        return this.output(callId, {
+          ok: false,
+          error: "ATTACHMENT_NOT_AVAILABLE"
+        });
+      }
+      try {
+        const result = await this.attachmentService.open({
+          userId: this.options.userId,
+          conversationId: this.options.conversationId,
+          allowedAttachmentIds: this.attachmentIds,
+          ...parsed.data,
+          signal
+        });
+        const evidenceId = this.evidence.addPrivate({
+          sourceId: `attachment:${result.attachmentId}:${result.chunkId}`,
+          title: "私有附件摘录",
+          excerpt: result.excerpt,
+          locator:
+            result.pageNumber === undefined
+              ? result.chunkId
+              : `第 ${result.pageNumber} 页`
+        });
+        return this.output(
+          callId,
+          {
+            ok: true,
+            evidence: this.evidence
+              .modelIndex()
+              .filter((entry) => entry.evidenceId === evidenceId)
+          },
+          [evidenceId]
+        );
+      } catch (error) {
+        return this.output(callId, {
+          ok: false,
+          error: toolErrorCode(error)
+        });
+      }
+    }
+    if (name === "analyze_image") {
+      const parsed = analyzeImageSchema.safeParse(raw);
+      if (!parsed.success) return this.invalid(callId, parsed.error);
+      if (!this.options || !this.attachmentService) {
+        return this.output(callId, {
+          ok: false,
+          error: "ATTACHMENT_NOT_AVAILABLE"
+        });
+      }
+      try {
+        const result = await this.attachmentService.analyze({
+          userId: this.options.userId,
+          conversationId: this.options.conversationId,
+          allowedAttachmentIds: this.attachmentIds,
+          ...parsed.data,
+          signal
+        });
+        const evidenceId = this.evidence.addPrivate({
+          sourceId: `image-analysis:${result.attachmentId}`,
+          title: "私有图片分析",
+          excerpt: result.analysis
+        });
+        return this.output(
+          callId,
+          {
+            ok: true,
+            evidence: this.evidence
+              .modelIndex()
+              .filter((entry) => entry.evidenceId === evidenceId)
+          },
+          [evidenceId]
+        );
+      } catch (error) {
+        return this.output(callId, {
+          ok: false,
+          error: toolErrorCode(error)
+        });
+      }
+    }
+    if (name === "create_artifact") {
+      const parsed = createArtifactSchema.safeParse(raw);
+      if (!parsed.success) return this.invalid(callId, parsed.error);
+      if (
+        !this.options ||
+        !this.artifactService ||
+        !hasExplicitArtifactIntent(this.options.question)
+      ) {
+        return this.output(callId, {
+          ok: false,
+          error: "ARTIFACT_INTENT_REQUIRED"
+        });
+      }
+      try {
+        const spec: ArtifactSpec = {
+          ...parsed.data,
+          sourceTurnId: this.options.turnId
+        };
+        const artifact = await this.artifactService.create({
+          userId: this.options.userId,
+          conversationId: this.options.conversationId,
+          turnId: this.options.turnId,
+          question: this.options.question,
+          spec
+        });
+        return this.output(
+          callId,
+          {
+            ok: true,
+            artifact: {
+              artifactId: artifact.artifactId,
+              title: artifact.title,
+              formats: artifact.formats,
+              status: artifact.status
+            }
+          },
+          [],
+          [],
+          [],
+          [],
+          [artifact]
+        );
+      } catch (error) {
+        return this.output(callId, {
+          ok: false,
+          error: toolErrorCode(error)
+        });
+      }
+    }
     if (isCalculatorName(name)) {
       const result = executeCalculator(name, raw);
       return result.ok
@@ -179,22 +520,185 @@ export class ToolRegistry {
     value: Record<string, unknown>,
     evidenceIds: string[] = [],
     calculations: CalculationResult[] = [],
-    missingInputs: string[] = []
+    missingInputs: string[] = [],
+    verifiedLinks: VerifiedLinkPart[] = [],
+    artifacts: ArtifactPart[] = []
   ): ToolExecutionResult {
     let output = JSON.stringify(value);
     let ok = value.ok === true;
     if (Buffer.byteLength(output, "utf8") > MAX_RESULT_BYTES) {
       output = JSON.stringify({ ok: false, error: "TOOL_RESULT_TOO_LARGE" });
       ok = false;
+      evidenceIds = [];
+      calculations = [];
+      verifiedLinks = [];
+      artifacts = [];
+      missingInputs = [];
     }
     return {
       ok,
       outputItem: { type: "function_call_output", call_id: callId, output },
       evidenceIds,
       calculations,
+      verifiedLinks,
+      artifacts,
       missingInputs
     };
   }
+}
+
+function readVerifiedUrlDefinition(): ResponsesFunctionTool {
+  return {
+    type: "function",
+    name: "read_verified_url",
+    description: "读取本轮用户提供且通过服务端安全核验的 HTTPS 链接。",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["linkId"],
+      properties: { linkId: { type: "string", pattern: "^L[0-9]+$" } }
+    },
+    strict: true
+  };
+}
+
+function attachmentDefinitions(): ResponsesFunctionTool[] {
+  const attachmentId = { type: "string", format: "uuid" };
+  return [
+    {
+      type: "function",
+      name: "search_attachment",
+      description: "在本轮私有文档附件的 DocMind 分块中搜索相关内容。",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["attachmentId", "query"],
+        properties: {
+          attachmentId,
+          query: { type: "string", minLength: 1, maxLength: 2_000 }
+        }
+      },
+      strict: true
+    },
+    {
+      type: "function",
+      name: "open_attachment_excerpt",
+      description: "打开本轮私有文档附件中已检索到的一个分块。",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["attachmentId", "chunkId"],
+        properties: {
+          attachmentId,
+          chunkId: { type: "string", minLength: 1, maxLength: 240 }
+        }
+      },
+      strict: true
+    },
+    {
+      type: "function",
+      name: "analyze_image",
+      description: "使用图像理解能力分析本轮私有 JPEG 或 PNG 附件。",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["attachmentId", "prompt"],
+        properties: {
+          attachmentId,
+          prompt: { type: "string", minLength: 1, maxLength: 2_000 }
+        }
+      },
+      strict: true
+    }
+  ];
+}
+
+function createArtifactDefinition(): ResponsesFunctionTool {
+  const textArray = {
+    type: "array",
+    maxItems: 100,
+    items: { type: "string" }
+  };
+  return {
+    type: "function",
+    name: "create_artifact",
+    description: "仅按用户本轮明确要求创建报告、清单或参数表产物。",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "schemaVersion",
+        "kind",
+        "title",
+        "formats",
+        "summary",
+        "sections",
+        "tables"
+      ],
+      properties: {
+        schemaVersion: { type: "string", const: "openvac.artifact.v1" },
+        kind: {
+          type: "string",
+          enum: [
+            "diagnosis_report",
+            "selection_report",
+            "inspection_checklist",
+            "parameter_table"
+          ]
+        },
+        title: { type: "string", minLength: 1, maxLength: 240 },
+        formats: {
+          type: "array",
+          minItems: 1,
+          maxItems: 4,
+          uniqueItems: true,
+          items: { enum: ["md", "docx", "pdf", "csv"] }
+        },
+        summary: { type: "string", minLength: 1, maxLength: 2_000 },
+        sections: {
+          type: "array",
+          maxItems: 64,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["heading", "paragraphs"],
+            properties: {
+              heading: { type: "string", minLength: 1, maxLength: 240 },
+              paragraphs: textArray
+            }
+          }
+        },
+        tables: {
+          type: "array",
+          maxItems: 32,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["columns", "rows"],
+            properties: {
+              title: { type: "string", maxLength: 240 },
+              columns: {
+                type: "array",
+                minItems: 1,
+                maxItems: 32,
+                items: { type: "string" }
+              },
+              rows: {
+                type: "array",
+                maxItems: 2_000,
+                items: {
+                  type: "array",
+                  maxItems: 32,
+                  items: { type: "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    strict: true
+  };
 }
 
 function calculatorDefinitions(): ResponsesFunctionTool[] {
@@ -287,6 +791,18 @@ function calculatorDefinitions(): ResponsesFunctionTool[] {
     parameters: parameters[name],
     strict: true
   }));
+}
+
+function toolErrorCode(error: unknown): string {
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof error.code === "string"
+  ) {
+    return error.code.slice(0, 120);
+  }
+  return "TOOL_EXECUTION_FAILED";
 }
 
 function objectSchema(required: string[], properties: Record<string, unknown>) {

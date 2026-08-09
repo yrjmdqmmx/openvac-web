@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   AgentRunOrchestrator,
   AgentRuntimeError,
+  answerV3Blocks,
   answerSections,
   classifyVacuumRisk,
   resolveAgentMode,
@@ -13,14 +14,15 @@ import {
   type OrchestratorEvent
 } from "@/server/agent";
 import { auth } from "@/server/auth";
+import { inputMessagePartsSchema } from "@/server/chat-v3/contracts";
 import { isEffectiveBan } from "@/server/auth/ban-policy";
 import { db } from "@/server/db";
 import { systemSettings, user } from "@/server/db/schema";
 import { ModelRuntimeError } from "@/server/operations/model-runtime";
 import {
   createDeepSeekUserPartition,
-  getResponsesProvider,
-  ProviderError
+  ProviderError,
+  routeCapabilities
 } from "@/server/providers";
 import {
   commitQuota,
@@ -33,15 +35,26 @@ import {
   type QuotaReservation
 } from "@/server/quota";
 import type { ChatStreamEvent } from "@/types/chat";
+import type { InputMessagePart } from "@/types/chat-v3";
 
-const requestSchema = z.object({
-  protocolVersion: z.literal(2),
-  conversationId: z.string().uuid().optional(),
-  message: z.string().trim().min(2).max(4_000),
-  clientRequestId: z.string().uuid(),
-  mode: z.enum(["auto", "deep"]),
-  webMode: z.enum(["auto", "always"])
-});
+const requestSchema = z.union([
+  z.object({
+    protocolVersion: z.literal(2),
+    conversationId: z.string().uuid().optional(),
+    message: z.string().trim().min(2).max(4_000),
+    clientRequestId: z.string().uuid(),
+    mode: z.enum(["auto", "deep"]),
+    webMode: z.enum(["auto", "always"])
+  }),
+  z.object({
+    protocolVersion: z.literal(3),
+    conversationId: z.string().uuid().optional(),
+    parts: inputMessagePartsSchema,
+    clientRequestId: z.string().uuid(),
+    mode: z.enum(["auto", "deep"]),
+    webMode: z.enum(["auto", "always"])
+  })
+]);
 
 const actionRequestSchema = z.object({
   action: z.enum(["retry", "regenerate", "continue"]),
@@ -57,7 +70,7 @@ type UnsequencedV2Event<T = V2StreamEvent> = T extends V2StreamEvent
   ? Omit<T, "runId" | "sequence">
   : never;
 
-export async function agentResponsesV2Enabled(): Promise<boolean> {
+export async function agentResponsesV3Enabled(): Promise<boolean> {
   if (process.env.AGENT_RESPONSES_V2 !== "true") return false;
   try {
     const [setting] = await db
@@ -71,7 +84,9 @@ export async function agentResponsesV2Enabled(): Promise<boolean> {
   }
 }
 
-export async function postAgentV2(request: Request): Promise<Response> {
+export const agentResponsesV2Enabled = agentResponsesV3Enabled;
+
+export async function postAgentV3(request: Request): Promise<Response> {
   const session = await auth.api.getSession({ headers: request.headers });
   if (!session) {
     return jsonError(401, "UNAUTHENTICATED", "请先登录并完成邮箱验证。");
@@ -80,8 +95,13 @@ export async function postAgentV2(request: Request): Promise<Response> {
     await request.json().catch(() => null)
   );
   if (!parsed.success) {
-    return jsonError(400, "INVALID_REQUEST", "Agent V2 请求格式不正确。");
+    return jsonError(400, "INVALID_REQUEST", "Agent 请求格式不正确。");
   }
+  const inputParts: InputMessagePart[] =
+    parsed.data.protocolVersion === 3
+      ? parsed.data.parts
+      : [{ type: "text", text: parsed.data.message }];
+  const question = projectInputParts(inputParts);
   const accountFailure = await checkAccount(session.user.id);
   if (accountFailure) return accountFailure;
 
@@ -104,10 +124,10 @@ export async function postAgentV2(request: Request): Promise<Response> {
   });
   if (reservations instanceof Response) return reservations;
 
-  const risk = classifyVacuumRisk(parsed.data.message);
+  const risk = classifyVacuumRisk(question);
   const resolvedMode = resolveAgentMode({
     requested: parsed.data.mode,
-    question: parsed.data.message,
+    question,
     riskLevel: risk.level
   });
   let created;
@@ -115,7 +135,8 @@ export async function postAgentV2(request: Request): Promise<Response> {
     created = await store.createInitial({
       userId: session.user.id,
       conversationId: parsed.data.conversationId,
-      question: parsed.data.message,
+      question,
+      inputParts,
       clientRequestId: parsed.data.clientRequestId,
       requestedMode: parsed.data.mode,
       resolvedMode,
@@ -198,7 +219,7 @@ export async function postAgentV2(request: Request): Promise<Response> {
     return jsonError(
       503,
       "RESPONSES_USER_PARTITION_UNAVAILABLE",
-      "Agent V2 隐私分区配置尚未完成。"
+      "Agent 隐私分区配置尚未完成。"
     );
   }
 
@@ -216,12 +237,14 @@ export async function postAgentV2(request: Request): Promise<Response> {
   });
 }
 
-export async function postAgentActionV2(
+export const postAgentV2 = postAgentV3;
+
+export async function postAgentActionV3(
   request: Request,
   turnId: string
 ): Promise<Response> {
   if (!(await agentResponsesV2Enabled())) {
-    return jsonError(404, "AGENT_V2_DISABLED", "Agent V2 当前未启用。");
+    return jsonError(404, "AGENT_DISABLED", "Agent 当前未启用。");
   }
   const session = await auth.api.getSession({ headers: request.headers });
   if (!session) {
@@ -350,7 +373,7 @@ export async function postAgentActionV2(
     return jsonError(
       503,
       "RESPONSES_USER_PARTITION_UNAVAILABLE",
-      "Agent V2 隐私分区配置尚未完成。"
+      "Agent 隐私分区配置尚未完成。"
     );
   }
   return streamRun({
@@ -367,7 +390,9 @@ export async function postAgentActionV2(
   });
 }
 
-export async function cancelAgentRunV2(
+export const postAgentActionV2 = postAgentActionV3;
+
+export async function cancelAgentRunV3(
   request: Request,
   runId: string
 ): Promise<Response> {
@@ -390,6 +415,8 @@ export async function cancelAgentRunV2(
   }
   return Response.json({ data: { runId, status: "cancellation_requested" } });
 }
+
+export const cancelAgentRunV2 = cancelAgentRunV3;
 
 function streamRun(input: {
   request: Request;
@@ -443,10 +470,21 @@ function streamRun(input: {
         messageId: input.run.assistantMessageId,
         answerVersion: input.run.answerVersion
       });
+      const hasAttachments = input.run.inputParts.some(
+        (part) => part.type === "attachment"
+      );
+      const capabilities = routeCapabilities({
+        hasImages: hasAttachments,
+        hasDocuments: hasAttachments
+      });
       const orchestrator = new AgentRunOrchestrator(
-        getResponsesProvider(),
+        capabilities.reasoningProvider,
         store,
-        (event) => emitOrchestratorEvent(send, event)
+        (event) => emitOrchestratorEvent(send, event),
+        {
+          visionProvider: capabilities.visionProvider,
+          documentParser: capabilities.documentParser
+        }
       );
       try {
         const result = await orchestrator.run({
@@ -552,14 +590,13 @@ function emitOrchestratorEvent(
   } else if (event.type === "tool") {
     send({
       type: `tool.${event.status}`,
-      tool: event.tool,
       label: event.label
     });
-  } else if (event.type === "section") {
+  } else if (event.type === "block") {
     send({
-      type: "answer.section.committed",
-      section: event.section,
-      value: event.value
+      type: "answer.block.committed",
+      block: event.block,
+      index: event.index
     });
   } else {
     send({ type: "citation.committed", citation: event.citation });
@@ -591,8 +628,14 @@ function replayResponse(
           messageId: replay.messageId,
           answerVersion: replay.answerVersion
         });
-        for (const section of answerSections(replay.answer)) {
-          send({ type: "answer.section.committed", ...section });
+        if (replay.answer.schemaVersion === "openvac.answer.v3") {
+          for (const { block, index } of answerV3Blocks(replay.answer)) {
+            send({ type: "answer.block.committed", block, index });
+          }
+        } else {
+          for (const section of answerSections(replay.answer)) {
+            send({ type: "answer.section.committed", ...section });
+          }
         }
         for (const citation of replay.meta.citations) {
           send({ type: "citation.committed", citation });
@@ -630,7 +673,7 @@ async function reserveRunQuotas(input: {
     answer = await reserveAnswerQuota({
       userId: input.userId,
       clientRequestId: input.clientRequestId,
-      metadata: { conversationId: input.conversationId ?? null, protocol: 2 }
+      metadata: { conversationId: input.conversationId ?? null, protocol: 3 }
     });
   } catch (error) {
     return quotaError(error, "今天的成功回答额度已用完。");
@@ -641,8 +684,8 @@ async function reserveRunQuotas(input: {
   try {
     const modelAttempt = await reserveModelAttemptQuota({
       userId: input.userId,
-      clientRequestId: `${input.clientRequestId}:model-v2`,
-      metadata: { conversationId: input.conversationId ?? null, protocol: 2 }
+      clientRequestId: `${input.clientRequestId}:model-v3`,
+      metadata: { conversationId: input.conversationId ?? null, protocol: 3 }
     });
     if (modelAttempt.idempotent || modelAttempt.status !== "reserved") {
       await releaseQuota({
@@ -728,6 +771,26 @@ function quotaError(error: unknown, limitMessage: string): Response {
   return jsonError(503, "QUOTA_UNAVAILABLE", "额度服务暂时不可用。");
 }
 
+function projectInputParts(parts: InputMessagePart[]): string {
+  const text = parts
+    .filter(
+      (part): part is Extract<InputMessagePart, { type: "text" }> =>
+        part.type === "text"
+    )
+    .map((part) => part.text.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  const links = parts.filter((part) => part.type === "link").length;
+  const attachments = parts.filter((part) => part.type === "attachment").length;
+  return [
+    text || "请分析本条消息附带的资料。",
+    links > 0 ? `本条消息包含 ${links} 个待核验链接。` : "",
+    attachments > 0 ? `本条消息包含 ${attachments} 个私有附件。` : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function publicErrorCode(error: unknown): string {
   if (error instanceof AgentRuntimeError) return error.code;
   if (error instanceof ModelRuntimeError) return error.code;
@@ -750,7 +813,7 @@ function publicErrorMessage(error: unknown): string {
     error instanceof ProviderError &&
     [401, 402].includes(error.status ?? 0)
   ) {
-    return "回答 Provider 配置异常，已阻止本次回答并归还额度。";
+    return "回答服务配置异常，已阻止本次回答并归还额度。";
   }
   return "本次回答未完成，成功回答额度已归还，可稍后重试。";
 }

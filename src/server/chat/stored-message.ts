@@ -4,7 +4,11 @@ import type {
   Citation,
   RiskLevel
 } from "@/types/chat";
-import { safeParseAnswerV2 } from "@/server/agent/answer-v2";
+import {
+  safeParseAnswerV2,
+  sanitizeStoredAnswerV2
+} from "@/server/agent/answer-v2";
+import { safeParseAnswerV3 } from "@/server/agent/answer-v3";
 import { citationSourcePolicy } from "./citation-policy";
 
 const LICENSE_CLASSES = new Set<Citation["licenseClass"]>([
@@ -99,13 +103,18 @@ function answerMetaValue(
   citations: Citation[],
   answerPayload?: Record<string, unknown> | null
 ): AnswerMeta {
-  const answer = safeParseAnswerV2(answerPayload);
+  const parsedAnswer = safeParseAnswerV2(answerPayload);
+  const answer = parsedAnswer
+    ? sanitizeStoredAnswerV2(parsedAnswer)
+    : undefined;
+  const answerV3 = safeParseAnswerV3(answerPayload);
   return {
     riskLevel: riskLevelValue(metadata.riskLevel),
     missingInputs: stringArrayValue(metadata.missingInputs),
     webSearched: metadata.webSearched === true,
     citations,
     ...(answer ? { answer } : {}),
+    ...(answerV3 ? { answerV3 } : {}),
     ...(stringValue(metadata.turnId)
       ? { turnId: stringValue(metadata.turnId) }
       : {}),

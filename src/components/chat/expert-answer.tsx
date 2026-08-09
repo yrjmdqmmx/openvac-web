@@ -18,9 +18,9 @@ import { evaluateCitationLink } from "@/lib/citation-link-policy";
 import type { AgentTimelineEntry } from "@/components/chat/chat-workspace";
 import type {
   AnswerV2,
-  CalculationResult,
   ChatMessage,
-  Citation
+  Citation,
+  PublicCalculation
 } from "@/types/chat";
 
 function AnswerText({ content }: { content: string }) {
@@ -166,7 +166,7 @@ function StructuredAnswer({
 function CalculationCards({
   calculations
 }: {
-  calculations: CalculationResult[];
+  calculations: PublicCalculation[];
 }) {
   if (calculations.length === 0) return null;
   return (
@@ -175,28 +175,14 @@ function CalculationCards({
       <div className="mt-3 space-y-2">
         {calculations.map((calculation) => (
           <details
-            key={calculation.id}
+            key={calculation.calculationId}
             className="rounded-xl border border-[var(--border)] px-4 py-3"
           >
             <summary className="cursor-pointer text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)]">
-              {calculation.tool} ·{" "}
-              {Object.entries(calculation.result)
-                .map(([key, value]) => `${key}: ${String(value)}`)
-                .join(" · ")}
+              {calculation.title} · {calculation.result}
+              {calculation.unit ? ` ${calculation.unit}` : ""}
             </summary>
             <dl className="mt-3 grid gap-2 text-xs leading-6 text-[var(--muted)]">
-              <div>
-                <dt className="font-medium text-[var(--ink)]">公式</dt>
-                <dd>
-                  {calculation.formulaId} · v{calculation.formulaVersion}
-                </dd>
-              </div>
-              <div>
-                <dt className="font-medium text-[var(--ink)]">标准化输入</dt>
-                <dd className="break-words">
-                  {JSON.stringify(calculation.normalizedInputs)}
-                </dd>
-              </div>
               {calculation.assumptions.length > 0 ? (
                 <div>
                   <dt className="font-medium text-[var(--ink)]">假设</dt>

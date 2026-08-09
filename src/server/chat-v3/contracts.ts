@@ -33,7 +33,8 @@ export const inputMessagePartSchema = z.discriminatedUnion("type", [
     url: z
       .url()
       .max(2_048)
-      .refine((url) => new URL(url).protocol === "https:"),
+      .refine((url) => new URL(url).protocol === "https:")
+      .refine((url) => !hasSensitiveUrlParameters(new URL(url))),
     label: z.string().trim().min(1).max(240).optional()
   }),
   z.object({
@@ -47,13 +48,29 @@ export const inputMessagePartsSchema = z
   .min(1)
   .max(16)
   .superRefine((parts, context) => {
-    const attachmentCount = parts.filter(
-      (part) => part.type === "attachment"
-    ).length;
+    const attachments = parts.filter((part) => part.type === "attachment");
+    const attachmentCount = attachments.length;
     if (attachmentCount > MAX_CHAT_ATTACHMENTS_PER_MESSAGE) {
       context.addIssue({
         code: "custom",
         message: `每条消息最多包含 ${MAX_CHAT_ATTACHMENTS_PER_MESSAGE} 个附件。`
+      });
+    }
+    const attachmentIds = attachments.map((part) => part.attachmentId);
+    if (new Set(attachmentIds).size !== attachmentIds.length) {
+      context.addIssue({
+        code: "custom",
+        message: "同一条消息不能重复引用相同附件。"
+      });
+    }
+    const textCharacters = parts.reduce(
+      (total, part) => total + (part.type === "text" ? part.text.length : 0),
+      0
+    );
+    if (textCharacters > MAX_CHAT_TEXT_CHARACTERS) {
+      context.addIssue({
+        code: "custom",
+        message: `每条消息的文字总长度不能超过 ${MAX_CHAT_TEXT_CHARACTERS} 个字符。`
       });
     }
   });
@@ -160,4 +177,16 @@ export function normalizeStoredMessageParts(
     return parts as MessagePart[];
   }
   return content.trim() ? [{ type: "text", text: content }] : [];
+}
+
+function hasSensitiveUrlParameters(url: URL): boolean {
+  for (const key of url.searchParams.keys()) {
+    if (
+      /^(?:x-amz-|x-oss-)/iu.test(key) ||
+      /^(?:signature|ossaccesskeyid|accesskeyid|expires|token)$/iu.test(key)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }

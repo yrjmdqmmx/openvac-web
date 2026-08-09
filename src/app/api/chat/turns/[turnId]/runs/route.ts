@@ -1,4 +1,4 @@
-import { postAgentActionV2 } from "@/server/agent/http-v2";
+import { postAgentActionV3 } from "@/server/agent/http-v2";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,5 +9,5 @@ export async function POST(
   context: { params: Promise<{ turnId: string }> }
 ) {
   const { turnId } = await context.params;
-  return postAgentActionV2(request, turnId);
+  return postAgentActionV3(request, turnId);
 }

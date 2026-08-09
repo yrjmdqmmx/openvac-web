@@ -47,7 +47,7 @@ import {
   reserveModelAttemptQuota,
   type QuotaReservation
 } from "@/server/quota";
-import { agentResponsesV2Enabled, postAgentV2 } from "@/server/agent/http-v2";
+import { agentResponsesV3Enabled, postAgentV3 } from "@/server/agent/http-v2";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -66,15 +66,15 @@ type PersistedTurn = {
 };
 
 export async function POST(request: Request) {
-  if (await agentResponsesV2Enabled()) {
+  if (await agentResponsesV3Enabled()) {
     const envelope = (await request
       .clone()
       .json()
       .catch(() => null)) as {
       protocolVersion?: unknown;
     } | null;
-    if (envelope?.protocolVersion === 2) {
-      return postAgentV2(request);
+    if (envelope?.protocolVersion === 2 || envelope?.protocolVersion === 3) {
+      return postAgentV3(request);
     }
   }
   return postLegacyChat(request);

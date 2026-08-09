@@ -1,3 +1,11 @@
+import type {
+  AnswerBlock,
+  AnswerV3,
+  ArtifactPart,
+  MessagePart,
+  VerifiedLinkPart
+} from "./chat-v3";
+
 export type RiskLevel = "low" | "medium" | "high";
 
 export type RequestedAgentMode = "auto" | "deep";
@@ -51,6 +59,19 @@ export type CalculationResult = {
   sourceIds: string[];
 };
 
+/**
+ * Browser-safe projection of a deterministic calculation. Internal tool,
+ * formula, input and result keys deliberately never cross the server boundary.
+ */
+export type PublicCalculation = {
+  calculationId: string;
+  title: string;
+  result: string;
+  unit?: string;
+  assumptions: string[];
+  warnings: string[];
+};
+
 export type ContextDisclosure = {
   strategy: "full" | "summarized" | "truncated";
   includedMessages: number;
@@ -92,6 +113,9 @@ export type AnswerMeta = {
   webSearched: boolean;
   citations: Citation[];
   answer?: AnswerV2;
+  answerV3?: AnswerV3;
+  verifiedLinks?: VerifiedLinkPart[];
+  artifacts?: ArtifactPart[];
   turnId?: string;
   runId?: string;
   answerVersion?: number;
@@ -100,7 +124,7 @@ export type AnswerMeta = {
   webMode?: WebMode;
   latencyMs?: number;
   context?: ContextDisclosure;
-  calculations?: CalculationResult[];
+  calculations?: PublicCalculation[];
   incomplete?: boolean;
 };
 
@@ -114,6 +138,7 @@ export type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  parts?: MessagePart[];
   status?: "streaming" | "completed" | "incomplete" | "error";
   meta?: AnswerMeta;
 };
@@ -177,13 +202,17 @@ export type ChatStreamEvent =
     })
   | (SequencedRunEvent & {
       type: "tool.started" | "tool.completed" | "tool.failed";
-      tool: PublicToolKind;
       label: string;
     })
   | (SequencedRunEvent & {
       type: "answer.section.committed";
       section: AnswerSectionName;
       value: AnswerSectionValue;
+    })
+  | (SequencedRunEvent & {
+      type: "answer.block.committed";
+      block: AnswerBlock;
+      index: number;
     })
   | (SequencedRunEvent & {
       type: "citation.committed";
@@ -195,7 +224,7 @@ export type ChatStreamEvent =
       turnId: string;
       messageId: string;
       answerVersion: number;
-      answer: AnswerV2;
+      answer: AnswerV2 | AnswerV3;
       meta: AnswerMeta;
     })
   | (SequencedRunEvent & {

@@ -51,6 +51,43 @@ export interface ModelProvider {
   stream(request: ModelStreamRequest): AsyncIterable<ModelStreamEvent>;
 }
 
+export type VisionImageMimeType = "image/jpeg" | "image/png";
+
+export interface VisionImage {
+  bytes: Uint8Array;
+  mimeType: VisionImageMimeType;
+}
+
+export interface VisionRequest {
+  prompt: string;
+  images: VisionImage[];
+  systemPrompt?: string;
+  maxOutputTokens?: number;
+  signal?: AbortSignal;
+}
+
+export interface VisionResult {
+  text: string;
+  usage?: ModelUsage;
+}
+
+export interface VisionCapabilities {
+  protocol: "openai-chat-completions";
+  imageMimeTypes: readonly VisionImageMimeType[];
+  maxImages: number;
+  maxImageBytes: number;
+  maxTotalImageBytes: number;
+  maxResponseBytes: number;
+  providerMetadataExposed: false;
+}
+
+export interface VisionProvider {
+  readonly id: string;
+  readonly model: string;
+  readonly capabilities: VisionCapabilities;
+  analyze(request: VisionRequest): Promise<VisionResult>;
+}
+
 export type ResponsesReasoningEffort =
   "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 

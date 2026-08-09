@@ -15,43 +15,47 @@ import {
   type ResponsesStreamRequest,
   type ResponsesUsage
 } from "@/server/providers";
+import type { DocumentParser, VisionProvider } from "@/server/providers";
 import type {
   AgentStage,
-  AnswerSectionName,
-  AnswerSectionValue,
-  AnswerV2,
+  CalculationResult,
   Citation,
-  PublicToolKind,
   RequestedAgentMode,
   ResolvedAgentMode,
   RiskLevel,
   WebMode
 } from "@/types/chat";
+import type {
+  AnswerBlock,
+  AnswerV3,
+  ArtifactPart,
+  VerifiedLinkPart
+} from "@/types/chat-v3";
 
 import {
-  ANSWER_V2_JSON_SCHEMA,
-  answerSections,
-  answerV2Schema
-} from "./answer-v2";
+  ANSWER_V3_JSON_SCHEMA,
+  answerV3Blocks,
+  buildDeterministicCalculationAnswerV3,
+  buildDeterministicSafeAnswerV3,
+  collectAnswerV3References,
+  requiresExpertAnswer,
+  validateAnswerV3
+} from "./answer-v3";
 import {
-  AnswerValidator,
-  buildDeterministicCalculationAnswer,
-  buildDeterministicSafeAnswer,
-  requiresGroundedEvidence,
-  shouldPreferDeterministicCalculationAnswer
-} from "./answer-validator";
-import {
-  AGENT_V2_INSTRUCTIONS,
+  AGENT_V3_INSTRUCTIONS,
   ContextBuilder,
   estimateTokens
 } from "./context-builder";
 import { EvidenceRegistry } from "./evidence-registry";
+import { localizeCalculation } from "./calculation-localization";
 import {
   agentRunBudgetProfile,
   effectiveAgentRunTimeoutMs,
   shouldUseWeb
 } from "./mode-policy";
 import { RunStore, type CreatedRun } from "./run-store";
+import type { ArtifactStorage } from "./artifact-tools";
+import type { AttachmentStorage } from "./attachment-tools";
 import { ToolRegistry, type ToolExecutionResult } from "./tool-registry";
 import { WebEvidenceService } from "./web-evidence";
 
@@ -64,19 +68,18 @@ export type OrchestratorEvent =
   | {
       type: "tool";
       status: "started" | "completed" | "failed";
-      tool: PublicToolKind;
       label: string;
     }
   | {
-      type: "section";
-      section: AnswerSectionName;
-      value: AnswerSectionValue;
+      type: "block";
+      block: AnswerBlock;
+      index: number;
     }
   | { type: "citation"; citation: Citation };
 
 export type OrchestratorResult = {
   status: "completed" | "incomplete";
-  answer: AnswerV2;
+  answer: AnswerV3;
   content: string;
   meta: Awaited<ReturnType<RunStore["complete"]>>["meta"];
 };
@@ -89,11 +92,17 @@ export type AgentRunCounters = {
   repairs: number;
 };
 
+export type AgentRunOrchestratorOptions = {
+  attachmentStorage?: AttachmentStorage;
+  artifactStorage?: ArtifactStorage;
+  documentParser?: DocumentParser;
+  visionProvider?: VisionProvider;
+};
+
 export class AgentRunOrchestrator {
-  private readonly validator = new AnswerValidator();
   private readonly contextBuilder = new ContextBuilder();
   private readonly evidence = new EvidenceRegistry();
-  private readonly tools = new ToolRegistry(this.evidence);
+  private tools!: ToolRegistry;
   private readonly calculations = new Map<
     string,
     ToolExecutionResult["calculations"][number]
@@ -106,12 +115,15 @@ export class AgentRunOrchestrator {
   private repairs = 0;
   private toolSequence = 0;
   private webSearched = false;
+  private readonly verifiedLinks = new Map<string, VerifiedLinkPart>();
+  private readonly artifacts = new Map<string, ArtifactPart>();
   private readonly invocationByPhase = new Map<string, string>();
 
   constructor(
     private readonly provider: ResponsesProvider,
     private readonly store: RunStore,
-    private readonly emit: (event: OrchestratorEvent) => void
+    private readonly emit: (event: OrchestratorEvent) => void,
+    private readonly adapters: AgentRunOrchestratorOptions = {}
   ) {}
 
   get counters(): AgentRunCounters {
@@ -141,6 +153,16 @@ export class AgentRunOrchestrator {
     const timeoutSignal = AbortSignal.timeout(modeTimeoutMs);
     const signal = AbortSignal.any([input.signal, timeoutSignal]);
 
+    this.tools = new ToolRegistry(this.evidence, {
+      userId: input.userId,
+      conversationId: input.run.conversationId,
+      turnId: input.run.turnId,
+      question: input.run.question,
+      inputParts: input.run.inputParts,
+      signal,
+      ...this.adapters
+    });
+
     this.stage("analyzing", "正在分析问题风险与所需依据…");
     signal.throwIfAborted();
     await this.proactiveKnowledgeSearch(input.run, signal);
@@ -165,7 +187,8 @@ export class AgentRunOrchestrator {
       question: input.run.question,
       mode: input.resolvedMode,
       action: input.run.action,
-      evidence: this.evidence
+      evidence: this.evidence,
+      inputParts: input.run.inputParts
     });
     let currentInput = context.input;
     let outputText = "";
@@ -227,9 +250,9 @@ export class AgentRunOrchestrator {
       signal
     });
     if (incomplete && !answer) {
-      answer = buildDeterministicSafeAnswer(
+      answer = buildDeterministicSafeAnswerV3(
         input.riskLevel,
-        "模型输出在完整 AnswerV2 形成前中断，可使用“继续”恢复。"
+        "模型输出在完整 Answer V3 形成前中断，可使用“继续”恢复。"
       );
     }
     if (!answer) {
@@ -240,15 +263,12 @@ export class AgentRunOrchestrator {
       );
     }
 
-    const usedEvidenceIds = [
-      ...answer.conclusion.flatMap((claim) => claim.evidenceIds),
-      ...answer.evidence.flatMap((claim) => claim.evidenceIds)
-    ];
-    // Low and medium risk sections become visible only after each whole
-    // section validates. High-risk answers reach this point only after the
-    // entire document passes the safety boundary.
-    for (const section of answerSections(answer)) {
-      this.emit({ type: "section", ...section });
+    const references = collectAnswerV3References(answer);
+    const usedEvidenceIds = references.evidenceIds;
+    // A block becomes visible only after the complete adaptive answer passes
+    // schema, evidence, reference and safety validation.
+    for (const { block, index } of answerV3Blocks(answer)) {
+      this.emit({ type: "block", block, index });
     }
     for (const citation of this.evidence.citations(usedEvidenceIds)) {
       this.emit({ type: "citation", citation });
@@ -266,7 +286,10 @@ export class AgentRunOrchestrator {
       webSearched: this.webSearched,
       evidence: this.evidence,
       usedEvidenceIds,
-      calculations: [...this.calculations.values()],
+      verifiedLinks: [...this.verifiedLinks.values()].filter((link) =>
+        references.linkIds.includes(link.linkId)
+      ),
+      artifacts: [...this.artifacts.values()],
       context: context.disclosure,
       usage: finalUsage,
       latencyMs: Date.now() - startedAt,
@@ -297,7 +320,6 @@ export class AgentRunOrchestrator {
       arguments: args
     });
     this.toolCalls += 1;
-    this.toolRounds = 1;
     await this.recordTool(
       run,
       1,
@@ -420,6 +442,12 @@ export class AgentRunOrchestrator {
           for (const calculation of result.calculations) {
             this.calculations.set(calculation.id, calculation);
           }
+          for (const link of result.verifiedLinks) {
+            this.verifiedLinks.set(link.linkId, link);
+          }
+          for (const artifact of result.artifacts) {
+            this.artifacts.set(artifact.artifactId, artifact);
+          }
           await this.recordTool(
             run,
             this.toolRounds,
@@ -479,53 +507,62 @@ export class AgentRunOrchestrator {
     currentInput: ResponsesInputItem[];
     outputText: string;
     signal: AbortSignal;
-  }): Promise<AnswerV2 | undefined> {
-    const preferCalculationAnswer = shouldPreferDeterministicCalculationAnswer(
-      input.riskLevel,
-      this.calculations.size
-    );
+  }): Promise<AnswerV3 | undefined> {
+    const preferCalculationAnswer =
+      input.riskLevel !== "high" && this.calculations.size > 0;
     const calculationAnswer = () =>
-      buildDeterministicCalculationAnswer([...this.calculations.values()]);
-    const parsedJson = safeJson(input.outputText);
-    let parsed = answerV2Schema.safeParse(parsedJson);
-    if (!parsed.success) {
+      buildDeterministicCalculationAnswerV3(
+        [...this.calculations.values()],
+        input.riskLevel === "medium" ? "medium" : "low"
+      );
+    const validate = (value: unknown) =>
+      validateAnswerV3({
+        value: localizeKnownCalculationBlocks(value, this.calculations),
+        riskLevel: input.riskLevel,
+        question: input.run.question,
+        requiresExpert: requiresExpertAnswer(
+          input.run.question,
+          input.riskLevel
+        ),
+        knownEvidenceIds: this.evidence.list().map((entry) => entry.id),
+        knownLinkIds: this.verifiedLinks.keys(),
+        knownArtifactIds: this.artifacts.keys(),
+        knownCalculationIds: this.calculations.keys(),
+        forbiddenVisibleTerms: [...this.calculations.values()].flatMap(
+          (calculation) => [
+            calculation.tool,
+            calculation.formulaId,
+            calculation.formulaVersion,
+            ...Object.keys(calculation.normalizedInputs),
+            ...Object.keys(calculation.result)
+          ]
+        ),
+        verifiedEvidenceIds: this.evidence
+          .list()
+          .filter(
+            (entry) =>
+              entry.trustTier === "tier_a" &&
+              ["reviewed", "runtime_verified"].includes(entry.reviewStatus)
+          )
+          .map((entry) => entry.id)
+      });
+    let validated = validate(safeJson(input.outputText));
+    if (!validated.valid) {
       // Local calculation results have already passed strict schema and
       // applicability validation. Prefer the server-owned representation over
       // spending the remaining automatic-run budget on repairing model JSON.
       if (preferCalculationAnswer) return calculationAnswer();
-      const repaired = await this.repair(
-        input,
-        parsed.error.issues.map((issue) => issue.message)
-      );
-      parsed = answerV2Schema.safeParse(safeJson(repaired));
-      if (!parsed.success) return undefined;
+      if (input.riskLevel === "high") {
+        return buildDeterministicSafeAnswerV3(
+          input.riskLevel,
+          "生成内容未通过高风险语义安全边界。"
+        );
+      }
+      const repaired = await this.repair(input, validated.errors);
+      validated = validate(safeJson(repaired));
     }
-    const validated = this.validator.validate({
-      value: parsed.data,
-      evidence: this.evidence,
-      riskLevel: input.riskLevel,
-      calculationIds: new Set(this.calculations.keys()),
-      requiresEvidence: requiresGroundedEvidence(input.run.question)
-    });
     if (validated.valid) return validated.answer;
-    if (input.riskLevel === "high") {
-      return buildDeterministicSafeAnswer(
-        input.riskLevel,
-        "生成内容未通过高风险语义安全边界。"
-      );
-    }
     if (preferCalculationAnswer) return calculationAnswer();
-    if (this.repairs > 0) return undefined;
-    const repaired = await this.repair(input, validated.errors);
-    const repairedJson = safeJson(repaired);
-    const second = this.validator.validate({
-      value: repairedJson,
-      evidence: this.evidence,
-      riskLevel: input.riskLevel,
-      calculationIds: new Set(this.calculations.keys()),
-      requiresEvidence: requiresGroundedEvidence(input.run.question)
-    });
-    if (second.valid) return second.answer;
     return undefined;
   }
 
@@ -551,10 +588,12 @@ export class AgentRunOrchestrator {
         type: "message",
         role: "user",
         content: JSON.stringify({
-          task: "Repair the candidate into valid openvac.answer.v2 JSON. Do not add new facts, citations, or calculations.",
+          task: "Repair the candidate into valid openvac.answer.v3 JSON. Do not add new facts, citations, links, artifacts, or calculations.",
           validationErrors: errors.slice(0, 20),
           allowedEvidenceIds: this.evidence.list().map((entry) => entry.id),
           allowedCalculationIds: [...this.calculations.keys()],
+          allowedLinkIds: [...this.verifiedLinks.keys()],
+          allowedArtifactIds: [...this.artifacts.keys()],
           candidate: input.outputText.slice(0, 32_000)
         })
       }
@@ -637,8 +676,8 @@ export class AgentRunOrchestrator {
           : "low",
       textFormat: {
         type: "json_schema",
-        name: "openvac_answer_v2",
-        schema: ANSWER_V2_JSON_SCHEMA as unknown as Record<string, unknown>,
+        name: "openvac_answer_v3",
+        schema: ANSWER_V3_JSON_SCHEMA as unknown as Record<string, unknown>,
         strict: true
       },
       maxOutputTokens: readPositiveInteger(
@@ -649,7 +688,7 @@ export class AgentRunOrchestrator {
       signal
     };
     // Instructions are kept out of untrusted input and applied on every call.
-    request.instructions = AGENT_V2_INSTRUCTIONS;
+    request.instructions = AGENT_V3_INSTRUCTIONS;
     const inputBudget = budgetProfile.inputTokenBudget;
     const estimatedInputTokens = estimateTokens(
       `${request.instructions}\n${JSON.stringify(request.input)}`
@@ -771,10 +810,10 @@ export class AgentRunOrchestrator {
 
   private tool(
     status: "started" | "completed" | "failed",
-    tool: PublicToolKind,
+    _category: string,
     label: string
   ): void {
-    this.emit({ type: "tool", status, tool, label });
+    this.emit({ type: "tool", status, label });
   }
 }
 
@@ -783,6 +822,36 @@ type CollectedModelResponse = {
   calls: Array<{ callId: string; name: string; arguments: string }>;
   finish: Extract<ResponsesStreamEvent, { type: "finish" }>;
 };
+
+export function localizeKnownCalculationBlocks(
+  value: unknown,
+  calculations: ReadonlyMap<string, CalculationResult>
+): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.blocks)) return value;
+  return {
+    ...record,
+    blocks: record.blocks.map((block) => {
+      if (typeof block !== "object" || block === null || Array.isArray(block)) {
+        return block;
+      }
+      const blockRecord = block as Record<string, unknown>;
+      if (
+        blockRecord.type !== "calculation" ||
+        typeof blockRecord.calculationId !== "string"
+      ) {
+        return block;
+      }
+      const calculation = calculations.get(blockRecord.calculationId);
+      return calculation
+        ? { type: "calculation" as const, ...localizeCalculation(calculation) }
+        : block;
+    })
+  };
+}
 
 function safeJson(value: string): unknown {
   try {
@@ -822,11 +891,13 @@ function deterministicToolError(
     },
     evidenceIds: [],
     calculations: [],
+    verifiedLinks: [],
+    artifacts: [],
     missingInputs: []
   };
 }
 
-function publicToolKind(name: string): PublicToolKind {
+function publicToolKind(name: string): string {
   if (name === "search_knowledge" || name === "open_evidence_excerpt") {
     return "knowledge_search";
   }
@@ -837,18 +908,53 @@ function toolLabel(
   name: string,
   status: "started" | "completed" | "failed"
 ): string {
-  if (status === "failed") {
-    return name === "search_knowledge" || name === "open_evidence_excerpt"
-      ? "知识工具未返回可用结果"
+  const labels: Record<
+    string,
+    { started: string; completed: string; failed: string }
+  > = {
+    search_knowledge: {
+      started: "正在补充检索知识",
+      completed: "知识检索完成",
+      failed: "知识检索未返回可用结果"
+    },
+    open_evidence_excerpt: {
+      started: "正在核对证据摘录",
+      completed: "证据摘录已核对",
+      failed: "证据摘录暂不可用"
+    },
+    read_verified_url: {
+      started: "正在安全核验链接内容",
+      completed: "链接内容已核验",
+      failed: "链接未通过安全核验"
+    },
+    search_attachment: {
+      started: "正在检索附件内容",
+      completed: "附件检索完成",
+      failed: "附件检索未返回可用内容"
+    },
+    open_attachment_excerpt: {
+      started: "正在核对附件摘录",
+      completed: "附件摘录已核对",
+      failed: "附件摘录暂不可用"
+    },
+    analyze_image: {
+      started: "正在分析图片",
+      completed: "图片分析完成",
+      failed: "图片暂时无法分析"
+    },
+    create_artifact: {
+      started: "正在准备所需产物",
+      completed: "产物已创建",
+      failed: "产物暂时无法创建"
+    }
+  };
+  const label = labels[name];
+  if (label) return label[status];
+  return status === "started"
+    ? "正在执行确定性工程计算"
+    : status === "completed"
+      ? "工程计算完成"
       : "工程计算缺少参数或超出已验证范围";
-  }
-  if (name === "search_knowledge") {
-    return status === "started" ? "正在补充检索知识" : "知识检索完成";
-  }
-  if (name === "open_evidence_excerpt") {
-    return status === "started" ? "正在核对证据摘录" : "证据摘录已核对";
-  }
-  return status === "started" ? "正在执行确定性工程计算" : "工程计算完成";
 }
 
 function readPositiveInteger(name: string, fallback: number): number {

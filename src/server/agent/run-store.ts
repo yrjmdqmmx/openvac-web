@@ -15,15 +15,22 @@ import type { ResponsesUsage } from "@/server/providers";
 import type {
   AnswerMeta,
   AnswerV2,
-  CalculationResult,
   Citation,
   RequestedAgentMode,
   ResolvedAgentMode,
   RiskLevel,
   WebMode
 } from "@/types/chat";
+import type {
+  AnswerV3,
+  ArtifactPart,
+  InputMessagePart,
+  VerifiedLinkPart
+} from "@/types/chat-v3";
+import { inputMessagePartsSchema } from "@/server/chat-v3/contracts";
 
-import { renderAnswerV2 } from "./answer-v2";
+import { safeParseAnswerV2, sanitizeStoredAnswerV2 } from "./answer-v2";
+import { renderAnswerV3, safeParseAnswerV3 } from "./answer-v3";
 import { EvidenceRegistry } from "./evidence-registry";
 import { recoverStaleAgentRuns } from "./retention";
 
@@ -37,6 +44,7 @@ export type CreatedRun = {
   assistantMessageId: string;
   answerVersion: number;
   question: string;
+  inputParts: InputMessagePart[];
   action: AgentAction;
 };
 
@@ -54,7 +62,7 @@ export type StoredRunReplay = {
   messageId: string;
   answerVersion: number;
   status: "completed" | "incomplete";
-  answer: AnswerV2;
+  answer: AnswerV2 | AnswerV3;
   meta: AnswerMeta;
 };
 
@@ -107,6 +115,7 @@ export class RunStore {
     userId: string;
     conversationId?: string;
     question: string;
+    inputParts?: InputMessagePart[];
     clientRequestId: string;
     requestedMode: RequestedAgentMode;
     resolvedMode: ResolvedAgentMode;
@@ -186,6 +195,11 @@ export class RunStore {
           content: input.question,
           clientRequestId: input.clientRequestId,
           turnId,
+          metadata: {
+            inputParts: input.inputParts ?? [
+              { type: "text", text: input.question }
+            ]
+          },
           completedAt: now
         },
         {
@@ -241,6 +255,9 @@ export class RunStore {
           assistantMessageId,
           answerVersion: 1,
           question: input.question,
+          inputParts: input.inputParts ?? [
+            { type: "text", text: input.question }
+          ],
           action: "initial" as const
         }
       };
@@ -272,7 +289,8 @@ export class RunStore {
           id: conversationTurns.id,
           conversationId: conversationTurns.conversationId,
           userMessageId: conversationTurns.userMessageId,
-          question: messages.content
+          question: messages.content,
+          metadata: messages.metadata
         })
         .from(conversationTurns)
         .innerJoin(messages, eq(conversationTurns.userMessageId, messages.id))
@@ -366,6 +384,7 @@ export class RunStore {
           assistantMessageId,
           answerVersion,
           question: turn.question,
+          inputParts: storedInputParts(turn.metadata, turn.question),
           action: input.action
         }
       };
@@ -375,7 +394,7 @@ export class RunStore {
   async complete(input: {
     userId: string;
     run: CreatedRun;
-    answer: AnswerV2;
+    answer: AnswerV3;
     riskLevel: RiskLevel;
     requestedMode: RequestedAgentMode;
     resolvedMode: ResolvedAgentMode;
@@ -383,7 +402,8 @@ export class RunStore {
     webSearched: boolean;
     evidence: EvidenceRegistry;
     usedEvidenceIds: string[];
-    calculations: CalculationResult[];
+    verifiedLinks?: VerifiedLinkPart[];
+    artifacts?: ArtifactPart[];
     context: AnswerMeta["context"];
     usage?: ResponsesUsage;
     latencyMs: number;
@@ -400,17 +420,22 @@ export class RunStore {
     const uniqueEvidenceIds = [...new Set(input.usedEvidenceIds)].filter((id) =>
       input.evidence.has(id)
     );
-    const citationNumbers = new Map(
-      uniqueEvidenceIds.map((id, index) => [id, index + 1])
+    const visibleEvidenceIds = uniqueEvidenceIds.filter(
+      (id) => input.evidence.get(id)?.citationVisible === true
     );
-    const content = renderAnswerV2(input.answer, citationNumbers);
-    const visibleCitations = input.evidence.citations(uniqueEvidenceIds);
+    const citationNumbers = new Map(
+      visibleEvidenceIds.map((id, index) => [id, index + 1])
+    );
+    const content = renderAnswerV3(input.answer, citationNumbers);
+    const visibleCitations = input.evidence.citations(visibleEvidenceIds);
     const meta: AnswerMeta = {
       riskLevel: input.riskLevel,
       missingInputs: input.answer.missingInputs,
       webSearched: input.webSearched,
       citations: visibleCitations,
-      answer: input.answer,
+      answerV3: input.answer,
+      verifiedLinks: input.verifiedLinks ?? [],
+      artifacts: input.artifacts ?? [],
       turnId: input.run.turnId,
       runId: input.run.runId,
       answerVersion: input.run.answerVersion,
@@ -419,7 +444,20 @@ export class RunStore {
       webMode: input.webMode,
       latencyMs: input.latencyMs,
       context: input.context,
-      calculations: input.calculations,
+      calculations: input.answer.blocks.flatMap((block) =>
+        block.type === "calculation"
+          ? [
+              {
+                calculationId: block.calculationId,
+                title: block.title,
+                result: block.result,
+                unit: block.unit,
+                assumptions: block.assumptions,
+                warnings: block.warnings
+              }
+            ]
+          : []
+      ),
       incomplete: status === "incomplete"
     };
 
@@ -447,7 +485,7 @@ export class RunStore {
         .set({
           content,
           status,
-          answerSchemaVersion: "openvac.answer.v2",
+          answerSchemaVersion: "openvac.answer.v3",
           answerPayload: input.answer as Record<string, unknown>,
           inputTokens: input.usage?.inputTokens,
           outputTokens: input.usage?.outputTokens,
@@ -464,15 +502,16 @@ export class RunStore {
             resolvedMode: input.resolvedMode,
             webMode: input.webMode,
             context: input.context,
-            calculations: input.calculations,
+            verifiedLinks: input.verifiedLinks ?? [],
+            artifacts: input.artifacts ?? [],
             incomplete: status === "incomplete"
           }
         })
         .where(eq(messages.id, input.run.assistantMessageId));
 
-      for (const [index, id] of uniqueEvidenceIds.entries()) {
+      for (const [index, id] of visibleEvidenceIds.entries()) {
         const entry = input.evidence.get(id);
-        if (!entry) continue;
+        if (!entry?.citationVisible) continue;
         const [created] = await tx
           .insert(citations)
           .values({
@@ -757,7 +796,7 @@ async function findRunByClientRequest(
   }
   if (
     (run.status === "completed" || run.status === "incomplete") &&
-    isAnswerV2(run.answerPayload)
+    parseStoredAnswer(run.answerPayload) !== undefined
   ) {
     const storedCitations = await tx
       .select({
@@ -774,19 +813,53 @@ async function findRunByClientRequest(
       .where(eq(messageCitations.messageId, run.assistantMessageId))
       .orderBy(asc(messageCitations.ordinal));
     const storedMeta = run.metadata as Partial<AnswerMeta>;
+    const answer = parseStoredAnswer(run.answerPayload);
+    if (!answer) return { kind: "request_used" };
     const meta: AnswerMeta = {
-      riskLevel: storedMeta.riskLevel ?? "low",
-      missingInputs: run.answerPayload.missingInputs,
+      riskLevel: safeRiskLevel(storedMeta.riskLevel),
+      missingInputs: answer.missingInputs,
       webSearched: storedMeta.webSearched ?? false,
-      ...storedMeta,
       citations: storedCitations.flatMap((citation) => {
         const value = restoreCitation(citation);
         return value ? [value] : [];
       }),
-      answer: run.answerPayload,
+      ...(answer.schemaVersion === "openvac.answer.v2"
+        ? { answer }
+        : { answerV3: answer }),
       runId: run.id,
       turnId: run.turnId,
       answerVersion: run.version,
+      ...(safeRequestedMode(storedMeta.requestedMode)
+        ? { requestedMode: safeRequestedMode(storedMeta.requestedMode) }
+        : {}),
+      ...(safeResolvedMode(storedMeta.resolvedMode)
+        ? { resolvedMode: safeResolvedMode(storedMeta.resolvedMode) }
+        : {}),
+      ...(safeWebMode(storedMeta.webMode)
+        ? { webMode: safeWebMode(storedMeta.webMode) }
+        : {}),
+      ...(safeNonNegativeInteger(storedMeta.latencyMs) !== undefined
+        ? { latencyMs: safeNonNegativeInteger(storedMeta.latencyMs) }
+        : {}),
+      verifiedLinks: safeStoredVerifiedLinks(storedMeta.verifiedLinks),
+      artifacts: safeStoredArtifacts(storedMeta.artifacts),
+      calculations:
+        answer.schemaVersion === "openvac.answer.v3"
+          ? answer.blocks.flatMap((block) =>
+              block.type === "calculation"
+                ? [
+                    {
+                      calculationId: block.calculationId,
+                      title: block.title,
+                      result: block.result,
+                      unit: block.unit,
+                      assumptions: block.assumptions,
+                      warnings: block.warnings
+                    }
+                  ]
+                : []
+            )
+          : [],
       incomplete: run.status === "incomplete"
     };
     return {
@@ -799,7 +872,7 @@ async function findRunByClientRequest(
         messageId: run.assistantMessageId,
         answerVersion: run.version,
         status: run.status,
-        answer: run.answerPayload,
+        answer,
         meta
       }
     };
@@ -866,12 +939,138 @@ function restoreCitation(input: {
   };
 }
 
-function isAnswerV2(value: unknown): value is AnswerV2 {
+function parseStoredAnswer(value: unknown): AnswerV2 | AnswerV3 | undefined {
+  const v2 = safeParseAnswerV2(value);
   return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as Record<string, unknown>).schemaVersion === "openvac.answer.v2"
+    (v2 ? sanitizeStoredAnswerV2(v2) : undefined) ?? safeParseAnswerV3(value)
   );
+}
+
+function storedInputParts(
+  metadata: Record<string, unknown>,
+  fallbackText: string
+): InputMessagePart[] {
+  const parsed = inputMessagePartsSchema.safeParse(metadata.inputParts);
+  return parsed.success ? parsed.data : [{ type: "text", text: fallbackText }];
+}
+
+function safeRiskLevel(value: unknown): RiskLevel {
+  return value === "medium" || value === "high" ? value : "low";
+}
+
+function safeRequestedMode(value: unknown): RequestedAgentMode | undefined {
+  return value === "auto" || value === "deep" ? value : undefined;
+}
+
+function safeResolvedMode(value: unknown): ResolvedAgentMode | undefined {
+  return value === "fast" || value === "deep" ? value : undefined;
+}
+
+function safeWebMode(value: unknown): WebMode | undefined {
+  return value === "auto" || value === "always" ? value : undefined;
+}
+
+function safeNonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function safeStoredVerifiedLinks(value: unknown): VerifiedLinkPart[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 64).flatMap((candidate) => {
+    if (typeof candidate !== "object" || candidate === null) return [];
+    const record = candidate as Record<string, unknown>;
+    if (
+      record.type !== "verified_link" ||
+      typeof record.linkId !== "string" ||
+      record.linkId.length < 1 ||
+      record.linkId.length > 160 ||
+      typeof record.label !== "string" ||
+      record.label.length < 1 ||
+      record.label.length > 240 ||
+      typeof record.hostname !== "string" ||
+      typeof record.url !== "string" ||
+      (record.status !== "verified" && record.status !== "unavailable")
+    ) {
+      return [];
+    }
+    let url: URL;
+    try {
+      url = new URL(record.url);
+    } catch {
+      return [];
+    }
+    if (
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      (url.port && url.port !== "443") ||
+      url.hostname !== record.hostname ||
+      hasSensitiveUrlParameters(url)
+    ) {
+      return [];
+    }
+    return [
+      {
+        type: "verified_link" as const,
+        linkId: record.linkId,
+        url: url.href,
+        label: record.label,
+        hostname: record.hostname,
+        status: record.status
+      }
+    ];
+  });
+}
+
+function safeStoredArtifacts(value: unknown): ArtifactPart[] {
+  if (!Array.isArray(value)) return [];
+  const kinds = new Set([
+    "diagnosis_report",
+    "selection_report",
+    "inspection_checklist",
+    "parameter_table"
+  ]);
+  const formats = new Set(["md", "docx", "pdf", "csv"]);
+  const statuses = new Set(["generating", "ready", "failed", "deleted"]);
+  return value.slice(0, 64).flatMap((candidate) => {
+    if (typeof candidate !== "object" || candidate === null) return [];
+    const record = candidate as Record<string, unknown>;
+    if (
+      record.type !== "artifact" ||
+      typeof record.artifactId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+        record.artifactId
+      ) ||
+      typeof record.kind !== "string" ||
+      !kinds.has(record.kind) ||
+      typeof record.title !== "string" ||
+      record.title.length < 1 ||
+      record.title.length > 240 ||
+      !Array.isArray(record.formats) ||
+      record.formats.some(
+        (format) => typeof format !== "string" || !formats.has(format)
+      ) ||
+      typeof record.status !== "string" ||
+      !statuses.has(record.status)
+    ) {
+      return [];
+    }
+    return [record as ArtifactPart];
+  });
+}
+
+function hasSensitiveUrlParameters(url: URL): boolean {
+  for (const key of url.searchParams.keys()) {
+    if (
+      /^(?:x-amz-|x-oss-)/iu.test(key) ||
+      /^(?:signature|ossaccesskeyid|accesskeyid|expires|token)$/iu.test(key)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export class RunStoreError extends Error {

@@ -36,3 +36,21 @@ live in `src/types/chat-v3.ts` and `src/server/chat-v3/contracts.ts`.
   and terminal-version reconciliation.
 - Artifacts/evals own deterministic renderers and the strict automated release
   gate.
+
+## Agent integration points
+
+- `AgentRunOrchestrator` always uses DeepSeek Responses for the final
+  `openvac.answer.v3` reasoning pass. `routeCapabilities` adds Qwen-VL only for
+  image analysis and DocMind only for document parsing.
+- Storage workstreams connect through `AttachmentStorage` and
+  `ArtifactStorage`. The built-in implementations are deliberately
+  unconfigured, fail-closed stubs; the Agent does not create attachment or
+  artifact database tables.
+- Attachment storage returns private bytes and cached text chunks to the
+  server-side tool service. Signed object URLs are not part of either storage
+  interface and must never be returned in stream events or answer metadata.
+- Protocol 3 requests send `parts`. Protocol 2 text requests remain accepted
+  as a compatibility projection, but every newly orchestrated answer is V3.
+- Existing V2 answer payloads and legacy plaintext summaries remain readable.
+  New summaries use `openvac.context.summary.v2` with confirmed facts,
+  unresolved questions, source message IDs, and attachment references.

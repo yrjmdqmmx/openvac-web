@@ -28,6 +28,7 @@ import type {
   ChatMessage,
   ConversationSummary
 } from "@/types/chat";
+import type { AnswerBlock, AnswerV3 } from "@/types/chat-v3";
 
 const CONVERSATION_PAGE_SIZE = 20;
 const CONVERSATION_SEARCH_DEBOUNCE_MS = 250;
@@ -131,7 +132,10 @@ function withAnswerSection(
   }
 }
 
-function renderAnswerForClipboard(answer: AnswerV2): string {
+function renderAnswerForClipboard(answer: AnswerV2 | AnswerV3): string {
+  if (answer.schemaVersion === "openvac.answer.v3") {
+    return answer.blocks.map(renderAnswerBlock).filter(Boolean).join("\n\n");
+  }
   const list = (items: string[]) => items.map((item) => `- ${item}`).join("\n");
   return [
     "## 结论",
@@ -145,6 +149,35 @@ function renderAnswerForClipboard(answer: AnswerV2): string {
     "## 建议下一步",
     list(answer.nextSteps)
   ].join("\n\n");
+}
+
+function renderAnswerBlock(block: AnswerBlock): string {
+  switch (block.type) {
+    case "paragraph":
+      return block.text;
+    case "heading":
+      return `${"#".repeat(block.level)} ${block.text}`;
+    case "list":
+      return block.items
+        .map((item, index) =>
+          block.style === "ordered" ? `${index + 1}. ${item}` : `- ${item}`
+        )
+        .join("\n");
+    case "table":
+      return [
+        block.columns.join(" | "),
+        ...block.rows.map((row) => row.join(" | "))
+      ].join("\n");
+    case "code":
+      return `\`\`\`${block.language ?? ""}\n${block.code}\n\`\`\``;
+    case "callout":
+      return [block.title, block.body].filter(Boolean).join("\n");
+    case "calculation":
+      return `${block.title}：${block.result}${block.unit ? ` ${block.unit}` : ""}`;
+    case "link_reference":
+    case "artifact_reference":
+      return block.label;
+  }
 }
 
 export function problemReportDescriptionForMessage(
@@ -539,6 +572,20 @@ export function ChatWorkspace({
               )
             );
           }
+          if (event.type === "answer.block.committed") {
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === localAssistantId
+                  ? {
+                      ...message,
+                      content: [message.content, renderAnswerBlock(event.block)]
+                        .filter(Boolean)
+                        .join("\n\n")
+                    }
+                  : message
+              )
+            );
+          }
           if (event.type === "citation.committed") {
             setMessages((current) =>
               current.map((message) =>
@@ -660,8 +707,9 @@ export function ChatWorkspace({
                   ...message,
                   id: finalMessageId,
                   status: finalStatus,
-                  content:
-                    finalMeta?.answer && !message.content
+                  content: finalMeta?.answerV3
+                    ? renderAnswerForClipboard(finalMeta.answerV3)
+                    : !message.content && finalMeta?.answer
                       ? renderAnswerForClipboard(finalMeta.answer)
                       : message.content,
                   meta: finalMeta ?? message.meta
@@ -1009,6 +1057,21 @@ export function ChatWorkspace({
                         event.value
                       )
                     }
+                  }
+                : message
+            )
+          );
+        }
+        if (event.type === "answer.block.committed") {
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === localAssistantId ||
+              message.meta?.runId === event.runId
+                ? {
+                    ...message,
+                    content: [message.content, renderAnswerBlock(event.block)]
+                      .filter(Boolean)
+                      .join("\n\n")
                   }
                 : message
             )

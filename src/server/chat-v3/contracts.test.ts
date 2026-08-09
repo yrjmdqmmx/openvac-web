@@ -27,10 +27,37 @@ describe("Agent V3 shared contracts", () => {
     expect(inputMessagePartsSchema.safeParse(parts).success).toBe(false);
   });
 
+  it("rejects duplicate attachment refs and cumulative text overflow", () => {
+    const attachmentId = "00000000-0000-4000-8000-000000000001";
+    expect(
+      inputMessagePartsSchema.safeParse([
+        { type: "attachment", attachmentId },
+        { type: "attachment", attachmentId }
+      ]).success
+    ).toBe(false);
+    expect(
+      inputMessagePartsSchema.safeParse([
+        { type: "text", text: "甲".repeat(9_000) },
+        { type: "text", text: "乙".repeat(9_000) }
+      ]).success
+    ).toBe(false);
+  });
+
   it("rejects unverified protocols", () => {
     expect(
       inputMessagePartsSchema.safeParse([
         { type: "link", url: "http://127.0.0.1/admin" }
+      ]).success
+    ).toBe(false);
+  });
+
+  it("rejects signed or token-bearing URLs before persistence", () => {
+    expect(
+      inputMessagePartsSchema.safeParse([
+        {
+          type: "link",
+          url: "https://example.com/private?X-Amz-Signature=secret"
+        }
       ]).success
     ).toBe(false);
   });
