@@ -84,6 +84,7 @@ describe("Agent V3 staging runtime smoke safety", () => {
     const diagnostic = publicSmokeFailureDiagnostic({
       stage: "chat_terminal",
       caseId: "v3-text-safety-01",
+      step: "final",
       terminalType: "run.failed",
       code: "PROVIDER_TIMEOUT",
       retryable: true,
@@ -94,6 +95,7 @@ describe("Agent V3 staging runtime smoke safety", () => {
       schemaVersion: "openvac.agent-v3-staging-failure.v1",
       stage: "chat_terminal",
       caseId: "v3-text-safety-01",
+      step: "final",
       terminalType: "run.failed",
       code: "PROVIDER_TIMEOUT",
       retryable: true,
@@ -123,18 +125,23 @@ describe("Agent V3 staging runtime smoke safety", () => {
   });
 
   it("recognizes public failed terminals without retaining messages or ids", () => {
-    const terminal = runtimeTerminalFailureDiagnostic("v3-text-safety-01", {
-      type: "run.failed",
-      code: "PROVIDER_TIMEOUT",
-      retryable: true,
-      suggestedAction: "retry",
-      settlement: "released",
-      message: "provider request secret detail",
-      runId: "should-not-be-retained"
-    });
+    const terminal = runtimeTerminalFailureDiagnostic(
+      "v3-text-safety-01",
+      {
+        type: "run.failed",
+        code: "PROVIDER_TIMEOUT",
+        retryable: true,
+        suggestedAction: "retry",
+        settlement: "released",
+        message: "provider request secret detail",
+        runId: "should-not-be-retained"
+      },
+      "history_1"
+    );
     expect(terminal).toEqual({
       stage: "chat_terminal",
       caseId: "v3-text-safety-01",
+      step: "history_1",
       terminalType: "run.failed",
       code: "PROVIDER_TIMEOUT",
       retryable: true,

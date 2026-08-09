@@ -240,6 +240,18 @@ export const ANSWER_V3_JSON_SCHEMA = {
   }
 } as const;
 
+export function answerV3JsonSchemaForRisk(
+  riskLevel: AgentV3RiskLevel
+): Record<string, unknown> {
+  return {
+    ...ANSWER_V3_JSON_SCHEMA,
+    properties: {
+      ...ANSWER_V3_JSON_SCHEMA.properties,
+      riskLevel: { type: "string", const: riskLevel }
+    }
+  };
+}
+
 export type AnswerV3References = {
   evidenceIds: string[];
   linkIds: string[];
@@ -514,6 +526,47 @@ export function buildDeterministicSafeAnswerV3(
   };
 }
 
+export function buildDeterministicAttachmentScopeAnswerV3(
+  question: string,
+  riskLevel: AgentV3RiskLevel
+): AnswerV3 | undefined {
+  if (!isCrossConversationAttachmentRequest(question)) {
+    return undefined;
+  }
+  if (riskLevel === "high") {
+    const safetyAnswer = buildDeterministicSafeAnswerV3(
+      riskLevel,
+      "请在当前会话重新上传需要处理的附件。"
+    );
+    return {
+      ...safetyAnswer,
+      blocks: [
+        {
+          type: "paragraph",
+          text: "附件仅限当前会话使用，不能读取、引用或使用另一个会话中的附件。请在当前会话重新上传需要处理的文件后再继续。",
+          evidenceIds: []
+        },
+        ...safetyAnswer.blocks
+      ]
+    };
+  }
+  return {
+    schemaVersion: "openvac.answer.v3",
+    answerKind: "clarification",
+    riskLevel,
+    blocks: [
+      {
+        type: "paragraph",
+        text: "附件仅限当前会话使用，不能读取、引用或使用另一个会话中的附件。请在当前会话重新上传需要处理的文件后再继续。",
+        evidenceIds: []
+      }
+    ],
+    missingInputs: ["请在当前会话重新上传需要处理的附件。"],
+    usedEvidenceIds: [],
+    usedLinkIds: []
+  };
+}
+
 export function buildDeterministicCalculationAnswerV3(
   calculations: CalculationResult[],
   riskLevel: Exclude<AgentV3RiskLevel, "high"> = "low"
@@ -548,6 +601,27 @@ export function requiresExpertAnswer(
 
 const COMPLEX_QUESTION =
   /(?:故障(?:诊断|原因|排查)|选型|推荐(?:型号|泵)|采购|报价|库存|标准(?:条文|要求|编号)|GB\/T|ISO\s*\d|是否安全|能否继续运行|拆修|带电|联锁|抽空时间|有效抽速|流导|漏率|放气率|工程(?:设计|批准)|\d(?:[\d.,]*\d)?\s*(?:Pa|kPa|mbar|bar|Torr|L\/s|m3\/h|m³\/h|℃|°C|K|mm|cm|m))/iu;
+
+const CROSS_CONVERSATION_ATTACHMENT = new RegExp(
+  [
+    String.raw`(?:另一个|其他|其它|别的|不同)(?:会话|对话)(?:的|中|内|里|中的|内的|里的|所属的)?\s*(?:附件|文件|文档|图片|表格|报告)`,
+    String.raw`(?:附件|文件|文档|图片|表格|报告)(?:属于|来自|位于|在)\s*(?:另一个|其他|其它|别的|不同)(?:会话|对话)`,
+    String.raw`\bcross[-\s]?(?:conversation|chat|thread)[-\s]+(?:attachment|file|document|image|spreadsheet|report)\b`,
+    String.raw`\b(?:another|other|different)\s+(?:conversation|chat|thread)(?:'s|\s+)(?:attachment|file|document|image|spreadsheet|report)\b`,
+    String.raw`\b(?:attachment|file|document|image|spreadsheet|report)\s+(?:from|in|belonging\s+to)\s+(?:another|other|different)\s+(?:conversation|chat|thread)\b`
+  ].join("|"),
+  "iu"
+);
+const ATTACHMENT_ACCESS =
+  /(?:读取|打开|访问|查看|引用|使用|分析|总结|提取|发送|下载|\bread\b|\bopen\b|\baccess\b|\bview\b|\buse\b|\banaly[sz](?:e|ing)\b|\bsummari[sz](?:e|ing)\b|\bextract\b|\bsend\b|\bdownload\b)/iu;
+
+function isCrossConversationAttachmentRequest(question: string): boolean {
+  const normalized = question.normalize("NFKC").replace(/\s+/gu, " ").trim();
+  return (
+    CROSS_CONVERSATION_ATTACHMENT.test(normalized) &&
+    ATTACHMENT_ACCESS.test(normalized)
+  );
+}
 
 const UNSAFE_BODY_TEXT =
   /(?:https?:\/\/|www\.|\[[0-9]+\]|\b(?:provider|tool|tool_call|function_call|formulaId|formulaVersion|normalizedInputs|rawArguments|schemaVersion|evidenceNotice|system\s*prompt)\b|系统提示|内部提示|(?:x-amz|x-oss)-[a-z-]*signature|ossaccesskeyid|(?:signature|expires)=[^\s&]+)/iu;

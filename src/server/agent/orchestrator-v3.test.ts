@@ -5,6 +5,8 @@ import type { AnswerV3 } from "@/types/chat-v3";
 
 import {
   localizeKnownCalculationBlocks,
+  buildAgentV3InstructionsForRisk,
+  candidateUsesOnlyKnownGrounding,
   persistAndPublishFinalAnswer,
   type OrchestratorEvent
 } from "./orchestrator";
@@ -34,6 +36,45 @@ const finalCitation: Citation = {
 };
 
 describe("Agent V3 orchestrator output boundary", () => {
+  it("binds every model request to the server-assessed risk level", () => {
+    const instructions = buildAgentV3InstructionsForRisk("medium");
+
+    expect(instructions).toContain("风险等级已固定为 medium");
+    expect(instructions).toContain("riskLevel 必须原样使用该值");
+    expect(instructions).toContain("不得生成无依据的 expert");
+  });
+
+  it("allows repair only when every candidate grounding id is server-known", () => {
+    const references = (evidenceIds: string[], calculationIds: string[]) => ({
+      evidenceIds,
+      calculationIds
+    });
+
+    expect(
+      candidateUsesOnlyKnownGrounding(references(["E1"], []), ["E1"], [])
+    ).toBe(true);
+    expect(
+      candidateUsesOnlyKnownGrounding(
+        references([], ["calc_1"]),
+        [],
+        ["calc_1"]
+      )
+    ).toBe(true);
+    expect(
+      candidateUsesOnlyKnownGrounding(references(["E999"], []), ["E1"], [])
+    ).toBe(false);
+    expect(
+      candidateUsesOnlyKnownGrounding(
+        references(["E1", "E999"], []),
+        ["E1"],
+        []
+      )
+    ).toBe(false);
+    expect(
+      candidateUsesOnlyKnownGrounding(references([], []), ["E1"], ["calc_1"])
+    ).toBe(false);
+  });
+
   it("publishes final blocks and citations only after atomic completion succeeds", async () => {
     const order: string[] = [];
     const emitted: OrchestratorEvent[] = [];
