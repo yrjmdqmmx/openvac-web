@@ -1,5 +1,9 @@
 # Agent V2 release and rollback
 
+> Historical contract: Agent V3 now directly replaces V2. Use
+> [`agent-v3-release.md`](agent-v3-release.md) for new releases. Keep this file
+> only to understand the previous-image and V2-history rollback boundary.
+
 Agent V2 is deployed as one release and activated atomically. Production does
 not use percentage rollout. The legacy Chat Completions route remains available
 only behind the master switch for an emergency application rollback.

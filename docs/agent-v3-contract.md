@@ -54,3 +54,9 @@ live in `src/types/chat-v3.ts` and `src/server/chat-v3/contracts.ts`.
 - Existing V2 answer payloads and legacy plaintext summaries remain readable.
   New summaries use `openvac.context.summary.v2` with confirmed facts,
   unresolved questions, source message IDs, and attachment references.
+
+## Detailed contracts
+
+See [`agent-v3-artifacts.md`](agent-v3-artifacts.md) for the storage-facing
+interfaces and failure isolation, and [`agent-v3-release.md`](agent-v3-release.md)
+for the direct V2 replacement gate and rollback contract.

@@ -28,6 +28,10 @@ describe("Answer V3 automated release gate", () => {
       expect(gate).toMatchObject({ score: 100, passed: true });
     }
     expect(report.failureIds).toEqual([]);
+    expect(report.models.outputs).toEqual([
+      "deepseek/deepseek-text-fixture@1",
+      "qwen/qwen-vl-fixture@1"
+    ]);
     expect(report.models.qwenJudge).toContain("qwen/");
     expect(report.models.deepseekJudge).toContain("deepseek/");
   }, 30_000);

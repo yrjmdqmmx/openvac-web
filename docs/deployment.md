@@ -233,10 +233,13 @@ historical distinction cannot be reconstructed from the current database.
 
 Migration `0008_agent_v2_responses.sql` adds only Agent V2 tables, enums,
 indexes, foreign keys, and nullable compatibility columns. Keep this migration
-in place when the Agent V2 database switch is disabled; the previous Chat route
-ignores the new schema while Answer V2 history remains readable. Follow the
-same-SHA staging acceptance and atomic cutover procedure in
-[`agent-v2-release.md`](agent-v2-release.md).
+in place after Agent V3 replaces V2; V2 history and the plaintext
+`message.content` projection remain readable during previous-image rollback.
+The separately owned V3 attachment/artifact migration must also be additive
+and backward-compatible. Follow the automated staging acceptance, exact
+same-image-digest production promotion, and previous-image rollback procedure
+in [`agent-v3-release.md`](agent-v3-release.md). Do not interpret that contract
+as authorization or evidence of an actual production deployment.
 
 ### Offline staging bootstrap
 

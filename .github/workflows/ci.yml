@@ -41,6 +41,7 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm knowledge:validate
       - run: pnpm test
+      - run: pnpm eval:answer:v3
       - run: pnpm build
       - name: Verify the production Docker context includes SemaCAD release inputs
         run: |

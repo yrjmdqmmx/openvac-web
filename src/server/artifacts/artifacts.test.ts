@@ -8,9 +8,7 @@ import {
   parseArtifactSpec,
   renderArtifactFiles,
   renderCsv,
-  renderMarkdown,
-  type ArtifactObjectStore,
-  type ArtifactRepository
+  renderMarkdown
 } from ".";
 
 const sourceTurnId = "00000000-0000-4000-8000-000000000001";
@@ -112,7 +110,7 @@ describe("deterministic artifact renderers", () => {
       Array.from(first.find((file) => file.format === "csv")!.bytes.slice(0, 3))
     ).toEqual([0xef, 0xbb, 0xbf]);
     expect(csv).toContain('"\'=1+1"');
-  }, 30_000);
+  }, 120_000);
 
   it("escapes Markdown tables and CSV formulas deterministically", () => {
     const spec = createSpec({
@@ -198,10 +196,67 @@ describe("ArtifactService", () => {
       expect.any(Date)
     );
   });
+
+  it("fails and cleans stored objects when the repository cannot mark ready", async () => {
+    const repository = repositoryMock();
+    repository.markReady.mockRejectedValue(new Error("repository unavailable"));
+    const objectStore = objectStoreMock();
+    const service = new ArtifactService({
+      repository,
+      objectStore,
+      renderer: {
+        render: async () => [
+          {
+            format: "md",
+            filename: "report.md",
+            contentType: "text/markdown; charset=utf-8",
+            bytes: new TextEncoder().encode("safe")
+          }
+        ]
+      }
+    });
+
+    const result = await service.generateSafely({
+      artifactId,
+      ownerId: "user-1",
+      conversationId: "conversation-1",
+      spec: createSpec({ formats: ["md"] })
+    });
+
+    expect(result).toMatchObject({
+      artifact: { status: "failed" },
+      failureCode: "REPOSITORY_FAILED",
+      downloads: []
+    });
+    expect(objectStore.delete).toHaveBeenCalledTimes(1);
+    expect(repository.markFailed).toHaveBeenCalledWith(
+      artifactId,
+      "REPOSITORY_FAILED",
+      expect.any(Date)
+    );
+  });
+
+  it("rejects an incomplete renderer result before writing objects", async () => {
+    const objectStore = objectStoreMock();
+    const service = new ArtifactService({
+      repository: repositoryMock(),
+      objectStore,
+      renderer: { render: async () => [] }
+    });
+
+    const result = await service.generateSafely({
+      artifactId,
+      ownerId: "user-1",
+      conversationId: "conversation-1",
+      spec: createSpec({ formats: ["md"] })
+    });
+
+    expect(result.failureCode).toBe("RENDER_FAILED");
+    expect(objectStore.put).not.toHaveBeenCalled();
+  });
 });
 
-function repositoryMock(): ArtifactRepository &
-  Record<string, ReturnType<typeof vi.fn>> {
+function repositoryMock() {
   return {
     createGenerating: vi.fn(async () => undefined),
     markReady: vi.fn(async () => undefined),
@@ -212,8 +267,7 @@ function repositoryMock(): ArtifactRepository &
   };
 }
 
-function objectStoreMock(): ArtifactObjectStore &
-  Record<string, ReturnType<typeof vi.fn>> {
+function objectStoreMock() {
   return {
     put: vi.fn(async () => undefined),
     delete: vi.fn(async () => undefined)

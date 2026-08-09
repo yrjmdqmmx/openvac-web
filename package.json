@@ -21,6 +21,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:agent-v3": "playwright test tests/e2e/agent-v3-contract.spec.ts",
     "test:all": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm knowledge:validate && pnpm test && pnpm build",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

@@ -39,6 +39,7 @@ type CaseResult = {
   id: string;
   category: AnswerV3EvalCategory;
   score: number;
+  outputModel?: string;
   structuralPassed: boolean;
   judgePassed: boolean;
   gateResults: Partial<Record<DeterministicGate, boolean>>;
@@ -82,6 +83,11 @@ export async function runAnswerV3Eval(
     generatedAt: (options.now?.() ?? new Date()).toISOString(),
     models: {
       candidate: `${options.dependencies.candidate.provider}/${options.dependencies.candidate.model}`,
+      outputs: uniqueSorted(
+        results.flatMap((result) =>
+          result.outputModel ? [result.outputModel] : []
+        )
+      ),
       qwenJudge: `${options.dependencies.qwenJudge.provider}/${options.dependencies.qwenJudge.model}`,
       deepseekJudge: `${options.dependencies.deepseekJudge.provider}/${options.dependencies.deepseekJudge.model}`
     },
@@ -108,6 +114,7 @@ async function evaluateCase(
       id: testCase.id,
       category: testCase.category,
       score: 0,
+      outputModel: undefined,
       structuralPassed: false,
       judgePassed: false,
       gateResults: Object.fromEntries(
@@ -161,6 +168,7 @@ async function evaluateCase(
     id: testCase.id,
     category: testCase.category,
     score,
+    outputModel: `${output.provider}/${output.model}`,
     structuralPassed,
     judgePassed: judgeResult.available && judgeResult.valid,
     gateResults,
@@ -185,7 +193,11 @@ async function scoreWithRequiredJudge(
       : dependencies.deepseekJudge;
   const expectedProvider = output.provider === "deepseek" ? "qwen" : "deepseek";
   const available = availability[expectedProvider];
-  if (!available || judge.provider !== expectedProvider) {
+  if (
+    !available ||
+    judge.provider !== expectedProvider ||
+    judge.model === output.model
+  ) {
     return { score: 0, provider: expectedProvider, available, valid: false };
   }
   try {

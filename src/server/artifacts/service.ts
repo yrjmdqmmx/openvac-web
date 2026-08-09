@@ -66,6 +66,9 @@ export class ArtifactService {
     let rendered;
     try {
       rendered = await this.renderer.render(spec);
+      if (!renderedFilesMatchSpec(spec, rendered)) {
+        throw new Error("Renderer output does not match requested formats.");
+      }
     } catch {
       await this.markFailed(request.artifactId, "RENDER_FAILED");
       return failedResult(request.artifactId, spec, "RENDER_FAILED");
@@ -97,6 +100,17 @@ export class ArtifactService {
           createdAt
         });
       }
+    } catch {
+      await Promise.allSettled(
+        stored.map((file) =>
+          this.dependencies.objectStore.delete(file.objectKey)
+        )
+      );
+      await this.markFailed(request.artifactId, "STORAGE_FAILED");
+      return failedResult(request.artifactId, spec, "STORAGE_FAILED");
+    }
+
+    try {
       await this.dependencies.repository.markReady(
         request.artifactId,
         stored,
@@ -108,8 +122,8 @@ export class ArtifactService {
           this.dependencies.objectStore.delete(file.objectKey)
         )
       );
-      await this.markFailed(request.artifactId, "STORAGE_FAILED");
-      return failedResult(request.artifactId, spec, "STORAGE_FAILED");
+      await this.markFailed(request.artifactId, "REPOSITORY_FAILED");
+      return failedResult(request.artifactId, spec, "REPOSITORY_FAILED");
     }
 
     return {
@@ -201,4 +215,17 @@ function artifactObjectKey(
 
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function renderedFilesMatchSpec(
+  spec: ArtifactSpec,
+  files: Array<{ format: ArtifactFormat; bytes: Uint8Array }>
+): boolean {
+  const formats = files.map((file) => file.format);
+  return (
+    formats.length === spec.formats.length &&
+    new Set(formats).size === formats.length &&
+    spec.formats.every((format) => formats.includes(format)) &&
+    files.every((file) => file.bytes.length > 0)
+  );
 }

@@ -89,6 +89,7 @@ export type AnswerV3EvalReport = {
   generatedAt: string;
   models: {
     candidate: string;
+    outputs: string[];
     qwenJudge: string;
     deepseekJudge: string;
   };
