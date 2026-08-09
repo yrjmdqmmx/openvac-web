@@ -13,10 +13,13 @@ import { ProviderResponseError } from "./errors";
 import { parseSseJson } from "./deepseek";
 import type {
   ResponsesFailure,
+  ResponsesFunctionTool,
   ResponsesInputItem,
   ResponsesProvider,
   ResponsesStreamEvent,
   ResponsesStreamRequest,
+  ResponsesTextFormat,
+  ResponsesTool,
   ResponsesUsage
 } from "./types";
 
@@ -120,13 +123,15 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
           ...(request.instructions
             ? { instructions: request.instructions }
             : {}),
-          ...(request.tools?.length ? { tools: request.tools } : {}),
+          ...(request.tools?.length
+            ? { tools: serializeTools(request.tools) }
+            : {}),
           ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
           ...(request.reasoningEffort
             ? { reasoning: { effort: request.reasoningEffort } }
             : {}),
           ...(request.textFormat
-            ? { text: { format: request.textFormat } }
+            ? { text: { format: serializeTextFormat(request.textFormat) } }
             : {}),
           max_output_tokens: maxOutputTokens,
           user: request.user,
@@ -279,6 +284,29 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
       deadline.dispose();
     }
   }
+}
+
+function serializeTools(tools: ResponsesTool[]): ResponsesTool[] {
+  return tools.map((tool) => {
+    if (tool.type !== "function") return tool;
+    // DeepSeek's standard Responses endpoint does not advertise the beta
+    // strict-tool switch. Tool arguments are validated locally before any
+    // execution, so never opt the standard endpoint into beta strict-schema
+    // validation implicitly.
+    const portable = { ...tool };
+    delete portable.strict;
+    return portable as ResponsesFunctionTool;
+  });
+}
+
+function serializeTextFormat(format: ResponsesTextFormat): ResponsesTextFormat {
+  if (format.type !== "json_schema") return format;
+  // Structured output is still requested with the full schema. The provider
+  // response is then validated again by the server-owned AnswerV3 schema.
+  // `strict` is not part of DeepSeek's documented Responses text format.
+  const portable = { ...format };
+  delete portable.strict;
+  return portable;
 }
 
 function assertSafeUser(user: string): void {

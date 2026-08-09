@@ -134,13 +134,14 @@ describe("DeepSeekResponsesProvider", () => {
         format: {
           type: "json_schema",
           name: "answer_v2",
-          schema: { type: "object" },
-          strict: true
+          schema: { type: "object" }
         }
       },
       max_output_tokens: 8192,
       stream: true
     });
+    expect(sentBody).not.toHaveProperty("text.format.strict");
+    expect(sentBody).not.toHaveProperty("tools.0.strict");
   });
 
   it.each([
