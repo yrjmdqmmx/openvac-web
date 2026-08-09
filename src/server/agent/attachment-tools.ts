@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
 
 import { sanitizeEvidenceExcerpt } from "@/server/chat/evidence";
+import { ProviderError, ProviderTimeoutError } from "@/server/providers";
 import type {
   DocumentParser,
   VisionImage,
-  VisionProvider
+  VisionProvider,
+  VisionRequest,
+  VisionResult
 } from "@/server/providers";
 import type { AttachmentKind, AttachmentStatus } from "@/types/chat-v3";
 
@@ -18,6 +21,7 @@ const MAX_SEARCH_CANDIDATE_CHUNKS = 64;
 const MAX_QUERY_CHARACTERS = 2_000;
 const MAX_IMAGE_PROMPT_CHARACTERS = 2_000;
 const MAX_VISION_OUTPUT_CHARACTERS = 6_000;
+const DEFAULT_VISION_ATTEMPT_TIMEOUT_MS = 55_000;
 const DOCUMENT_MIME_TYPES = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -148,6 +152,13 @@ export type AttachmentToolErrorCode =
   | "DOCUMENT_PARSE_LIMIT"
   | "INVALID_ATTACHMENT_INPUT"
   | "VISION_PROVIDER_UNCONFIGURED"
+  | "VISION_PROVIDER_AUTH_FAILED"
+  | "VISION_PROVIDER_QUOTA_EXHAUSTED"
+  | "VISION_PROVIDER_RATE_LIMITED"
+  | "VISION_PROVIDER_REQUEST_INVALID"
+  | "VISION_PROVIDER_TIMEOUT"
+  | "VISION_PROVIDER_UNAVAILABLE"
+  | "VISION_PROVIDER_FAILED"
   | "VISION_OUTPUT_INVALID";
 
 export class AttachmentToolError extends Error {
@@ -169,6 +180,7 @@ export interface AttachmentToolServiceOptions {
   chunkCharacters?: number;
   chunkOverlap?: number;
   maxChunks?: number;
+  visionAttemptTimeoutMs?: number;
   wait?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 }
 
@@ -181,6 +193,7 @@ export class AttachmentToolService {
   private readonly chunkCharacters: number;
   private readonly chunkOverlap: number;
   private readonly maxChunks: number;
+  private readonly visionAttemptTimeoutMs: number;
   private readonly wait: (
     milliseconds: number,
     signal?: AbortSignal
@@ -201,6 +214,9 @@ export class AttachmentToolService {
       options.chunkOverlap ?? DEFAULT_CHUNK_OVERLAP
     );
     this.maxChunks = positiveInteger(options.maxChunks ?? DEFAULT_MAX_CHUNKS);
+    this.visionAttemptTimeoutMs = positiveInteger(
+      options.visionAttemptTimeoutMs ?? DEFAULT_VISION_ATTEMPT_TIMEOUT_MS
+    );
     if (this.chunkOverlap >= this.chunkCharacters) {
       throw new TypeError("chunkOverlap must be smaller than chunkCharacters.");
     }
@@ -281,17 +297,21 @@ export class AttachmentToolService {
         "Image bytes are unavailable."
       );
     }
-    const result = await this.vision.analyze({
-      images: [
-        {
-          mimeType: attachment.mimeType,
-          bytes: new Uint8Array(attachment.bytes)
-        } satisfies VisionImage
-      ],
-      prompt,
-      maxOutputTokens: 2_048,
-      signal: input.signal
-    });
+    const result = await analyzeVisionWithOneRetry(
+      this.vision,
+      {
+        images: [
+          {
+            mimeType: attachment.mimeType,
+            bytes: new Uint8Array(attachment.bytes)
+          } satisfies VisionImage
+        ],
+        prompt,
+        maxOutputTokens: 2_048,
+        signal: input.signal
+      },
+      this.visionAttemptTimeoutMs
+    );
     if (typeof result.text !== "string" || !result.text.trim()) {
       throw new AttachmentToolError(
         "VISION_OUTPUT_INVALID",
@@ -500,6 +520,79 @@ export class AttachmentToolService {
     await this.storage.putParsedChunks(scope, chunks);
     return chunks;
   }
+}
+
+async function analyzeVisionWithOneRetry(
+  provider: VisionProvider,
+  request: VisionRequest,
+  attemptTimeoutMs: number
+): Promise<VisionResult> {
+  try {
+    return await analyzeVisionAttempt(provider, request, attemptTimeoutMs);
+  } catch (error) {
+    if (
+      !(error instanceof ProviderError) ||
+      !error.retryable ||
+      request.signal?.aborted
+    ) {
+      throw normalizeVisionProviderError(error);
+    }
+  }
+
+  try {
+    return await analyzeVisionAttempt(provider, request, attemptTimeoutMs);
+  } catch (error) {
+    throw normalizeVisionProviderError(error);
+  }
+}
+
+async function analyzeVisionAttempt(
+  provider: VisionProvider,
+  request: VisionRequest,
+  timeoutMs: number
+): Promise<VisionResult> {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = request.signal
+    ? AbortSignal.any([request.signal, timeoutSignal])
+    : timeoutSignal;
+  try {
+    return await provider.analyze({ ...request, signal });
+  } catch (error) {
+    if (timeoutSignal.aborted && !request.signal?.aborted) {
+      throw new ProviderTimeoutError(provider.id, "Vision analysis timed out.");
+    }
+    throw error;
+  }
+}
+
+function normalizeVisionProviderError(error: unknown): AttachmentToolError {
+  if (error instanceof ProviderTimeoutError) {
+    return new AttachmentToolError(
+      "VISION_PROVIDER_TIMEOUT",
+      "Vision analysis timed out."
+    );
+  }
+  if (error instanceof ProviderError) {
+    const code =
+      error.status === 401 || error.status === 403
+        ? "VISION_PROVIDER_AUTH_FAILED"
+        : error.status === 402
+          ? "VISION_PROVIDER_QUOTA_EXHAUSTED"
+          : error.status === 429
+            ? "VISION_PROVIDER_RATE_LIMITED"
+            : error.status === 400 || error.status === 422
+              ? "VISION_PROVIDER_REQUEST_INVALID"
+              : error.status !== undefined && error.status >= 500
+                ? "VISION_PROVIDER_UNAVAILABLE"
+                : error.retryable
+                  ? "VISION_PROVIDER_UNAVAILABLE"
+                  : "VISION_PROVIDER_FAILED";
+    return new AttachmentToolError(code, "Vision analysis failed.");
+  }
+  return new AttachmentToolError(
+    "VISION_PROVIDER_FAILED",
+    "Vision analysis failed."
+  );
 }
 
 function chunkParsedDocument(
