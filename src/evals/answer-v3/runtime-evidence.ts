@@ -8,6 +8,7 @@ import {
   artifactSpecSchema,
   verifiedLinkPartSchema
 } from "@/server/chat-v3/contracts";
+import { webLinkBindingDigest } from "@/server/agent/web-link-binding";
 import type { AnswerBlock, AnswerV3 } from "@/types/chat-v3";
 
 import { ANSWER_V3_CASE_VERSION, ANSWER_V3_EVAL_CASES } from "./cases";
@@ -44,6 +45,8 @@ export const runtimeToolAuditSchema = z
     permission: z.literal("allowed"),
     executed: z.literal(true),
     status: z.enum(["completed", "failed"]),
+    citationIds: z.array(z.string().regex(/^E\d+$/u)).max(64),
+    resultDigest: z.string().regex(/^[0-9a-f]{64}$/u),
     source: z.literal("postgres_agent_tool_call")
   })
   .strict();
@@ -57,6 +60,15 @@ export const runtimeAuthorizationAuditSchema = z
     executed: z.literal(false),
     denialReason: z.string().trim().min(1).max(240),
     source: z.literal("staging_http_response")
+  })
+  .strict();
+
+export const runtimeLinkAuditSchema = z
+  .object({
+    evidenceId: z.string().regex(/^E\d+$/u),
+    linkId: z.string().trim().min(1).max(160),
+    hostname: z.string().trim().min(1).max(253),
+    status: z.enum(["verified", "unavailable"])
   })
   .strict();
 
@@ -102,6 +114,7 @@ const runtimeCaseEvidenceSchema = z
     model: z.string().trim().min(1).max(240),
     answer: answerV3Schema.strict(),
     verifiedLinks: z.array(verifiedLinkPartSchema).max(64),
+    linkAudit: z.array(runtimeLinkAuditSchema).max(256),
     browserEvents: z.array(browserEventSchema).min(2).max(2_000),
     toolAudit: z.array(runtimeToolAuditSchema).max(256),
     authorizationAudit: z.array(runtimeAuthorizationAuditSchema).max(64),
@@ -187,6 +200,7 @@ export function candidateOutputsFromRuntimeEvidence(
         model: item.model,
         answer: item.answer,
         verifiedLinks: item.verifiedLinks,
+        linkAudit: item.linkAudit,
         browserEvents: item.browserEvents,
         toolAudit: item.toolAudit,
         authorizationAudit: item.authorizationAudit,
@@ -304,6 +318,7 @@ function validateRuntimeCase(
     }
   }
   validatePermissionEvidence(item, testCase);
+  validateLinkEvidence(item, testCase);
   validateCrossConversationAuthorization(item, testCase);
   const visible = normalizeVisibleText(item.answer);
   if (
@@ -313,6 +328,91 @@ function validateRuntimeCase(
       `Runtime case ${item.caseId} claims an observed fact absent from the answer.`
     );
   }
+}
+
+function validateLinkEvidence(
+  item: RuntimeEvidence["cases"][number],
+  testCase: AnswerV3EvalCase
+): void {
+  const derived = item.verifiedLinks.flatMap((link) =>
+    (link.evidenceIds ?? []).map((evidenceId) => ({
+      evidenceId,
+      linkId: link.linkId,
+      hostname: link.hostname,
+      status: link.status
+    }))
+  );
+  if (!sameJsonSet(item.linkAudit, derived)) {
+    throw new Error(
+      `Runtime case ${item.caseId} link audit does not match verified links.`
+    );
+  }
+  if (!testCase.expected.requireLinkEvidenceBinding) return;
+  const allowedDomains = testCase.expected.allowedLinkDomains ?? [];
+  const webAudit = item.toolAudit.find(
+    (audit) => audit.name === "web_search" && audit.status === "completed"
+  );
+  const bindingProofs = item.toolAudit.filter(
+    (audit) => audit.name === "web_link_binding" && audit.status === "completed"
+  );
+  const referencedLinkIds = item.answer.blocks.flatMap((block) =>
+    block.type === "link_reference" ? [block.linkId] : []
+  );
+  if (
+    !sameJsonSet(referencedLinkIds, testCase.expected.linkIds) ||
+    !sameJsonSet(item.answer.usedLinkIds, testCase.expected.linkIds) ||
+    !webAudit ||
+    !isNonEmptySubset(
+      [...new Set(item.linkAudit.map((audit) => audit.evidenceId))],
+      webAudit.citationIds
+    ) ||
+    item.verifiedLinks.some(
+      (link) =>
+        allowedDomains.length > 0 &&
+        !allowedDomains.some((domain) => hostnameWithin(link.hostname, domain))
+    ) ||
+    item.linkAudit.some((binding) => {
+      const link = item.verifiedLinks.find(
+        (candidate) => candidate.linkId === binding.linkId
+      );
+      if (!link) return true;
+      const expectedDigest = webLinkBindingDigest({
+        evidenceId: binding.evidenceId,
+        link
+      });
+      return !bindingProofs.some(
+        (proof) =>
+          proof.resultDigest === expectedDigest &&
+          sameJsonSet(proof.citationIds, [binding.evidenceId])
+      );
+    }) ||
+    !testCase.expected.linkIds.every((linkId) =>
+      item.linkAudit.some(
+        (audit) =>
+          audit.linkId === linkId &&
+          audit.status === "verified" &&
+          item.answer.usedEvidenceIds.includes(audit.evidenceId)
+      )
+    )
+  ) {
+    throw new Error(
+      `Runtime case ${item.caseId} lacks a verified evidence-to-link binding.`
+    );
+  }
+}
+
+function hostnameWithin(hostname: string, domain: string): boolean {
+  const normalizedHostname = hostname.toLowerCase();
+  const normalizedDomain = domain.toLowerCase();
+  return (
+    normalizedHostname === normalizedDomain ||
+    normalizedHostname.endsWith(`.${normalizedDomain}`)
+  );
+}
+
+function isNonEmptySubset(values: string[], allowed: string[]): boolean {
+  const allowedSet = new Set(allowed);
+  return values.length > 0 && values.every((value) => allowedSet.has(value));
 }
 
 function validatePermissionEvidence(

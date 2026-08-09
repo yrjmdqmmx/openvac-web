@@ -43,6 +43,7 @@ describe("Answer V3 runtime-evidence adapter", () => {
       model: stored.model,
       answer: stored.answer,
       verifiedLinks: stored.verifiedLinks,
+      linkAudit: stored.linkAudit,
       browserEvents: stored.browserEvents,
       toolAudit: stored.toolAudit,
       authorizationAudit: stored.authorizationAudit,
@@ -89,6 +90,13 @@ describe("Answer V3 runtime-evidence adapter", () => {
       "cross-run SSE",
       (value: RuntimeEvidence) => {
         value.cases[0]!.browserEvents[0]!.runId = randomUUID();
+      }
+    ],
+    [
+      "tampered web evidence link binding",
+      (value: RuntimeEvidence) => {
+        const item = runtimeCase(value, "v3-text-citation-link-02");
+        item.linkAudit[0]!.evidenceId = "E99";
       }
     ],
     [
@@ -185,6 +193,8 @@ describe("Answer V3 runtime-evidence adapter", () => {
       permission: "allowed",
       executed: true,
       status: "completed",
+      citationIds: [],
+      resultDigest: "a".repeat(64),
       source: "postgres_agent_tool_call"
     });
 
@@ -324,6 +334,8 @@ async function runtimeEvidence(): Promise<RuntimeEvidence> {
         permission: "allowed" as const,
         executed: true as const,
         status: "completed" as const,
+        citationIds: audit.citationIds ?? [],
+        resultDigest: audit.resultDigest ?? "a".repeat(64),
         source: "postgres_agent_tool_call" as const
       }));
       const crossConversation = testCase.id === "v3-multiturn-permission-01";
@@ -345,6 +357,7 @@ async function runtimeEvidence(): Promise<RuntimeEvidence> {
           output.provider === "qwen" ? "qwen3-vl-plus" : "deepseek-v4-flash",
         answer: output.answer,
         verifiedLinks: output.verifiedLinks,
+        linkAudit: output.linkAudit ?? [],
         browserEvents,
         toolAudit,
         authorizationAudit,

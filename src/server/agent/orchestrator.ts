@@ -66,6 +66,10 @@ import {
   type WebDomainPolicy,
   type WebEvidenceResult
 } from "./web-evidence";
+import {
+  webLinkBindingArgumentsDigest,
+  webLinkBindingDigest
+} from "./web-link-binding";
 
 const MAX_TOOL_CALLS = 8;
 const MAX_PARALLEL_TOOLS = 2;
@@ -437,6 +441,8 @@ export class AgentRunOrchestrator {
     if (result.evidenceIds.length === 0) {
       this.webSearchFailure ??= "no_validated_evidence";
     }
+    const nativeSearchCompleted =
+      result.searched && result.provider === "deepseek-native";
     await this.store.recordToolCall({
       runId: input.run.runId,
       round: 1,
@@ -452,18 +458,35 @@ export class AgentRunOrchestrator {
         })
       ),
       citationIds: result.evidenceIds,
-      status: result.evidenceIds.length > 0 ? "completed" : "failed",
+      status: nativeSearchCompleted ? "completed" : "failed",
       latencyMs: Date.now() - startedAt,
-      errorCode:
-        result.evidenceIds.length > 0 ? undefined : "NO_VALIDATED_WEB_EVIDENCE"
+      errorCode: nativeSearchCompleted ? undefined : "NATIVE_WEB_SEARCH_FAILED"
     });
+    for (const link of result.verifiedLinks) {
+      for (const evidenceId of link.evidenceIds ?? []) {
+        await this.store.recordToolCall({
+          runId: input.run.runId,
+          round: 1,
+          sequence: ++this.toolSequence,
+          callId: `server_web_link_${link.linkId}_${evidenceId}_${input.run.runId}`,
+          toolName: "web_link_binding",
+          argumentsDigest: webLinkBindingArgumentsDigest(),
+          resultDigest: webLinkBindingDigest({ evidenceId, link }),
+          citationIds: [evidenceId],
+          status: "completed",
+          latencyMs: 0
+        });
+      }
+    }
     this.stage("validating_sources", "正在执行来源分级与安全抓取…");
     this.tool(
-      result.evidenceIds.length > 0 ? "completed" : "failed",
+      nativeSearchCompleted ? "completed" : "failed",
       "web_search",
       result.evidenceIds.length > 0
         ? `联网与来源核验完成，保留 ${result.evidenceIds.length} 条依据`
-        : "联网完成，但没有候选通过来源治理"
+        : nativeSearchCompleted
+          ? "DeepSeek 联网已完成，但没有候选通过来源治理"
+          : "DeepSeek 联网未完成，未引入联网依据"
     );
   }
 

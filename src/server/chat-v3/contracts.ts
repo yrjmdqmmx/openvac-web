@@ -87,7 +87,11 @@ export const verifiedLinkPartSchema = z
       .refine((url) => !hasSensitiveUrlParameters(new URL(url))),
     label: z.string().trim().min(1).max(240),
     hostname: z.string().trim().min(1).max(253),
-    status: z.enum(["verified", "unavailable"])
+    status: z.enum(["verified", "unavailable"]),
+    evidenceIds: z
+      .array(z.string().regex(/^E\d+$/u))
+      .max(64)
+      .optional()
   })
   .superRefine((part, context) => {
     const url = new URL(part.url);

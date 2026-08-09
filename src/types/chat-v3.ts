@@ -30,6 +30,7 @@ export type VerifiedLinkPart = {
   label: string;
   hostname: string;
   status: "verified" | "unavailable";
+  evidenceIds?: string[];
 };
 
 export type AttachmentPart = {
