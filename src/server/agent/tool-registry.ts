@@ -70,6 +70,7 @@ const createArtifactSchema = artifactSpecBaseSchema.omit({
 
 export type ToolExecutionResult = {
   ok: boolean;
+  errorCode?: string;
   outputItem: ResponsesInputItem;
   evidenceIds: string[];
   calculations: CalculationResult[];
@@ -513,6 +514,7 @@ export class ToolRegistry {
             callId,
             {
               ok: false,
+              error: "CALCULATION_INPUT_INVALID",
               missingInputs: result.missingInputs,
               warnings: result.warnings
             },
@@ -543,9 +545,14 @@ export class ToolRegistry {
   ): ToolExecutionResult {
     let output = JSON.stringify(value);
     let ok = value.ok === true;
+    let errorCode =
+      !ok && typeof value.error === "string"
+        ? value.error.slice(0, 120)
+        : undefined;
     if (Buffer.byteLength(output, "utf8") > MAX_RESULT_BYTES) {
       output = JSON.stringify({ ok: false, error: "TOOL_RESULT_TOO_LARGE" });
       ok = false;
+      errorCode = "TOOL_RESULT_TOO_LARGE";
       evidenceIds = [];
       calculations = [];
       verifiedLinks = [];
@@ -554,6 +561,7 @@ export class ToolRegistry {
     }
     return {
       ok,
+      ...(errorCode ? { errorCode } : {}),
       outputItem: { type: "function_call_output", call_id: callId, output },
       evidenceIds,
       calculations,

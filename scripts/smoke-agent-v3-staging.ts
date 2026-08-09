@@ -565,11 +565,14 @@ async function captureCase(
   markSmokeDiagnostic("tool_validation", { caseId: testCase.id });
   const missingTool = missingRequiredToolEvidence(testCase, database.toolAudit);
   if (missingTool) {
+    const matchingAudit = database.toolAudit.find(
+      (audit) => audit.name === missingTool
+    );
     markSmokeDiagnostic("tool_validation", {
       caseId: testCase.id,
       code:
         diagnosticToken(database.toolFailureCodes.get(missingTool)) ??
-        "REQUIRED_TOOL_NOT_COMPLETED"
+        (matchingAudit ? "REQUIRED_TOOL_FAILED" : "REQUIRED_TOOL_NOT_CALLED")
     });
     throw new Error(
       `Runtime case ${testCase.id} did not complete ${missingTool}.`

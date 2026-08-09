@@ -12,6 +12,8 @@ import {
   type ResponsesProvider,
   type ResponsesStreamEvent,
   type ResponsesStreamRequest,
+  type ResponsesTool,
+  type ResponsesToolChoice,
   type ResponsesUsage
 } from "@/server/providers";
 import { QuotaExceededError } from "@/server/quota";
@@ -29,6 +31,7 @@ import type {
   AnswerBlock,
   AnswerV3,
   ArtifactPart,
+  InputMessagePart,
   VerifiedLinkPart
 } from "@/types/chat-v3";
 
@@ -234,12 +237,18 @@ export class AgentRunOrchestrator {
     while (true) {
       signal.throwIfAborted();
       this.stage("generating", "正在生成结构化回答…");
+      const toolRoundLimit = selectAnswerToolRoundLimit(
+        budgetProfile.maxToolRounds,
+        this.tools.definitions,
+        this.calculations.values(),
+        input.run.inputParts
+      );
       const result = await this.requestWithOneRetry(
         input,
         currentInput,
         signal,
         `answer_${this.modelRequests + 1}`,
-        this.toolRounds < budgetProfile.maxToolRounds
+        this.toolRounds < toolRoundLimit
       );
       outputText = result.finish.outputText || result.outputText;
       finalUsage = result.finish.usage;
@@ -258,7 +267,7 @@ export class AgentRunOrchestrator {
         incomplete = true;
         break;
       }
-      if (this.toolRounds >= budgetProfile.maxToolRounds) {
+      if (this.toolRounds >= toolRoundLimit) {
         throw new AgentRuntimeError(
           "TOOL_ROUND_LIMIT",
           "本次工具轮次已达到安全上限。",
@@ -567,6 +576,7 @@ export class AgentRunOrchestrator {
       resultDigest: digest(String(result.outputItem.output ?? "")),
       citationIds: result.evidenceIds,
       status: result.ok ? "completed" : "failed",
+      errorCode: result.errorCode,
       latencyMs: Date.now() - startedAt
     });
   }
@@ -834,11 +844,20 @@ export class AgentRunOrchestrator {
     const calls: CollectedModelResponse["calls"] = [];
     let finish: Extract<ResponsesStreamEvent, { type: "finish" }> | undefined;
     const budgetProfile = agentRunBudgetProfile(input.requestedMode);
+    const completedCalculations = [...this.calculations.values()];
     const request: ResponsesStreamRequest = {
       instructions: undefined,
       input: modelInput,
-      tools: allowTools ? this.tools.definitions : undefined,
-      toolChoice: allowTools ? "auto" : "none",
+      tools: allowTools
+        ? selectAnswerTools(this.tools.definitions, completedCalculations)
+        : undefined,
+      toolChoice: allowTools
+        ? selectAnswerToolChoice(
+            input.run.question,
+            modelInput,
+            completedCalculations
+          )
+        : "none",
       reasoningEffort:
         input.resolvedMode === "deep"
           ? input.riskLevel === "high"
@@ -1155,6 +1174,125 @@ function toolLabel(
 function readPositiveInteger(name: string, fallback: number): number {
   const value = Number.parseInt(process.env[name] ?? "", 10);
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+export function selectAnswerToolChoice(
+  question: string,
+  modelInput: ResponsesInputItem[],
+  calculations: Iterable<CalculationResult>
+): ResponsesToolChoice {
+  const intent =
+    /(?:抽空|抽气).{0,12}(?:时间|多久)|(?:时间|多久).{0,12}(?:抽空|抽气)|\bpump(?:\s|-)?down\s+time\b/iu;
+  if (!intent.test(question)) return "auto";
+  if (
+    [...calculations].some(
+      (calculation) => calculation.tool === "estimate_pumpdown_time"
+    )
+  ) {
+    return "auto";
+  }
+  const priorUserText = previousPlainUserText(modelInput, question);
+  const context =
+    priorUserText &&
+    /(?:上一轮|上轮|刚才|前述|前面|previous|earlier|above\s+parameters?)/iu.test(
+      question
+    )
+      ? `${priorUserText}\n${question}`
+      : question;
+  return hasCompletePumpdownInputs(context)
+    ? { type: "function", name: "estimate_pumpdown_time" }
+    : "auto";
+}
+
+export function selectAnswerTools(
+  tools: readonly ResponsesTool[],
+  calculations: Iterable<CalculationResult>
+): ResponsesTool[] {
+  const completedCalculatorNames = new Set(
+    [...calculations].map((calculation) => calculation.tool)
+  );
+  return tools.filter(
+    (tool) =>
+      tool.type !== "function" || !completedCalculatorNames.has(tool.name)
+  );
+}
+
+export function selectAnswerToolRoundLimit(
+  baseLimit: number,
+  tools: readonly ResponsesTool[],
+  calculations: Iterable<CalculationResult>,
+  inputParts: readonly InputMessagePart[]
+): number {
+  const hasPumpdownCalculation = [...calculations].some(
+    (calculation) => calculation.tool === "estimate_pumpdown_time"
+  );
+  if (!hasPumpdownCalculation) return baseLimit;
+  const hasExplicitArtifactTool = tools.some(
+    (tool) => tool.type === "function" && tool.name === "create_artifact"
+  );
+  const hasCurrentTurnResource = inputParts.some(
+    (part) => part.type === "link" || part.type === "attachment"
+  );
+  return (
+    baseLimit + (hasExplicitArtifactTool || hasCurrentTurnResource ? 1 : 0)
+  );
+}
+
+function previousPlainUserText(
+  modelInput: ResponsesInputItem[],
+  question: string
+): string | undefined {
+  const texts = modelInput.flatMap((item) => {
+    if (item.type !== "message" || item.role !== "user") return [];
+    const content = item.content;
+    const text =
+      typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content
+              .flatMap((part) => {
+                if (!part || typeof part !== "object") return [];
+                const record = part as Record<string, unknown>;
+                return record.type === "input_text" &&
+                  typeof record.text === "string"
+                  ? [record.text]
+                  : [];
+              })
+              .join("\n")
+          : "";
+    const trimmed = text.trim();
+    return trimmed && !/^BEGIN_[A-Z0-9_]+/u.test(trimmed)
+      ? [trimmed.slice(0, 16_000)]
+      : [];
+  });
+  if (texts.at(-1) === question.trim()) texts.pop();
+  return texts.at(-1);
+}
+
+function hasCompletePumpdownInputs(text: string): boolean {
+  const number = String.raw`(?:\d+(?:\.\d+)?|\.\d+)`;
+  const pressure = String.raw`${number}\s*(?:Pa|mbar|Torr|bar|atm)\b`;
+  const volume = new RegExp(
+    String.raw`(?:腔体(?:体积|容积)?|体积|容积|\bvolume\b)[^。\n,，;；]{0,24}?${number}\s*(?:m3|m³|l|cm3|cm³)\b`,
+    "iu"
+  );
+  const pumpingSpeed = new RegExp(
+    String.raw`(?:(?:等效)?抽速|泵速|\bpumping\s*speed\b)[^。\n,，;；]{0,24}?${number}\s*(?:m3|m³|l)\s*\/\s*(?:s|min|h)\b`,
+    "iu"
+  );
+  const pressureValues = text.match(
+    /(?:^|[^a-z])(?:\d+(?:\.\d+)?|\.\d+)\s*(?:Pa|mbar|Torr|bar|atm)\b/giu
+  );
+  const pressureTransition = new RegExp(
+    String.raw`(?:从\s*${pressure}\s*(?:抽到|降到|抽至|降至|到达|达到|至|到|抽|降)\s*${pressure}|\bfrom\s+${pressure}\s+to\s+${pressure}|(?:初始压力|起始压力|initial\s+pressure)[^。\n,，;；]{0,24}?${pressure}[^。\n]{0,80}?(?:目标压力|target\s+pressure)[^。\n,，;；]{0,24}?${pressure})`,
+    "iu"
+  );
+  return (
+    volume.test(text) &&
+    pumpingSpeed.test(text) &&
+    pressureTransition.test(text) &&
+    (pressureValues?.length ?? 0) >= 2
+  );
 }
 
 function errorCode(error: unknown): string {

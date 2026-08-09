@@ -217,6 +217,23 @@ describe("Agent V2: 30 tool schema and error-boundary cases", () => {
     ).toMatchObject({ type: "function", strict: true });
   });
 
+  it("returns a stable error code for invalid calculator arguments", async () => {
+    const registry = new ToolRegistry(new EvidenceRegistry());
+    const result = await registry.execute({
+      callId: "call-invalid-pumpdown",
+      name: "estimate_pumpdown_time",
+      arguments: JSON.stringify({
+        initialPressure: { value: 100, unit: "Pa" },
+        targetPressure: { value: 1, unit: "Pa" }
+      })
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "CALCULATION_INPUT_INVALID"
+    });
+  });
+
   it.each([
     ["convert_vacuum_units", {}],
     [

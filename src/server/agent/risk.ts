@@ -57,7 +57,7 @@ const HIGH_RISK_PATTERNS: Array<{
 ];
 
 const ENGINEERING_PATTERN =
-  /(?:选型|选泵|抽速|流导|极限压力|工作压力|气体负载|泄漏率|方案|型号|配件|维修|故障|异响|返油|温升)/u;
+  /(?:选型|选泵|抽速|抽空时间|抽气时间|流导|极限压力|工作压力|气体负载|泄漏率|方案|型号|配件|维修|故障|异响|返油|温升|\bpump(?:\s|-)?down\s+time\b)/iu;
 
 const SAFETY_COMPONENT_PATTERN =
   /(?:联锁|互锁|急停(?:回路|开关|触点|继电器)?|安全(?:回路|开关|联锁|触点|继电器)|\b(?:interlock|safety(?:\s+(?:interlock|circuit|switch|relay|contacts?))?|emergency[-\s]?stop(?:\s+(?:circuit|switch|relay|contacts?))?|e[-\s]?stop(?:\s+(?:circuit|switch|relay|contacts?))?)\b)/iu;

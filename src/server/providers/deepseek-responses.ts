@@ -289,6 +289,28 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
             throw malformed(`${eventType} omitted response.id.`);
           }
           const continuationItems = responseOutputItems(responseRecord);
+          if (terminalStatus === "completed") {
+            for (const item of continuationItems) {
+              if (item.type !== "function_call") continue;
+              const callId = pickString(item, ["call_id"]);
+              const name = pickString(item, ["name"]);
+              const args = pickString(item, ["arguments"]);
+              if (!callId || !name || args === undefined) {
+                throw malformed(
+                  "DeepSeek terminal response contained an incomplete function_call item."
+                );
+              }
+              if (!emittedCalls.has(callId)) {
+                emittedCalls.add(callId);
+                yield {
+                  type: "function-call",
+                  callId,
+                  name,
+                  arguments: args
+                };
+              }
+            }
+          }
           const terminalOutputText = extractOutputText(continuationItems);
           const terminalFailedWebSearchIds =
             nonCompletedWebSearchCallIds(continuationItems);

@@ -144,16 +144,68 @@ describe("DeepSeekResponsesProvider", () => {
     expect(sentBody).not.toHaveProperty("tools.0.strict");
   });
 
+  it("emits a function call that appears only in the terminal response", async () => {
+    const body = streamFromStrings([
+      event("response.created", 0, { response: { id: "resp-terminal-call" } }),
+      event("response.completed", 1, {
+        response: {
+          id: "resp-terminal-call",
+          output: [
+            {
+              type: "function_call",
+              call_id: "call-terminal-pumpdown",
+              name: "estimate_pumpdown_time",
+              arguments:
+                '{"volume":{"value":100,"unit":"L"},"pumpingSpeed":{"value":10,"unit":"L/s"},"initialPressure":{"value":100,"unit":"Pa"},"targetPressure":{"value":1,"unit":"Pa"},"outputUnit":"s"}'
+            }
+          ]
+        }
+      })
+    ]);
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => new Response(body))
+    });
+
+    const events = await collect(
+      provider.stream({
+        input: "Calculate pumpdown time",
+        user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+      })
+    );
+
+    expect(events).toContainEqual({
+      type: "function-call",
+      callId: "call-terminal-pumpdown",
+      name: "estimate_pumpdown_time",
+      arguments:
+        '{"volume":{"value":100,"unit":"L"},"pumpingSpeed":{"value":10,"unit":"L/s"},"initialPressure":{"value":100,"unit":"Pa"},"targetPressure":{"value":1,"unit":"Pa"},"outputUnit":"s"}'
+    });
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "function-call" &&
+          event.callId === "call-terminal-pumpdown"
+      )
+    ).toHaveLength(1);
+  });
+
   it.each([
     [
       "response.incomplete",
       "incomplete",
-      { incomplete_details: { reason: "max_output_tokens" } }
+      {
+        incomplete_details: { reason: "max_output_tokens" },
+        output: [{ type: "function_call", name: "partial" }]
+      }
     ],
     [
       "response.failed",
       "failed",
-      { error: { code: "server_error", message: "failed upstream" } }
+      {
+        error: { code: "server_error", message: "failed upstream" },
+        output: [{ type: "function_call", call_id: "partial" }]
+      }
     ]
   ] as const)(
     "maps %s as an explicit terminal status",
@@ -166,7 +218,7 @@ describe("DeepSeekResponsesProvider", () => {
               streamFromStrings([
                 event("response.created", 0, { response: { id: "resp-end" } }),
                 event(type, 1, {
-                  response: { id: "resp-end", output: [], ...extra }
+                  response: { id: "resp-end", ...extra }
                 })
               ])
             )
@@ -182,6 +234,9 @@ describe("DeepSeekResponsesProvider", () => {
         status,
         responseId: "resp-end"
       });
+      expect(events).not.toContainEqual(
+        expect.objectContaining({ type: "function-call" })
+      );
     }
   );
 
