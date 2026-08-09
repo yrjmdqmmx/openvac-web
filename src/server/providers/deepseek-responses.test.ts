@@ -710,12 +710,8 @@ describe("DeepSeekResponsesProvider", () => {
               id: "search-a",
               status: "completed",
               action: {
-                sources: [
-                  {
-                    url: "https://www.leybold.com/invalidated",
-                    title: "Invalidated result"
-                  }
-                ]
+                type: "open_page",
+                url: "https://www.leybold.com/invalidated"
               }
             },
             { type: "web_search_call", id: "search-a", status: "failed" },
@@ -951,6 +947,73 @@ describe("DeepSeekResponsesProvider", () => {
     expect(events.at(-1)).toMatchObject({
       type: "finish",
       completedWebSearchCalls: 1
+    });
+  });
+
+  it("extracts open-page action URLs and source URL aliases", async () => {
+    const body = streamFromStrings([
+      event("response.created", 0, { response: { id: "resp-web-actions" } }),
+      event("response.completed", 1, {
+        response: {
+          id: "resp-web-actions",
+          output: [
+            {
+              type: "web_search_call",
+              id: "search-open-page",
+              status: "completed",
+              action: {
+                type: "open_page",
+                url: "https://www.leybold.com/manual"
+              }
+            },
+            {
+              type: "web_search_call",
+              id: "search-source-alias",
+              status: "completed",
+              action: {
+                type: "search",
+                sources: [
+                  {
+                    uri: "https://www.pfeiffer-vacuum.com/manual",
+                    name: "Pfeiffer manual"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      })
+    ]);
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => new Response(body))
+    });
+
+    const events = await collect(
+      provider.stream({
+        input: "Find manuals",
+        tools: [{ type: "web_search" }],
+        toolChoice: { type: "web_search" },
+        user: "ov1_abcdefghijklmnopqrstuvwxyz0123456789_-"
+      })
+    );
+
+    expect(events).toContainEqual({
+      type: "web-search-sources",
+      sources: [
+        {
+          url: "https://www.leybold.com/manual",
+          title: "www.leybold.com"
+        },
+        {
+          url: "https://www.pfeiffer-vacuum.com/manual",
+          title: "Pfeiffer manual"
+        }
+      ]
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      completedWebSearchCalls: 2
     });
   });
 
