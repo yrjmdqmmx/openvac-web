@@ -55,7 +55,7 @@ export async function cleanupRunArtifactsInTransaction(
   }
 ): Promise<void> {
   // Release quota before deleting the file rows that carry its byte totals.
-  // Both statements remain atomic because the caller owns the transaction.
+  // Every statement remains atomic because the caller owns the transaction.
   await transaction.execute(sql`
     with locked_artifacts as materialized (
       select artifact.id
@@ -132,25 +132,56 @@ export async function cleanupRunArtifactsInTransaction(
       from chat_artifact_file file
       join locked_artifacts artifact on artifact.id = file.artifact_id
       for update of file
-    ),
-    queued_jobs as (
-      insert into chat_storage_deletion_job (
-        user_id, object_type, source_id, object_key
-      )
-      select ${input.userId}, 'artifact', file.id, file.object_key
-      from locked_files file
-      on conflict (object_key) do nothing
-      returning id
-    ),
-    deleted_files as (
-      delete from chat_artifact_file file
-      using locked_artifacts artifact
-      where file.artifact_id = artifact.id
-      returning file.id
+    )
+    insert into chat_storage_deletion_job (
+      user_id, object_type, source_id, object_key
+    )
+    select ${input.userId}, 'artifact', file.id, file.object_key
+    from locked_files file
+    on conflict (object_key) do nothing
+  `);
+
+  await transaction.execute(sql`
+    with locked_artifacts as materialized (
+      select artifact.id
+      from chat_artifact artifact
+      join agent_run run
+        on run.id = ${input.runId}
+       and run.user_id = ${input.userId}
+       and run.turn_id = ${input.turnId}
+       and run.assistant_message_id = ${input.assistantMessageId}
+      where artifact.user_id = ${input.userId}
+        and artifact.conversation_id = ${input.conversationId}
+        and artifact.source_turn_id = ${input.turnId}
+        and artifact.message_id = ${input.assistantMessageId}
+        and artifact.status <> 'deleted'
+        and artifact.deleted_at is null
+      for update of artifact
+    )
+    delete from chat_artifact_file file
+    using locked_artifacts artifact
+    where file.artifact_id = artifact.id
+  `);
+
+  await transaction.execute(sql`
+    with locked_artifacts as materialized (
+      select artifact.id
+      from chat_artifact artifact
+      join agent_run run
+        on run.id = ${input.runId}
+       and run.user_id = ${input.userId}
+       and run.turn_id = ${input.turnId}
+       and run.assistant_message_id = ${input.assistantMessageId}
+      where artifact.user_id = ${input.userId}
+        and artifact.conversation_id = ${input.conversationId}
+        and artifact.source_turn_id = ${input.turnId}
+        and artifact.message_id = ${input.assistantMessageId}
+        and artifact.status <> 'deleted'
+        and artifact.deleted_at is null
+      for update of artifact
     )
     update chat_artifact artifact
     set status = 'failed', ready_at = null, updated_at = now()
     where artifact.id in (select id from locked_artifacts)
-      and artifact.status <> 'deleted'
   `);
 }
