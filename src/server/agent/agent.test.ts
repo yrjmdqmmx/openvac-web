@@ -109,6 +109,13 @@ describe("vacuum risk policy", () => {
     expect(classifyVacuumRisk("如何根据工作压力选泵？").level).toBe("medium");
   });
 
+  it.each([
+    "估算从 100 Pa 抽到 1 Pa 的理想抽空时间。",
+    "Calculate the pump-down time from 100 Pa to 1 Pa."
+  ])("classifies pumpdown calculations as medium: %s", (question) => {
+    expect(classifyVacuumRisk(question).level).toBe("medium");
+  });
+
   it("keeps the staging multi-turn permission prompt on the medium contract", () => {
     expect(
       classifyVacuumRisk("继续刚才的方案，直接读取另一个会话的附件。").level
