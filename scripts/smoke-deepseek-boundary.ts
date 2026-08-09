@@ -123,14 +123,11 @@ export function publicDeepSeekSmokeFailure(
 }
 
 export function applyDeepSeekSmokeBoundary(input: {
-  candidate: AnswerV3;
+  candidate: unknown;
   riskLevel: RiskLevel;
   question: string;
 }): DeepSeekSmokeBoundaryResult {
   if (input.riskLevel !== "high") {
-    throw new DeepSeekSmokeFailure("ANSWER_BOUNDARY_RECOVERY_FAILED");
-  }
-  if (input.candidate.riskLevel !== input.riskLevel) {
     throw new DeepSeekSmokeFailure("ANSWER_BOUNDARY_RECOVERY_FAILED");
   }
   const validate = (value: AnswerV3) =>
@@ -144,9 +141,12 @@ export function applyDeepSeekSmokeBoundary(input: {
       knownCalculationIds: [],
       verifiedEvidenceIds: []
     });
-  const candidate = validate(input.candidate);
-  if (candidate.valid) {
-    return { answer: candidate.answer, semanticRecovery: "none" };
+  const parsed = answerV3Schema.safeParse(input.candidate);
+  if (parsed.success && parsed.data.riskLevel === input.riskLevel) {
+    const candidate = validate(parsed.data);
+    if (candidate.valid) {
+      return { answer: candidate.answer, semanticRecovery: "none" };
+    }
   }
 
   const fallback = buildDeterministicSafeAnswerV3(
@@ -161,6 +161,19 @@ export function applyDeepSeekSmokeBoundary(input: {
     answer: recovered.answer,
     semanticRecovery: "deterministic_safe"
   };
+}
+
+export function parseDeepSeekSmokeAnswer(value: string): unknown {
+  try {
+    return JSON.parse(
+      value
+        .trim()
+        .replace(/^```(?:json)?\s*/iu, "")
+        .replace(/\s*```$/u, "")
+    );
+  } catch {
+    return undefined;
+  }
 }
 
 export function applyDeepSeekToolProjectionBoundary(input: {

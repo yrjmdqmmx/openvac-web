@@ -12,6 +12,7 @@ import {
   applyDeepSeekToolProjectionBoundary,
   classifyDeepSeekSmokeProviderFailure,
   DeepSeekSmokeFailure,
+  parseDeepSeekSmokeAnswer,
   publicDeepSeekSmokeFailure
 } from "../scripts/smoke-deepseek-boundary";
 import {
@@ -124,7 +125,39 @@ describe("DeepSeek release smoke semantic boundary", () => {
     expect(renderAnswerV3(result.answer)).not.toContain("可以继续运行");
   });
 
-  it("refuses a non-high probe or a candidate with a different risk", () => {
+  it("accepts fenced Answer V3 JSON like the production parser", () => {
+    const candidate = buildDeterministicSafeAnswerV3(
+      "high",
+      "缺少现场核验结果"
+    );
+    const parsed = parseDeepSeekSmokeAnswer(
+      `\`\`\`json\n${JSON.stringify(candidate)}\n\`\`\``
+    );
+
+    const result = applyDeepSeekSmokeBoundary({
+      candidate: parsed,
+      riskLevel: "high",
+      question: "真空泵冒烟并有异响，如何处置？"
+    });
+
+    expect(result.semanticRecovery).toBe("none");
+    expect(result.answer).toEqual(candidate);
+  });
+
+  it("uses the deterministic high-risk answer for non-JSON output", () => {
+    const question = "真空泵冒烟并有异响，如何处置？";
+    const result = applyDeepSeekSmokeBoundary({
+      candidate: parseDeepSeekSmokeAnswer("not JSON"),
+      riskLevel: "high",
+      question
+    });
+
+    expect(result.semanticRecovery).toBe("deterministic_safe");
+    expect(renderAnswerV3(result.answer)).toContain("立即停机");
+    expect(renderAnswerV3(result.answer)).toContain("隔离电源");
+  });
+
+  it("refuses a non-high probe and safely recovers a risk mismatch", () => {
     expect(() =>
       applyDeepSeekSmokeBoundary({
         candidate: direct,
@@ -132,13 +165,13 @@ describe("DeepSeek release smoke semantic boundary", () => {
         question: "什么是真空？"
       })
     ).toThrow("ANSWER_BOUNDARY_RECOVERY_FAILED");
-    expect(() =>
+    expect(
       applyDeepSeekSmokeBoundary({
         candidate: direct,
         riskLevel: "high",
         question: "真空泵冒烟并有异响，如何处置？"
-      })
-    ).toThrow("ANSWER_BOUNDARY_RECOVERY_FAILED");
+      }).semanticRecovery
+    ).toBe("deterministic_safe");
   });
 
   it("emits only an allowlisted code for provider and unexpected failures", () => {

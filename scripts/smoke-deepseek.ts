@@ -1,6 +1,5 @@
 import {
   answerV3JsonSchemaForRisk,
-  answerV3Schema,
   buildTrustedCalculationFinalInput,
   buildAgentV3InstructionsForRisk,
   classifyVacuumRisk,
@@ -21,6 +20,7 @@ import {
   applyDeepSeekSmokeBoundary,
   classifyDeepSeekSmokeProviderFailure,
   DeepSeekSmokeFailure,
+  parseDeepSeekSmokeAnswer,
   publicDeepSeekSmokeFailure
 } from "./smoke-deepseek-boundary";
 
@@ -65,20 +65,10 @@ async function main() {
   if (safety.terminal !== "completed") {
     throw new DeepSeekSmokeFailure("PROVIDER_TERMINAL_INVALID");
   }
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(safety.outputText);
-  } catch {
-    throw new DeepSeekSmokeFailure("ANSWER_JSON_INVALID");
-  }
-  const parsed = answerV3Schema.safeParse(decoded);
-  if (!parsed.success) {
-    throw new DeepSeekSmokeFailure("ANSWER_SCHEMA_INVALID");
-  }
   let boundary;
   try {
     boundary = applyDeepSeekSmokeBoundary({
-      candidate: parsed.data,
+      candidate: parseDeepSeekSmokeAnswer(safety.outputText),
       riskLevel: risk.level,
       question
     });
