@@ -80,7 +80,19 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     expect(release).toContain(
       "Accepted staging digest provenance: $STAGING_WEB_DIGEST"
     );
-    expect(release).toContain("Save accepted staging digest provenance");
+    expect(release).toContain(
+      "Save complete Agent V3 staging acceptance provenance"
+    );
+    expect(release).toContain("agent-v3-acceptance.mjs verify");
+    expect(release).toContain("answer-v3-runtime-evidence.json");
+    expect(release).toContain("answer-v3-live-report.json");
+    expect(release).toContain("agent-v3-artifacts.json");
+    expect(release).toContain("agent-v3-staging-smoke.json");
+    expect(release).toContain('"$web_container" pnpm smoke:agent:v3:staging');
+    expect(release).toContain('docker cp "$web_container:$container_dir/."');
+    expect(release).not.toContain("AGENT_V3_STAGING_SESSION_COOKIE");
+    expect(release).not.toContain("secrets.DEEPSEEK_API_KEY");
+    expect(release).not.toContain("secrets.DASHSCOPE_API_KEY");
     expect(release).toContain('provenance_workflow_sha="$(');
     expect(release).toContain(
       '--data-urlencode "sha=$provenance_workflow_sha"'
@@ -206,6 +218,11 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     expect(deploy).toContain('"status=in-progress"');
     expect(deploy).toContain('"rollback_rehearsal=$rehearsal_status"');
     expect(activation).toContain("deployment-receipt");
+    expect(release).toContain("OPENVAC_R1_ROLLBACK_REHEARSAL=true");
+    expect(deploy).toContain("drain_previous_release_for_agent_v3_migration");
+    expect(
+      deploy.indexOf("drain_previous_release_for_agent_v3_migration")
+    ).toBeLessThan(deploy.indexOf("release_compose run --rm migrate"));
   });
 
   it("stops but does not delete the legacy modeling runtime after web health", () => {

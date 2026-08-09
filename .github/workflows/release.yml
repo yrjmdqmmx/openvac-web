@@ -255,7 +255,7 @@ jobs:
               --data-urlencode "per_page=100" \
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts" \
               --output "$artifacts_response"
-            provenance_run_id="$(
+            provenance_selection="$(
               jq --raw-output \
                 --arg name "$provenance_name" \
                 '[.artifacts[] |
@@ -264,13 +264,21 @@ jobs:
                     .expired == false
                   )] |
                   sort_by(.id) |
-                  .[-1].workflow_run.id // empty' \
+                  .[-1] |
+                  if . == null then empty else [.id, .workflow_run.id] | @tsv end' \
                 "$artifacts_response"
             )"
-            if [ -z "$provenance_run_id" ]; then
+            if [ -z "$provenance_selection" ]; then
               echo "Production requires an unexpired staging provenance artifact for this commit and digest." >&2
               exit 1
             fi
+            IFS=$'\t' read -r provenance_artifact_id provenance_run_id <<<"$provenance_selection"
+            case "$provenance_artifact_id:$provenance_run_id" in
+              *[!0-9:]*|:*|*:)
+                echo "The staging acceptance artifact identity is malformed." >&2
+                exit 1
+                ;;
+            esac
 
             provenance_run_response="$RUNNER_TEMP/openvac-staging-provenance-run.json"
             curl --fail-with-body --silent --show-error \
@@ -358,6 +366,30 @@ jobs:
               exit 1
             fi
             echo "The staging provenance run has a successful linked environment deployment."
+            provenance_run_attempt="$(jq --exit-status --raw-output '.run_attempt' "$provenance_run_response")"
+            case "$provenance_run_attempt" in
+              ""|*[!0-9]*)
+                echo "The staging acceptance workflow attempt is malformed." >&2
+                exit 1
+                ;;
+            esac
+            acceptance_zip="$RUNNER_TEMP/openvac-agent-v3-acceptance.zip"
+            acceptance_dir="$RUNNER_TEMP/openvac-agent-v3-acceptance"
+            curl --fail-with-body --silent --show-error --location \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "X-GitHub-Api-Version: 2026-03-10" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$provenance_artifact_id/zip" \
+              --output "$acceptance_zip"
+            install -d -m 700 "$acceptance_dir"
+            unzip -q "$acceptance_zip" -d "$acceptance_dir"
+            node deploy/agent-v3-acceptance.mjs verify \
+              --acceptance "$acceptance_dir/agent-v3-acceptance.json" \
+              --commit "$RELEASE_SHA" \
+              --digest "$STAGING_WEB_DIGEST" \
+              --run-id "$provenance_run_id" \
+              --run-attempt "$provenance_run_attempt"
+            echo "The complete Agent V3 staging acceptance record passed strict verification."
             echo "Accepted staging digest provenance: $STAGING_WEB_DIGEST"
           fi
 
@@ -753,6 +785,7 @@ jobs:
           [ "${#token_hash}" -eq 64 ] || exit 64
           KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256="$token_hash" \
             OPENVAC_WEB_PRELOADED_ID="$loaded_web_id" \
+            OPENVAC_R1_ROLLBACK_REHEARSAL=true \
             sh "$remote_stage/bundle/deploy/activate-bundle.sh" \
             "$deploy_dir" "$release_id" "$remote_stage/bundle" \
             "$release_image" "$compose_project" "$health_url"
@@ -768,22 +801,135 @@ jobs:
             printf -- '- Loaded image ID: `%s`\n' "$loaded_web_id"
           } >>"$GITHUB_STEP_SUMMARY"
           echo "digest_hex=$web_digest" >>"$GITHUB_OUTPUT"
+          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
+            "cat '$deploy_dir/releases/$RELEASE_SHA/deployment-receipt'" \
+            >"$RUNNER_TEMP/openvac-deployment-receipt"
+          test -s "$RUNNER_TEMP/openvac-deployment-receipt"
           if [ "$TARGET" = staging ]; then
-            jq --null-input \
-              --arg commit_sha "$RELEASE_SHA" \
-              --arg staging_web_digest "$WEB_IMAGE_DIGEST" \
-              '{
-                commit_sha: $commit_sha,
-                staging_web_digest: $staging_web_digest
-              }' >"$RUNNER_TEMP/openvac-staging-provenance.json"
+            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
+              sh -s -- "$remote_stage" "$deploy_dir" "$RELEASE_SHA" \
+              "$WEB_IMAGE_DIGEST" "$loaded_web_id" "$compose_project" <<'REMOTE_ACCEPTANCE'
+          set -eu
+          remote_stage="$1"
+          deploy_dir="$2"
+          release_id="$3"
+          image_digest="$4"
+          expected_image_id="$5"
+          compose_project="$6"
+          [ "$deploy_dir" = /opt/openvac-staging ] || exit 64
+          [ "$compose_project" = openvac-staging ] || exit 64
+          case "$remote_stage" in /tmp/openvac-deploy.*) ;; *) exit 64 ;; esac
+          compose_file="$deploy_dir/releases/$release_id/docker-compose.yml"
+          [ -f "$compose_file" ] && [ ! -L "$compose_file" ] || exit 64
+          web_container="$(
+            docker compose --project-name "$compose_project" \
+              --env-file "$deploy_dir/.env" -f "$compose_file" ps -q web
+          )"
+          [ -n "$web_container" ] || {
+            echo "The activated staging web container is unavailable for acceptance." >&2
+            exit 1
+          }
+          [ "$(docker inspect --format '{{.Image}}' "$web_container")" = "$expected_image_id" ] || {
+            echo "The acceptance container is not the activated staging image." >&2
+            exit 1
+          }
+          container_dir=/tmp/openvac-agent-v3-acceptance
+          host_dir="$remote_stage/acceptance"
+          cleanup_acceptance() {
+            docker exec "$web_container" rm -rf -- "$container_dir" >/dev/null 2>&1 || true
+          }
+          trap cleanup_acceptance EXIT HUP INT TERM
+          docker exec "$web_container" rm -rf -- "$container_dir"
+          docker exec \
+            -e "AGENT_V3_SMOKE_GIT_SHA=$release_id" \
+            -e "AGENT_V3_SMOKE_IMAGE_DIGEST=$image_digest" \
+            -e "AGENT_V3_SMOKE_OUTPUT_DIR=$container_dir" \
+            "$web_container" pnpm smoke:agent:v3:staging
+          runtime_checksum="$(
+            docker exec "$web_container" sha256sum \
+              "$container_dir/answer-v3-runtime-evidence.json" |
+              awk '{print $1}'
+          )"
+          case "$runtime_checksum" in
+            ""|*[!0-9a-f]*) exit 1 ;;
+          esac
+          [ "${#runtime_checksum}" -eq 64 ] || exit 1
+          docker exec \
+            -e ANSWER_V3_EVAL_ADAPTER=src/evals/answer-v3/live-adapter.ts \
+            -e "ANSWER_V3_EVAL_GIT_SHA=$release_id" \
+            -e "ANSWER_V3_EVAL_IMAGE_DIGEST=$image_digest" \
+            -e ANSWER_V3_EVAL_BASE_URL=https://staging-openvac.openvac.cn \
+            -e "ANSWER_V3_RUNTIME_EVIDENCE=$container_dir/answer-v3-runtime-evidence.json" \
+            -e "ANSWER_V3_RUNTIME_EVIDENCE_SHA256=$runtime_checksum" \
+            -e "ANSWER_V3_EVAL_OUTPUT_DIR=$container_dir/eval" \
+            "$web_container" pnpm eval:answer:v3:live
+          short_release="$(printf '%.12s' "$release_id")"
+          docker exec "$web_container" cp \
+            "$container_dir/eval/answer-v3-$short_release.json" \
+            "$container_dir/answer-v3-live-report.json"
+          docker exec "$web_container" pnpm test:artifacts
+          docker exec \
+            -e "ANSWER_V3_ARTIFACT_GIT_SHA=$release_id" \
+            -e "ANSWER_V3_ARTIFACT_OUTPUT=$container_dir/agent-v3-artifacts.json" \
+            "$web_container" pnpm verify:artifacts:v3
+          install -d -m 700 "$host_dir"
+          docker cp "$web_container:$container_dir/." "$host_dir"
+          for evidence in \
+            answer-v3-runtime-evidence.json \
+            answer-v3-live-report.json \
+            agent-v3-artifacts.json \
+            agent-v3-staging-smoke.json; do
+            [ -f "$host_dir/$evidence" ] && [ ! -L "$host_dir/$evidence" ] || exit 1
+          done
+          trap - EXIT HUP INT TERM
+          cleanup_acceptance
+          REMOTE_ACCEPTANCE
+            acceptance_dir="$RUNNER_TEMP/openvac-agent-v3-acceptance"
+            install -d -m 700 "$acceptance_dir"
+            for evidence in \
+              answer-v3-runtime-evidence.json \
+              answer-v3-live-report.json \
+              agent-v3-artifacts.json \
+              agent-v3-staging-smoke.json; do
+              scp -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+                "$ssh_base:$remote_stage/acceptance/$evidence" \
+                "$acceptance_dir/$evidence"
+              test -f "$acceptance_dir/$evidence" && test ! -L "$acceptance_dir/$evidence"
+            done
           fi
           trap - EXIT HUP INT TERM
           cleanup
       - if: inputs.target == 'staging'
-        name: Save accepted staging digest provenance
+        name: Build and re-verify the complete Agent V3 acceptance record
+        env:
+          RELEASE_SHA: ${{ inputs.commit_sha }}
+          WEB_IMAGE_DIGEST: ${{ needs.image.outputs.web_digest }}
+        run: |
+          set -Eeuo pipefail
+          acceptance_dir="$RUNNER_TEMP/openvac-agent-v3-acceptance"
+          cp "$RUNNER_TEMP/openvac-deployment-receipt" "$acceptance_dir/deployment-receipt"
+          node deploy/agent-v3-acceptance.mjs create \
+            --acceptance "$acceptance_dir/agent-v3-acceptance.json" \
+            --commit "$RELEASE_SHA" \
+            --digest "$WEB_IMAGE_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --receipt "$acceptance_dir/deployment-receipt" \
+            --runtime "$acceptance_dir/answer-v3-runtime-evidence.json" \
+            --eval "$acceptance_dir/answer-v3-live-report.json" \
+            --artifacts "$acceptance_dir/agent-v3-artifacts.json" \
+            --smoke "$acceptance_dir/agent-v3-staging-smoke.json"
+          node deploy/agent-v3-acceptance.mjs verify \
+            --acceptance "$acceptance_dir/agent-v3-acceptance.json" \
+            --commit "$RELEASE_SHA" \
+            --digest "$WEB_IMAGE_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"
+      - if: inputs.target == 'staging'
+        name: Save complete Agent V3 staging acceptance provenance
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: openvac-staging-provenance-${{ inputs.commit_sha }}-${{ steps.deploy.outputs.digest_hex }}
-          path: ${{ runner.temp }}/openvac-staging-provenance.json
+          path: ${{ runner.temp }}/openvac-agent-v3-acceptance
           if-no-files-found: error
           retention-days: 30

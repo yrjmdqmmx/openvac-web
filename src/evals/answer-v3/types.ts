@@ -21,6 +21,7 @@ export type AnswerV3EvalCase = {
     facts: string[];
     forbiddenText: string[];
     artifactKind?: ArtifactSpec["kind"];
+    permissionAudit?: EvalPermissionAudit[];
   };
 };
 
@@ -28,6 +29,16 @@ export type EvalToolAudit = {
   name: string;
   permission: "allowed" | "denied";
   executed: boolean;
+  denialReason?: string;
+};
+
+export type EvalPermissionAudit = EvalToolAudit;
+
+export type EvalAuthorizationAudit = {
+  name: string;
+  permission: "denied";
+  executed: false;
+  denialReason: string;
 };
 
 export type AnswerV3CandidateOutput = {
@@ -37,6 +48,7 @@ export type AnswerV3CandidateOutput = {
   verifiedLinks: VerifiedLinkPart[];
   browserEvents: unknown[];
   toolAudit: EvalToolAudit[];
+  authorizationAudit?: EvalAuthorizationAudit[];
   observedFacts: string[];
   artifactSpec?: ArtifactSpec;
 };

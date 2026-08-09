@@ -193,11 +193,9 @@ export const agentRun = pgTable(
     uniqueIndex("agent_run_answer_quota_lease_unique")
       .on(table.answerQuotaLeaseId)
       .where(sql`${table.answerQuotaLeaseId} is not null`),
-    index("agent_run_settlement_recovery_idx").on(
-      table.settlementStatus,
-      table.status,
-      table.updatedAt
-    ),
+    index("agent_run_settlement_recovery_idx")
+      .on(table.settlementStatus, table.status, table.updatedAt)
+      .where(sql`${table.settlementStatus} = 'pending'`),
     check("agent_run_version_positive", sql`${table.version} > 0`),
     check(
       "agent_run_answer_quota_shape_valid",

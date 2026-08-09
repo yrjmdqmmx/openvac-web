@@ -168,11 +168,27 @@ describe("Agent V3 quota atomicity contract", () => {
   });
 
   it("ships additive 0016 lease backfill, recovery indexes, and settlement state", () => {
+    expect(migration).toContain("SET LOCAL lock_timeout = '5s'");
+    expect(migration).toContain("SET LOCAL statement_timeout = '120s'");
     expect(migration).toContain('ADD COLUMN "answer_quota_lease_id" uuid');
     expect(migration).toContain('FROM "quota_ledger"');
     expect(migration).toContain("WHERE \"resource\" = 'answer'");
+    expect(migration).toContain('COUNT(DISTINCT "lease_id") <> 1');
+    expect(migration).toContain('COUNT(DISTINCT "status") <> 1');
+    expect(migration).toContain("SELECT DISTINCT");
+    expect(migration).not.toContain("ARRAY_AGG");
+    expect(migration).toContain(
+      "\"status\" IN ('incomplete', 'failed', 'cancelled')"
+    );
     expect(migration).toContain('"agent_run_answer_quota_lease_unique"');
-    expect(migration).toContain('"agent_run_settlement_recovery_idx"');
+    expect(migration).toContain(
+      '"agent_run_settlement_recovery_idx" ON "agent_run" USING btree ("settlement_status","status","updated_at") WHERE "agent_run"."settlement_status" = \'pending\''
+    );
+    expect(migration).toContain('"agent_run_answer_quota_shape_valid" CHECK');
+    expect(migration).toContain("NOT VALID");
+    expect(migration).toContain(
+      'VALIDATE CONSTRAINT "agent_run_answer_quota_shape_valid"'
+    );
     expect(migration).not.toMatch(/DROP (TABLE|COLUMN|TYPE)/u);
   });
 });

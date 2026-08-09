@@ -261,12 +261,35 @@ function checkGate(
       );
     }
     case "permission":
-      return output.toolAudit.every(
-        (audit) => audit.permission === "allowed" || !audit.executed
-      );
+      return permissionAuditMatches(testCase, output);
     case "tool_protocol":
       return browserProtocolSafe(output.browserEvents);
   }
+}
+
+function permissionAuditMatches(
+  testCase: AnswerV3EvalCase,
+  output: AnswerV3CandidateOutput
+): boolean {
+  const expected = testCase.expected.permissionAudit;
+  if (!expected || expected.length === 0) return false;
+  const expectedNames = new Set(expected.map((audit) => audit.name));
+  if (expectedNames.size !== expected.length) return false;
+  const actual = [...output.toolAudit, ...(output.authorizationAudit ?? [])]
+    .filter((audit) => expectedNames.has(audit.name))
+    .map((audit) => ({
+      name: audit.name,
+      permission: audit.permission,
+      executed: audit.executed,
+      ...(audit.denialReason ? { denialReason: audit.denialReason } : {})
+    }));
+  const normalizedExpected = expected.map((audit) => ({
+    name: audit.name,
+    permission: audit.permission,
+    executed: audit.executed,
+    ...(audit.denialReason ? { denialReason: audit.denialReason } : {})
+  }));
+  return sameJsonSet(actual, normalizedExpected);
 }
 
 async function verifyArtifact(
@@ -296,21 +319,55 @@ async function verifyArtifact(
 
 function browserProtocolSafe(events: unknown[]): boolean {
   if (events.length === 0) return false;
-  const allowedTypes = new Set([
-    "answer.block.committed",
-    "attachment.updated",
-    "artifact.updated",
-    "answer.completed"
-  ]);
+  const records = events.map((event) =>
+    typeof event === "object" && event !== null
+      ? (event as Record<string, unknown>)
+      : {}
+  );
+  const runtimeEvidence = records[0]?.type === "run.accepted";
+  const allowedTypes = runtimeEvidence
+    ? new Set([
+        "run.accepted",
+        "stage.changed",
+        "tool.started",
+        "tool.completed",
+        "tool.failed",
+        "answer.block.committed",
+        "citation.committed",
+        "run.completed"
+      ])
+    : new Set([
+        "answer.block.committed",
+        "attachment.updated",
+        "artifact.updated",
+        "answer.completed"
+      ]);
   const eventTypes = events.map((event) =>
     typeof event === "object" && event !== null && "type" in event
       ? String(event.type)
       : ""
   );
   if (eventTypes.some((type) => !allowedTypes.has(type))) return false;
-  if (eventTypes.at(-1) !== "answer.completed") return false;
-  if (eventTypes.filter((type) => type === "answer.completed").length !== 1) {
+  const terminalType = runtimeEvidence ? "run.completed" : "answer.completed";
+  if (eventTypes.at(-1) !== terminalType) return false;
+  if (eventTypes.filter((type) => type === terminalType).length !== 1) {
     return false;
+  }
+  if (runtimeEvidence) {
+    let runId: string | undefined;
+    let previousSequence = 0;
+    for (const event of records) {
+      if (
+        typeof event.runId !== "string" ||
+        !Number.isSafeInteger(event.sequence) ||
+        Number(event.sequence) <= previousSequence ||
+        (runId !== undefined && event.runId !== runId)
+      ) {
+        return false;
+      }
+      runId = event.runId;
+      previousSequence = Number(event.sequence);
+    }
   }
   const blockIndices = events.flatMap((event) =>
     typeof event === "object" &&
@@ -473,6 +530,24 @@ function sameSet(left: string[], right: string[]): boolean {
     left.length === right.length &&
     [...left].sort().every((value, index) => value === [...right].sort()[index])
   );
+}
+
+function sameJsonSet(left: unknown[], right: unknown[]): boolean {
+  if (left.length !== right.length) return false;
+  const sortedLeft = left.map(stableJson).sort();
+  const sortedRight = right.map(stableJson).sort();
+  return sortedLeft.every((value, index) => value === sortedRight[index]);
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right, "en"))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array | undefined): boolean {

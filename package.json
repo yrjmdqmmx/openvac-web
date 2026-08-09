@@ -47,6 +47,8 @@
     "eval:live": "tsx scripts/eval-v1-live.ts",
     "eval:answer:v3": "tsx scripts/eval-answer-v3.ts",
     "eval:answer:v3:live": "tsx scripts/eval-answer-v3.ts --live",
+    "verify:artifacts:v3": "tsx scripts/verify-agent-v3-artifacts.ts",
+    "smoke:agent:v3:staging": "tsx scripts/smoke-agent-v3-staging.ts",
     "test:artifacts": "vitest run src/server/artifacts/artifacts.test.ts",
     "model:verify": "tsx scripts/verify-deepseek-model.ts",
     "semacad:verify-release": "tsx scripts/verify-semacad-release.ts",

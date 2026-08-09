@@ -74,7 +74,7 @@ function createBundle(
       ...(options.publishReceipt === false
         ? []
         : [
-            'printf "%s\\n" "release=$4" "web_image=$image_id" "rollback_rehearsal=not-required" "status=healthy" "activation=$OPENVAC_ACTIVATION_ID" >"$release_dir/deployment-receipt"',
+            'printf "%s\\n" "release=$4" "web_image=$image_id" "migration=passed" "health=passed" "rollback_rehearsal=not-required" "status=healthy" "activation=$OPENVAC_ACTIVATION_ID" >"$release_dir/deployment-receipt"',
             'chmod 600 "$release_dir/deployment-receipt"'
           ]),
       ...(options.publishPointer === false

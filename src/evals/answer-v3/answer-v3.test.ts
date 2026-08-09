@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   createFixtureEvalDependencies,
   runAnswerV3Eval,
+  type AnswerV3CandidateOutput,
   type AnswerV3Judge
 } from ".";
 
@@ -69,6 +70,58 @@ describe("Answer V3 automated release gate", () => {
     );
     expect(report.categories.visual.passed).toBe(false);
   }, 30_000);
+
+  it.each([
+    [
+      "empty permission audit",
+      (output: AnswerV3CandidateOutput) => {
+        output.toolAudit = [];
+        output.authorizationAudit = [];
+      }
+    ],
+    [
+      "wrong permission tool",
+      (output: AnswerV3CandidateOutput) => {
+        output.authorizationAudit = (output.authorizationAudit ?? []).map(
+          (audit) => ({ ...audit, name: "wrong_attachment_tool" })
+        );
+      }
+    ],
+    [
+      "duplicate permission audit",
+      (output: AnswerV3CandidateOutput) => {
+        output.authorizationAudit = [
+          ...(output.authorizationAudit ?? []),
+          ...(output.authorizationAudit ?? [])
+        ];
+      }
+    ]
+  ])("fails the permission gate for %s", async (_label, mutate) => {
+    const dependencies = mutateCandidate("v3-multiturn-permission-01", mutate);
+    const report = await runAnswerV3Eval({ dependencies, gitSha: "test" });
+
+    expect(report.passed).toBe(false);
+    expect(report.deterministicGates.permission.passed).toBe(false);
+    expect(report.failureIds).toContain(
+      "v3-multiturn-permission-01:permission"
+    );
+  });
+
+  it("ignores unrelated real tool rows when exact-matching expected permission names", async () => {
+    const dependencies = mutateCandidate("v3-document-manual-01", (output) => {
+      output.toolAudit.push({
+        name: "search_knowledge",
+        permission: "allowed",
+        executed: true
+      });
+    });
+    const report = await runAnswerV3Eval({ dependencies, gitSha: "test" });
+
+    expect(report.deterministicGates.permission).toMatchObject({
+      passed: true,
+      score: 100
+    });
+  });
 });
 
 function unavailableJudge(provider: "qwen" | "deepseek"): AnswerV3Judge {
@@ -78,4 +131,22 @@ function unavailableJudge(provider: "qwen" | "deepseek"): AnswerV3Judge {
     available: async () => false,
     score: async () => Promise.reject(new Error("judge unavailable"))
   };
+}
+
+function mutateCandidate(
+  caseId: string,
+  mutate: (output: AnswerV3CandidateOutput) => void
+) {
+  const dependencies = createFixtureEvalDependencies();
+  const candidate = dependencies.candidate;
+  dependencies.candidate = {
+    provider: candidate.provider,
+    model: candidate.model,
+    execute: async (testCase) => {
+      const output = await candidate.execute(testCase);
+      if (testCase.id === caseId) mutate(output);
+      return output;
+    }
+  };
+  return dependencies;
 }

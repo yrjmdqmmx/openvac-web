@@ -70,6 +70,9 @@ if [ "$1" = inspect ]; then
 fi
 
 case " $* " in
+  *" exec -T postgres "*)
+    printf '%s\n' "\${OPENVAC_FAKE_DRAIN_STATE:-0|0|0}"
+    ;;
   *" config --services "*)
     printf '%s\n' web worker modeling-service modeling-worker
     ;;
@@ -87,6 +90,9 @@ case " $* " in
       printf '%s\n' new-web >"$OPENVAC_FAKE_STATE/web"
       printf '%s\n' new-worker >"$OPENVAC_FAKE_STATE/worker"
     fi
+    ;;
+  *" stop -t 30 worker web "*)
+    rm -f "$OPENVAC_FAKE_STATE/web" "$OPENVAC_FAKE_STATE/worker"
     ;;
   *" stop -t 30 modeling-worker modeling-service "*)
     rm -f "$OPENVAC_FAKE_STATE/modeling" "$OPENVAC_FAKE_STATE/modeling-worker"
@@ -144,7 +150,14 @@ function createFixture() {
   chmodSync(join(bundleDeploy, "preflight-host.sh"), 0o700);
   write(
     join(bundleDeploy, "backup.sh"),
-    "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$OPENVAC_FAKE_BACKUP\"\n",
+    [
+      "#!/bin/sh",
+      "set -eu",
+      "printf '%s\\n' backup >>\"$OPENVAC_FAKE_DOCKER_LOG\"",
+      '[ "${OPENVAC_FAKE_BACKUP_FAIL:-false}" != true ] || exit 1',
+      "printf '%s\\n' \"$OPENVAC_FAKE_BACKUP\"",
+      ""
+    ].join("\n"),
     0o700
   );
   write(
@@ -239,6 +252,8 @@ describe("transactional web-only R1 cutover", { timeout: 20_000 }, () => {
       [
         `release=${fixture.targetRelease}`,
         `web_image=sha256:${"a".repeat(64)}`,
+        "migration=passed",
+        "health=passed",
         "rollback_rehearsal=passed",
         "status=healthy",
         `activation=${fixture.targetRelease}-${fixture.activationNonce}`,
@@ -254,6 +269,16 @@ describe("transactional web-only R1 cutover", { timeout: 20_000 }, () => {
     ).toThrow();
 
     const dockerLog = readFileSync(fixture.dockerLog, "utf8");
+    const drainStop = dockerLog.indexOf("stop -t 30 worker web");
+    const drainCheck = dockerLog.indexOf("exec -T postgres");
+    const recoveryBackup = dockerLog.indexOf("backup");
+    const migration = dockerLog.indexOf("run --rm migrate");
+    const firstActivation = dockerLog.indexOf("up -d --no-deps web worker");
+    expect(drainStop).toBeGreaterThan(-1);
+    expect(drainCheck).toBeGreaterThan(drainStop);
+    expect(recoveryBackup).toBeGreaterThan(drainCheck);
+    expect(migration).toBeGreaterThan(recoveryBackup);
+    expect(firstActivation).toBeGreaterThan(migration);
     const newActivations = dockerLog.match(
       /image=ghcr\.io\/example\/openvac@sha256:[a-f0-9]+ modeling= args=.*up -d --no-deps web worker/g
     );
@@ -264,6 +289,55 @@ describe("transactional web-only R1 cutover", { timeout: 20_000 }, () => {
     expect(
       dockerLog.match(/stop -t 30 modeling-worker modeling-service/g)
     ).toHaveLength(2);
+  });
+
+  it("restores the previous web and worker when the migration drain is not empty", () => {
+    const fixture = createFixture();
+    const result = runDeployment(fixture, {
+      OPENVAC_FAKE_DRAIN_STATE: "1|0|0",
+      OPENVAC_R1_ROLLBACK_REHEARSAL: "false"
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Agent V3 migration drain is not empty");
+    expect(result.stderr).toContain(
+      "Agent V3 migration drain failed; rolling back the previous application release set"
+    );
+    expect(readFileSync(join(fixture.host, "current-release"), "utf8")).toBe(
+      `${fixture.previousRelease}\n`
+    );
+    expect(readFileSync(join(fixture.state, "web"), "utf8")).toBe("old-web\n");
+    expect(readFileSync(join(fixture.state, "worker"), "utf8")).toBe(
+      "old-worker\n"
+    );
+    expect(readFileSync(fixture.dockerLog, "utf8")).not.toContain(
+      "run --rm migrate"
+    );
+  });
+
+  it("restores the previous web and worker when the drained recovery backup fails", () => {
+    const fixture = createFixture();
+    const result = runDeployment(fixture, {
+      OPENVAC_FAKE_BACKUP_FAIL: "true",
+      OPENVAC_R1_ROLLBACK_REHEARSAL: "false"
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "Drained pre-migration recovery backup failed; rolling back the previous application release set"
+    );
+    expect(readFileSync(join(fixture.host, "current-release"), "utf8")).toBe(
+      `${fixture.previousRelease}\n`
+    );
+    expect(readFileSync(join(fixture.state, "web"), "utf8")).toBe("old-web\n");
+    expect(readFileSync(join(fixture.state, "worker"), "utf8")).toBe(
+      "old-worker\n"
+    );
+    const dockerLog = readFileSync(fixture.dockerLog, "utf8");
+    expect(dockerLog.indexOf("backup")).toBeGreaterThan(
+      dockerLog.indexOf("exec -T postgres")
+    );
+    expect(dockerLog).not.toContain("run --rm migrate");
   });
 
   it("restores R0 and keeps its pointer when pointer publication fails", () => {

@@ -92,21 +92,22 @@ function fixtureOutput(testCase: AnswerV3EvalCase): AnswerV3CandidateOutput {
       })),
       { type: "answer.completed", answer }
     ],
-    toolAudit: testCase.deterministicGates.includes("permission")
-      ? [
-          {
-            name: "read_cross_conversation_attachment",
-            permission: "denied",
-            executed: false
-          }
-        ]
-      : [
-          {
-            name: "read_current_context",
-            permission: "allowed",
-            executed: true
-          }
-        ],
+    toolAudit: (testCase.expected.permissionAudit ?? []).filter(
+      (audit) => audit.permission === "allowed"
+    ),
+    authorizationAudit: (testCase.expected.permissionAudit ?? []).flatMap(
+      (audit) =>
+        audit.permission === "denied"
+          ? [
+              {
+                name: audit.name,
+                permission: "denied" as const,
+                executed: false as const,
+                denialReason: audit.denialReason ?? "fixture_denial"
+              }
+            ]
+          : []
+    ),
     observedFacts: testCase.expected.facts,
     artifactSpec: testCase.expected.artifactKind
       ? artifactFixture(testCase.expected.artifactKind)

@@ -357,6 +357,10 @@ if [ ! -e "$current_release_file" ] && [ -n "$old_web_container" ]; then
   echo "running web container has no current-release record; refusing an unmanaged upgrade" >&2
   exit 64
 fi
+if [ "$rollback_rehearsal_mode" = true ] && [ -z "$old_image" ]; then
+  echo "the required previous-image rollback rehearsal has no managed web/worker release to restore" >&2
+  exit 64
+fi
 
 health_url="${OPENVAC_HEALTH_URL:-http://127.0.0.1:3010/api/health}"
 
@@ -609,15 +613,66 @@ rollback_failed_deployment() {
   return 1
 }
 
+drain_previous_release_for_agent_v3_migration() {
+  [ -n "$old_image" ] || {
+    echo "Agent V3 migration drain requires a previous managed web/worker release" >&2
+    return 1
+  }
+  echo "Stopping previous web/worker before the Agent V3 migration drain"
+  runtime_mutated=true
+  MODELING_ENABLED="$old_modeling_enabled" \
+    OPENVAC_IMAGE="$old_image" \
+    OPENVAC_MODELING_IMAGE="$old_modeling_image" \
+    run_legacy_compose "$previous_compose_file" stop -t 30 worker web || return 1
+  [ -z "$(service_container "$previous_compose_file" web)" ] || {
+    echo "Previous web container is still running after the migration drain stop" >&2
+    return 1
+  }
+  [ -z "$(service_container "$previous_compose_file" worker)" ] || {
+    echo "Previous worker container is still running after the migration drain stop" >&2
+    return 1
+  }
+
+  drain_query="
+    select
+      (select count(*) from agent_run where status in ('pending', 'running')),
+      (select count(*) from pg_stat_activity
+        where datname = current_database()
+          and pid <> pg_backend_pid()
+          and xact_start is not null
+          and now() - xact_start > interval '5 seconds'),
+      (select count(*) from pg_stat_activity
+        where datname = current_database()
+          and pid <> pg_backend_pid()
+          and wait_event_type = 'Lock');
+  "
+  drain_state="$({
+    release_compose exec -T postgres sh -eu -c \
+      'exec psql -X --no-align --tuples-only --set ON_ERROR_STOP=on --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "$1"' \
+      sh "$drain_query"
+  } | tr -d '[:space:]')" || return 1
+  case "$drain_state" in
+    0\|0\|0) ;;
+    *\|*\|*)
+      echo "Agent V3 migration drain is not empty (active runs | long transactions | lock waiters: $drain_state)" >&2
+      return 1
+      ;;
+    *)
+      echo "Agent V3 migration drain returned malformed database state" >&2
+      return 1
+      ;;
+  esac
+  echo "Agent V3 migration drain passed: no active runs, long transactions, or lock waiters"
+}
+
 if [ -e "$current_release_file" ] || [ -L "$current_release_file" ]; then
   [ -f "$script_dir/backup.sh" ] && [ ! -L "$script_dir/backup.sh" ] || {
     echo "upgrade deployment requires the bundled backup script" >&2
     exit 64
   }
-  echo "Creating required pre-migration backup"
-  pre_migration_backup="$(bash "$script_dir/backup.sh" "$deployment_target")"
-  echo "Pre-migration backup ready: $pre_migration_backup"
+  upgrade_requires_backup=true
 else
+  upgrade_requires_backup=false
   echo "No current release is recorded; treating this as a first deployment"
 fi
 
@@ -708,6 +763,23 @@ if ! apply_runtime_env; then
   exit 1
 fi
 
+if ! drain_previous_release_for_agent_v3_migration; then
+  rollback_failed_deployment "Agent V3 migration drain failed" || true
+  exit 1
+fi
+
+if [ "$upgrade_requires_backup" = true ]; then
+  echo "Creating final drained pre-migration recovery backup"
+  pre_migration_backup=""
+  if ! pre_migration_backup="$(
+    bash "$script_dir/backup.sh" "$deployment_target"
+  )" || [ -z "$pre_migration_backup" ]; then
+    rollback_failed_deployment "Drained pre-migration recovery backup failed" || true
+    exit 1
+  fi
+  echo "Drained pre-migration recovery backup ready: $pre_migration_backup"
+fi
+
 echo "Running database migration"
 if ! OPENVAC_IMAGE="$release_image" release_compose run --rm migrate; then
   rollback_failed_deployment "Database migration failed" || true
@@ -744,7 +816,7 @@ should_rehearse=false
 rehearsal_status=not-required
 case "$rollback_rehearsal_mode" in
   true)
-    [ -n "$old_image" ] && should_rehearse=true
+    should_rehearse=true
     ;;
   auto)
     if [ "$legacy_modeling_declared" = true ]; then
@@ -792,6 +864,8 @@ publish_current_release() {
     printf '%s\n' \
       "release=$target_release_id" \
       "web_image=$verified_web_id" \
+      "migration=passed" \
+      "health=passed" \
       "rollback_rehearsal=$rehearsal_status" \
       "status=healthy" \
       "activation=$activation_id" >"$receipt_tmp"
@@ -804,12 +878,16 @@ publish_current_release() {
     }
     existing_receipt_release="$(sed -n '1p' "$release_receipt_file")"
     existing_receipt_image="$(sed -n '2p' "$release_receipt_file")"
-    existing_receipt_rehearsal="$(sed -n '3p' "$release_receipt_file")"
-    existing_receipt_status="$(sed -n '4p' "$release_receipt_file")"
-    existing_receipt_activation="$(sed -n '5p' "$release_receipt_file")"
-    [ "$(wc -l <"$release_receipt_file" | tr -d '[:space:]')" = 5 ] &&
+    existing_receipt_migration="$(sed -n '3p' "$release_receipt_file")"
+    existing_receipt_health="$(sed -n '4p' "$release_receipt_file")"
+    existing_receipt_rehearsal="$(sed -n '5p' "$release_receipt_file")"
+    existing_receipt_status="$(sed -n '6p' "$release_receipt_file")"
+    existing_receipt_activation="$(sed -n '7p' "$release_receipt_file")"
+    [ "$(wc -l <"$release_receipt_file" | tr -d '[:space:]')" = 7 ] &&
       [ "$existing_receipt_release" = "release=$target_release_id" ] &&
       [ "$existing_receipt_image" = "web_image=$verified_web_id" ] &&
+      [ "$existing_receipt_migration" = migration=passed ] &&
+      [ "$existing_receipt_health" = health=passed ] &&
       [ "$existing_receipt_status" = status=healthy ] &&
       case "$existing_receipt_activation" in activation="$target_release_id"-*) true ;; *) false ;; esac || {
       echo "existing deployment receipt does not match this release" >&2

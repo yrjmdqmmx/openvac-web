@@ -962,6 +962,7 @@
             }
           ],
           "isUnique": false,
+          "where": "\"agent_run\".\"settlement_status\" = 'pending'",
           "concurrently": false,
           "method": "btree",
           "with": {}
