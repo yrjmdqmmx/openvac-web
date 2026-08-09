@@ -163,6 +163,57 @@ export type TrustedPumpdownProjection = {
       };
 };
 
+export type TrustedPumpdownEligibilityFailure =
+  | "TRUSTED_CALCULATION_PROJECTION_HIGH_RISK"
+  | "TRUSTED_CALCULATION_PROJECTION_WEB_REQUIRED"
+  | "TRUSTED_CALCULATION_PROJECTION_MIXED_INTENT"
+  | "TRUSTED_CALCULATION_PROJECTION_NON_TEXT_INPUT"
+  | "TRUSTED_CALCULATION_PROJECTION_ARTIFACT_INTENT"
+  | "TRUSTED_CALCULATION_PROJECTION_TOOL_ROUND_MISMATCH"
+  | "TRUSTED_CALCULATION_PROJECTION_CALCULATION_COUNT_MISMATCH"
+  | "TRUSTED_CALCULATION_PROJECTION_CALL_COUNT_MISMATCH"
+  | "TRUSTED_CALCULATION_PROJECTION_TOOL_NAME_MISMATCH";
+
+export function trustedPumpdownEligibilityFailure(input: {
+  riskLevel: AgentV3RiskLevel;
+  webRequired: boolean;
+  question: string;
+  inputPartTypes: readonly string[];
+  hasArtifactIntent: boolean;
+  toolRounds: number;
+  calculationCount: number;
+  calls: readonly { name: string }[];
+}): TrustedPumpdownEligibilityFailure | undefined {
+  if (input.riskLevel === "high") {
+    return "TRUSTED_CALCULATION_PROJECTION_HIGH_RISK";
+  }
+  if (input.webRequired) {
+    return "TRUSTED_CALCULATION_PROJECTION_WEB_REQUIRED";
+  }
+  if (!isPurePumpdownCalculationRequest(input.question)) {
+    return "TRUSTED_CALCULATION_PROJECTION_MIXED_INTENT";
+  }
+  if (input.inputPartTypes.some((type) => type !== "text")) {
+    return "TRUSTED_CALCULATION_PROJECTION_NON_TEXT_INPUT";
+  }
+  if (input.hasArtifactIntent) {
+    return "TRUSTED_CALCULATION_PROJECTION_ARTIFACT_INTENT";
+  }
+  if (input.toolRounds !== 1) {
+    return "TRUSTED_CALCULATION_PROJECTION_TOOL_ROUND_MISMATCH";
+  }
+  if (input.calculationCount !== 1) {
+    return "TRUSTED_CALCULATION_PROJECTION_CALCULATION_COUNT_MISMATCH";
+  }
+  if (input.calls.length !== 1) {
+    return "TRUSTED_CALCULATION_PROJECTION_CALL_COUNT_MISMATCH";
+  }
+  if (input.calls[0]?.name !== PUMPDOWN_TOOL) {
+    return "TRUSTED_CALCULATION_PROJECTION_TOOL_NAME_MISMATCH";
+  }
+  return undefined;
+}
+
 export function buildTrustedPumpdownProjection(
   value: unknown
 ): TrustedPumpdownProjection {

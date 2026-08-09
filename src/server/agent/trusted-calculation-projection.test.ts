@@ -14,6 +14,7 @@ import {
   buildTrustedPumpdownProjection,
   calculationsForProjection,
   isPurePumpdownCalculationRequest,
+  trustedPumpdownEligibilityFailure,
   trustedPumpdownProjectionFromToolTurn
 } from "./trusted-calculation-projection";
 import type { ToolExecutionResult } from "./tool-registry";
@@ -109,6 +110,34 @@ describe("trusted calculation projection", () => {
     expect(isPurePumpdownCalculationRequest("解释真空系统设计方案。")).toBe(
       false
     );
+
+    const eligible = {
+      riskLevel: "medium" as const,
+      webRequired: false,
+      question:
+        "使用上一轮参数，估算从 100 Pa 抽到 1 Pa 的理想抽空时间，结果以秒表示。",
+      inputPartTypes: ["text"],
+      hasArtifactIntent: false,
+      toolRounds: 1,
+      calculationCount: 1,
+      calls: [{ name: "estimate_pumpdown_time" }]
+    };
+    expect(trustedPumpdownEligibilityFailure(eligible)).toBeUndefined();
+    expect(
+      trustedPumpdownEligibilityFailure({
+        ...eligible,
+        calls: [
+          { name: "estimate_pumpdown_time" },
+          { name: "estimate_pumpdown_time" }
+        ]
+      })
+    ).toBe("TRUSTED_CALCULATION_PROJECTION_CALL_COUNT_MISMATCH");
+    expect(
+      trustedPumpdownEligibilityFailure({
+        ...eligible,
+        calculationCount: 2
+      })
+    ).toBe("TRUSTED_CALCULATION_PROJECTION_CALCULATION_COUNT_MISMATCH");
   });
 
   it("creates a bounded numeric-only pumpdown projection and fresh input", () => {
