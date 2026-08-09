@@ -16,6 +16,7 @@ import {
 } from "../src/server/providers";
 import {
   applyDeepSeekSmokeBoundary,
+  classifyDeepSeekSmokeProviderFailure,
   DeepSeekSmokeFailure,
   publicDeepSeekSmokeFailure
 } from "./smoke-deepseek-boundary";
@@ -50,8 +51,12 @@ async function main() {
       },
       user: userPartition
     });
-  } catch {
-    throw new DeepSeekSmokeFailure("PROVIDER_REQUEST_FAILED");
+  } catch (error) {
+    throw classifyDeepSeekSmokeProviderFailure(
+      "PROVIDER_REQUEST_FAILED",
+      "safety",
+      error
+    );
   }
 
   if (safety.terminal !== "completed") {
@@ -154,8 +159,12 @@ async function runToolContinuationProbe(
       },
       user: userPartition
     });
-  } catch {
-    throw new DeepSeekSmokeFailure("PROVIDER_REQUEST_FAILED");
+  } catch (error) {
+    throw classifyDeepSeekSmokeProviderFailure(
+      "PROVIDER_REQUEST_FAILED",
+      "tool_first",
+      error
+    );
   }
   const call = first.calls[0];
   if (
@@ -189,8 +198,12 @@ async function runToolContinuationProbe(
       },
       user: userPartition
     });
-  } catch {
-    throw new DeepSeekSmokeFailure("TOOL_CONTINUATION_INVALID");
+  } catch (error) {
+    throw classifyDeepSeekSmokeProviderFailure(
+      "TOOL_CONTINUATION_INVALID",
+      "tool_final",
+      error
+    );
   }
   let parsed: unknown;
   try {

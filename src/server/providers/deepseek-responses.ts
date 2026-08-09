@@ -133,8 +133,8 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
           ...(portableRequest.toolChoice
             ? { tool_choice: portableRequest.toolChoice }
             : {}),
-          ...(request.reasoningEffort
-            ? { reasoning: { effort: request.reasoningEffort } }
+          ...(portableRequest.reasoningEffort
+            ? { reasoning: { effort: portableRequest.reasoningEffort } }
             : {}),
           ...(portableRequest.textFormat
             ? { text: { format: portableRequest.textFormat } }
@@ -457,6 +457,7 @@ function portableToolRequest(request: ResponsesStreamRequest): {
   tools?: ResponsesTool[];
   toolChoice?: ResponsesToolChoice;
   textFormat?: ResponsesTextFormat;
+  reasoningEffort?: ResponsesStreamRequest["reasoningEffort"];
 } {
   if (
     typeof request.toolChoice === "object" &&
@@ -471,14 +472,15 @@ function portableToolRequest(request: ResponsesStreamRequest): {
         "A forced Responses function must resolve to exactly one tool."
       );
     }
-    // DeepSeek documents named function choice and structured text
-    // independently, but its forced-tool path has rejected the combined wire
-    // shape in live staging. With exactly one declared tool, `required`
-    // preserves the same semantics while keeping the first leg tool-only. The
-    // final leg restores structured AnswerV3 output after the local result.
+    // DeepSeek Responses defaults to thinking mode, while the live forced-tool
+    // path has rejected thinking plus an explicit non-none tool choice. This
+    // first leg only extracts validated tool arguments, so keep it deliberately
+    // non-thinking and tool-only. The continuation restores the caller's
+    // reasoning effort and structured AnswerV3 output after the local result.
     return {
       tools: serializeTools(matches),
-      toolChoice: "required"
+      toolChoice: "required",
+      reasoningEffort: "none"
     };
   }
   return {
@@ -486,6 +488,9 @@ function portableToolRequest(request: ResponsesStreamRequest): {
     ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
     ...(request.textFormat
       ? { textFormat: serializeTextFormat(request.textFormat) }
+      : {}),
+    ...(request.reasoningEffort
+      ? { reasoningEffort: request.reasoningEffort }
       : {})
   };
 }
