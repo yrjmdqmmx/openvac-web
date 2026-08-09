@@ -285,21 +285,32 @@ export function isPurePumpdownCalculationRequest(question: string): boolean {
 
 export function trustedPumpdownProjectionFromToolTurn(input: {
   calls: readonly { callId: string; name: string; arguments: string }[];
+  executedCalls?: readonly {
+    callId: string;
+    name: string;
+    arguments: string;
+  }[];
   continuationItems: readonly ResponsesInputItem[];
   outputs: readonly ToolExecutionResult[];
 }): TrustedPumpdownProjection | undefined {
+  const executedCalls = input.executedCalls ?? input.calls;
   if (
     input.calls.length !== 1 ||
+    executedCalls.length !== 1 ||
     input.outputs.length !== 1 ||
     input.continuationItems.length !== 1
   ) {
     return undefined;
   }
-  const call = input.calls[0];
+  const providerCall = input.calls[0];
+  const call = executedCalls[0];
   const output = input.outputs[0];
   const continuation = input.continuationItems[0];
   if (
+    !providerCall ||
     !call ||
+    providerCall.callId !== call.callId ||
+    providerCall.name !== call.name ||
     call.name !== PUMPDOWN_TOOL ||
     !output ||
     !output.ok ||
@@ -309,9 +320,9 @@ export function trustedPumpdownProjectionFromToolTurn(input: {
     output.artifacts.length !== 0 ||
     output.missingInputs.length !== 0 ||
     continuation?.type !== "function_call" ||
-    continuation.call_id !== call.callId ||
-    continuation.name !== call.name ||
-    continuation.arguments !== call.arguments ||
+    continuation.call_id !== providerCall.callId ||
+    continuation.name !== providerCall.name ||
+    continuation.arguments !== providerCall.arguments ||
     output.outputItem.type !== "function_call_output" ||
     output.outputItem.call_id !== call.callId
   ) {

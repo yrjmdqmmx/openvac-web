@@ -171,6 +171,40 @@ describe("trusted calculation projection", () => {
     );
   });
 
+  it("binds provider call identity while allowing server-owned execution arguments", () => {
+    const value = fixture();
+    const providerCall = { ...value.call, arguments: "{}" };
+    const projection = trustedPumpdownProjectionFromToolTurn({
+      calls: [providerCall],
+      executedCalls: [value.call],
+      continuationItems: [
+        {
+          type: "function_call",
+          call_id: providerCall.callId,
+          name: providerCall.name,
+          arguments: providerCall.arguments
+        }
+      ],
+      outputs: [value.output]
+    });
+    expect(projection?.calculationId).toBe(value.calculation.id);
+    expect(
+      trustedPumpdownProjectionFromToolTurn({
+        calls: [providerCall],
+        executedCalls: [{ ...value.call, callId: "different-call" }],
+        continuationItems: [
+          {
+            type: "function_call",
+            call_id: providerCall.callId,
+            name: providerCall.name,
+            arguments: providerCall.arguments
+          }
+        ],
+        outputs: [value.output]
+      })
+    ).toBeUndefined();
+  });
+
   it("rejects payload tampering, mixed turns and non-message base context", () => {
     const value = fixture();
     expect(() =>

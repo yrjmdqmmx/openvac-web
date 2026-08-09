@@ -318,6 +318,10 @@ export class AgentRunOrchestrator {
           true
         );
       }
+      const requiresTrustedProjection =
+        this.provider.capabilities.forcedFunctionResultTransport ===
+          "fresh_trusted_projection" &&
+        result.forcedFunctionName === "estimate_pumpdown_time";
       assertAuthorizedFunctionCalls(result.calls, result.callableFunctionNames);
       if (
         result.calls.length === 0 &&
@@ -339,6 +343,33 @@ export class AgentRunOrchestrator {
         incomplete = true;
         break;
       }
+      let executionCalls = result.calls;
+      if (requiresTrustedProjection) {
+        if (result.calls.length !== 1) {
+          throw new AgentRuntimeError(
+            "TRUSTED_CALCULATION_PROJECTION_CALL_COUNT_MISMATCH",
+            "可信计算投影要求恰好一个已授权计算调用。",
+            false
+          );
+        }
+        const trustedArguments = extractTrustedPumpdownArguments(
+          input.run.question,
+          currentInput
+        );
+        if (!trustedArguments) {
+          throw new AgentRuntimeError(
+            "TRUSTED_CALCULATION_PROJECTION_INPUT_EXTRACTION_FAILED",
+            "无法从明确的当前和承接参数中构建可信计算输入。",
+            false
+          );
+        }
+        executionCalls = [
+          {
+            ...result.calls[0]!,
+            arguments: JSON.stringify(trustedArguments)
+          }
+        ];
+      }
       if (this.toolRounds >= toolRoundLimit) {
         throw new AgentRuntimeError(
           "TOOL_ROUND_LIMIT",
@@ -349,13 +380,9 @@ export class AgentRunOrchestrator {
       this.toolRounds += 1;
       const outputs = await this.executeToolCalls(
         input.run,
-        result.calls,
+        executionCalls,
         signal
       );
-      const requiresTrustedProjection =
-        this.provider.capabilities.forcedFunctionResultTransport ===
-          "fresh_trusted_projection" &&
-        result.forcedFunctionName === "estimate_pumpdown_time";
       const projectionEligibilityFailure = requiresTrustedProjection
         ? trustedPumpdownEligibilityFailure({
             riskLevel: input.riskLevel,
@@ -370,7 +397,7 @@ export class AgentRunOrchestrator {
             ),
             toolRounds: this.toolRounds,
             calculationCount: this.calculations.size,
-            calls: result.calls
+            calls: executionCalls
           })
         : undefined;
       const canUseTrustedProjection =
@@ -385,6 +412,7 @@ export class AgentRunOrchestrator {
       if (canUseTrustedProjection) {
         const projection = trustedPumpdownProjectionFromToolTurn({
           calls: result.calls,
+          executedCalls: executionCalls,
           continuationItems: result.finish.continuationItems,
           outputs
         });
@@ -1388,15 +1416,7 @@ export function selectAnswerToolChoice(
   ) {
     return "auto";
   }
-  const priorUserText = previousPlainUserText(modelInput, question);
-  const context =
-    priorUserText &&
-    /(?:上一轮|上轮|刚才|前述|前面|previous|earlier|above\s+parameters?)/iu.test(
-      question
-    )
-      ? `${priorUserText}\n${question}`
-      : question;
-  return hasCompletePumpdownInputs(context)
+  return extractTrustedPumpdownArguments(question, modelInput)
     ? { type: "function", name: "estimate_pumpdown_time" }
     : "auto";
 }
@@ -1589,30 +1609,117 @@ function previousPlainUserText(
   return texts.at(-1);
 }
 
-function hasCompletePumpdownInputs(text: string): boolean {
+export type TrustedPumpdownToolArguments = {
+  volume: { value: number; unit: string };
+  pumpingSpeed: { value: number; unit: string };
+  initialPressure: { value: number; unit: string };
+  targetPressure: { value: number; unit: string };
+  gasLoad?: { value: number; unit: string };
+  outputUnit: "s" | "min" | "h";
+};
+
+export function extractTrustedPumpdownArguments(
+  question: string,
+  modelInput: ResponsesInputItem[]
+): TrustedPumpdownToolArguments | undefined {
+  const priorUserText = previousPlainUserText(modelInput, question);
+  const context =
+    priorUserText &&
+    /(?:上一轮|上轮|刚才|前述|前面|previous|earlier|above\s+parameters?)/iu.test(
+      question
+    )
+      ? `${priorUserText}\n${question}`
+      : question;
   const number = String.raw`(?:\d+(?:\.\d+)?|\.\d+)`;
-  const pressure = String.raw`${number}\s*(?:Pa|mbar|Torr|bar|atm)\b`;
-  const volume = new RegExp(
-    String.raw`(?:腔体(?:体积|容积)?|体积|容积|\bvolume\b)[^。\n,，;；]{0,24}?${number}\s*(?:m3|m³|l|cm3|cm³)\b`,
+  const volume = captureQuantity(
+    context,
+    new RegExp(
+      String.raw`(?:腔体(?:体积|容积)?|体积|容积|\bvolume\b)[^。\n,，;；]{0,24}?(?<value>${number})\s*(?<unit>m3|m³|l|liter|litre)\b`,
+      "iu"
+    )
+  );
+  const pumpingSpeed = captureQuantity(
+    context,
+    new RegExp(
+      String.raw`(?:(?:等效)?抽速|泵速|\bpumping\s*speed\b)[^。\n,，;；]{0,24}?(?<value>${number})\s*(?<unit>m3\/s|m³\/s|l\/s|m3\/h|m³\/h|cfm)\b`,
+      "iu"
+    )
+  );
+  const pressureUnit = String.raw`(?:kPa|MPa|mbar|bar|mTorr|Torr|micron|atm|Pa)`;
+  const transition = new RegExp(
+    String.raw`(?:从\s*(?<initialValue>${number})\s*(?<initialUnit>${pressureUnit})\s*(?:抽到|降到|抽至|降至|到达|达到|至|到|抽|降)\s*(?<targetValue>${number})\s*(?<targetUnit>${pressureUnit})\b|\bfrom\s+(?<initialValueEn>${number})\s*(?<initialUnitEn>${pressureUnit})\s+to\s+(?<targetValueEn>${number})\s*(?<targetUnitEn>${pressureUnit})\b)`,
     "iu"
+  ).exec(context);
+  const initialPressure = captureNamedQuantity(
+    transition?.groups,
+    ["initialValue", "initialUnit"],
+    ["initialValueEn", "initialUnitEn"]
   );
-  const pumpingSpeed = new RegExp(
-    String.raw`(?:(?:等效)?抽速|泵速|\bpumping\s*speed\b)[^。\n,，;；]{0,24}?${number}\s*(?:m3|m³|l)\s*\/\s*(?:s|min|h)\b`,
-    "iu"
+  const targetPressure = captureNamedQuantity(
+    transition?.groups,
+    ["targetValue", "targetUnit"],
+    ["targetValueEn", "targetUnitEn"]
   );
-  const pressureValues = text.match(
-    /(?:^|[^a-z])(?:\d+(?:\.\d+)?|\.\d+)\s*(?:Pa|mbar|Torr|bar|atm)\b/giu
+  if (!volume || !pumpingSpeed || !initialPressure || !targetPressure) {
+    return undefined;
+  }
+
+  const gasLoadLabel = /(?:气载|气体负载|\bgas\s*load\b)/iu;
+  const gasLoad = captureQuantity(
+    context,
+    new RegExp(
+      String.raw`(?:气载|气体负载|\bgas\s*load\b)[^。\n,，;；]{0,24}?(?<value>${number})\s*(?<unit>Pa(?:\*|·)m(?:3|³)\/s|mbar(?:\*|·)l\/s|Torr(?:\*|·)l\/s)\b`,
+      "iu"
+    ),
+    true
   );
-  const pressureTransition = new RegExp(
-    String.raw`(?:从\s*${pressure}\s*(?:抽到|降到|抽至|降至|到达|达到|至|到|抽|降)\s*${pressure}|\bfrom\s+${pressure}\s+to\s+${pressure}|(?:初始压力|起始压力|initial\s+pressure)[^。\n,，;；]{0,24}?${pressure}[^。\n]{0,80}?(?:目标压力|target\s+pressure)[^。\n,，;；]{0,24}?${pressure})`,
-    "iu"
+  if (gasLoadLabel.test(context) && !gasLoad) return undefined;
+  const outputUnit = /(?:分钟|\bmin\b)/iu.test(question)
+    ? "min"
+    : /(?:小时|\bh\b)/iu.test(question)
+      ? "h"
+      : "s";
+  return {
+    volume,
+    pumpingSpeed,
+    initialPressure,
+    targetPressure,
+    ...(gasLoad ? { gasLoad } : {}),
+    outputUnit
+  };
+}
+
+function captureQuantity(
+  value: string,
+  pattern: RegExp,
+  allowZero = false
+): { value: number; unit: string } | undefined {
+  const match = pattern.exec(value);
+  return captureNamedQuantity(
+    match?.groups,
+    ["value", "unit"],
+    undefined,
+    allowZero
   );
-  return (
-    volume.test(text) &&
-    pumpingSpeed.test(text) &&
-    pressureTransition.test(text) &&
-    (pressureValues?.length ?? 0) >= 2
-  );
+}
+
+function captureNamedQuantity(
+  groups: Record<string, string> | undefined,
+  primary: [string, string],
+  fallback?: [string, string],
+  allowZero = false
+): { value: number; unit: string } | undefined {
+  if (!groups) return undefined;
+  const rawValue =
+    groups[primary[0]] ?? (fallback ? groups[fallback[0]] : undefined);
+  const unit =
+    groups[primary[1]] ?? (fallback ? groups[fallback[1]] : undefined);
+  if (!rawValue || !unit) return undefined;
+  const numeric = Number(rawValue);
+  if (!Number.isFinite(numeric) || (allowZero ? numeric < 0 : numeric <= 0)) {
+    return undefined;
+  }
+  return { value: numeric, unit };
 }
 
 function errorCode(error: unknown): string {
