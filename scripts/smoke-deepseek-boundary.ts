@@ -17,6 +17,9 @@ export type DeepSeekSmokeFailureCode =
   | "ANSWER_JSON_INVALID"
   | "ANSWER_SCHEMA_INVALID"
   | "ANSWER_BOUNDARY_RECOVERY_FAILED"
+  | "TOOL_CALL_INVALID"
+  | "TOOL_EXECUTION_FAILED"
+  | "TOOL_CONTINUATION_INVALID"
   | "UNEXPECTED_FAILURE";
 
 export class DeepSeekSmokeFailure extends Error {

@@ -27,6 +27,7 @@ const PROVIDER_ID = "deepseek-responses";
 const MODEL = "deepseek-v4-flash";
 const DEFAULT_REQUEST_TIMEOUT_MS = 180_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+const MAX_CONTINUATION_ITEMS = 256;
 const SAFE_USER_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 export const DEEPSEEK_RESPONSES_CAPABILITIES = {
@@ -102,6 +103,7 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
     if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens <= 0) {
       throw new TypeError("maxOutputTokens must be a positive integer.");
     }
+    assertFunctionCallPairing(request.input);
 
     const deadline = createProviderDeadline(
       PROVIDER_ID,
@@ -167,6 +169,7 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
         callId?: string;
         sources: Array<{ url: string; title: string }>;
       }> = [];
+      const streamedContinuationItems: IndexedContinuationItem[] = [];
       const forcedWebSearch = isForcedWebSearch(request);
 
       for await (const rawEvent of parseSseJson(response.body)) {
@@ -219,6 +222,12 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
         if (eventType === "response.output_item.done") {
           const item = asRecord(event.item);
           const itemType = pickString(item, ["type"]);
+          if (isContinuationItemType(itemType)) {
+            rememberContinuationItem(streamedContinuationItems, {
+              outputIndex: pickNumber(event, ["output_index"]),
+              item: { ...item, type: itemType }
+            });
+          }
           if (itemType === "function_call") {
             const callId = pickString(item, ["call_id"]);
             const name = pickString(item, ["name"]);
@@ -288,7 +297,10 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
           if (!responseId) {
             throw malformed(`${eventType} omitted response.id.`);
           }
-          const continuationItems = responseOutputItems(responseRecord);
+          const continuationItems = mergeResponseOutputItems(
+            responseOutputItems(responseRecord),
+            streamedContinuationItems
+          );
           if (terminalStatus === "completed") {
             for (const item of continuationItems) {
               if (item.type !== "function_call") continue;
@@ -447,6 +459,52 @@ function serializeTextFormat(format: ResponsesTextFormat): ResponsesTextFormat {
   return portable;
 }
 
+function assertFunctionCallPairing(
+  input: ResponsesStreamRequest["input"]
+): void {
+  if (!Array.isArray(input)) return;
+  const calls = new Map<string, number>();
+  const outputs = new Map<string, number>();
+  input.forEach((item, index) => {
+    const record = item as Record<string, unknown>;
+    if (item.type === "function_call") {
+      const callId = pickString(record, ["call_id"]);
+      const name = pickString(record, ["name"]);
+      const args = pickString(record, ["arguments"]);
+      if (!callId || !name || args === undefined || calls.has(callId)) {
+        throw invalidContinuation(
+          "Responses input contains an invalid function_call."
+        );
+      }
+      calls.set(callId, index);
+    }
+    if (item.type === "function_call_output") {
+      const callId = pickString(record, ["call_id"]);
+      if (!callId || typeof record.output !== "string" || outputs.has(callId)) {
+        throw invalidContinuation(
+          "Responses input contains an invalid function_call_output."
+        );
+      }
+      outputs.set(callId, index);
+    }
+  });
+  for (const [callId, callIndex] of calls) {
+    const outputIndex = outputs.get(callId);
+    if (outputIndex === undefined || outputIndex <= callIndex) {
+      throw invalidContinuation(
+        "Responses input must pair every function_call with a later output."
+      );
+    }
+  }
+  for (const callId of outputs.keys()) {
+    if (!calls.has(callId)) {
+      throw invalidContinuation(
+        "Responses input contains an orphan function_call_output."
+      );
+    }
+  }
+}
+
 function assertSafeUser(user: string): void {
   if (!SAFE_USER_PATTERN.test(user)) {
     throw new TypeError(
@@ -497,6 +555,124 @@ function responseOutputItems(
     const item = asRecord(value);
     return typeof item.type === "string" ? [item as ResponsesInputItem] : [];
   });
+}
+
+type IndexedContinuationItem = {
+  outputIndex?: number;
+  item: ResponsesInputItem;
+};
+
+function isContinuationItemType(value: string | undefined): value is string {
+  return ["message", "function_call", "reasoning", "web_search_call"].includes(
+    value ?? ""
+  );
+}
+
+function rememberContinuationItem(
+  target: IndexedContinuationItem[],
+  value: IndexedContinuationItem
+): void {
+  const identity = continuationItemIdentity(value.item);
+  if (identity) {
+    const existing = target.find(
+      (candidate) => continuationItemIdentity(candidate.item) === identity
+    );
+    if (existing) {
+      assertCompatibleContinuationItems(existing.item, value.item);
+      return;
+    }
+  }
+  if (target.length >= MAX_CONTINUATION_ITEMS) {
+    throw malformed("DeepSeek returned too many continuation items.");
+  }
+  target.push(value);
+}
+
+function mergeResponseOutputItems(
+  terminalItems: ResponsesInputItem[],
+  streamedItems: IndexedContinuationItem[]
+): ResponsesInputItem[] {
+  if (terminalItems.length > MAX_CONTINUATION_ITEMS) {
+    throw malformed("DeepSeek returned too many terminal output items.");
+  }
+  const merged = [...terminalItems];
+  const seen = new Map<string, ResponsesInputItem>();
+  for (const item of merged) {
+    const identity = continuationItemIdentity(item);
+    if (!identity) continue;
+    if (seen.has(identity)) {
+      if (item.type === "function_call") {
+        throw malformed(
+          "DeepSeek terminal output contains duplicate function calls."
+        );
+      }
+      continue;
+    }
+    seen.set(identity, item);
+  }
+  for (const value of streamedItems.toSorted(
+    (left, right) =>
+      (left.outputIndex ?? Number.MAX_SAFE_INTEGER) -
+      (right.outputIndex ?? Number.MAX_SAFE_INTEGER)
+  )) {
+    const identity = continuationItemIdentity(value.item);
+    if (identity && seen.has(identity)) {
+      assertCompatibleContinuationItems(seen.get(identity)!, value.item);
+      continue;
+    }
+    if (merged.length >= MAX_CONTINUATION_ITEMS) {
+      throw malformed("DeepSeek returned too many continuation items.");
+    }
+    const outputIndex = value.outputIndex;
+    if (
+      outputIndex !== undefined &&
+      Number.isSafeInteger(outputIndex) &&
+      outputIndex >= 0 &&
+      outputIndex < MAX_CONTINUATION_ITEMS
+    ) {
+      merged.splice(Math.min(outputIndex, merged.length), 0, value.item);
+    } else {
+      merged.push(value.item);
+    }
+    if (identity) seen.set(identity, value.item);
+  }
+  return merged;
+}
+
+function continuationItemIdentity(
+  item: ResponsesInputItem
+): string | undefined {
+  const record = item as Record<string, unknown>;
+  if (item.type === "function_call") {
+    const callId = pickString(record, ["call_id"]);
+    if (callId) return `function_call:call:${callId}`;
+  }
+  if (item.type === "web_search_call") {
+    const callId = webSearchCallId(record);
+    if (callId) return `web_search_call:call:${callId}`;
+  }
+  const id = pickString(record, ["id", "item_id"]);
+  return id ? `${item.type}:id:${id}` : undefined;
+}
+
+function assertCompatibleContinuationItems(
+  left: ResponsesInputItem,
+  right: ResponsesInputItem
+): void {
+  if (left.type !== "function_call" || right.type !== "function_call") return;
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  if (
+    pickString(leftRecord, ["call_id"]) !==
+      pickString(rightRecord, ["call_id"]) ||
+    pickString(leftRecord, ["name"]) !== pickString(rightRecord, ["name"]) ||
+    pickString(leftRecord, ["arguments"]) !==
+      pickString(rightRecord, ["arguments"])
+  ) {
+    throw malformed(
+      "DeepSeek returned conflicting function_call continuation items."
+    );
+  }
 }
 
 function extractOutputText(items: ResponsesInputItem[]): string {
@@ -717,6 +893,10 @@ function parseFailure(error: Record<string, unknown>): ResponsesFailure {
 
 function malformed(message: string): ProviderResponseError {
   return new ProviderResponseError(PROVIDER_ID, message, { retryable: true });
+}
+
+function invalidContinuation(message: string): ProviderResponseError {
+  return new ProviderResponseError(PROVIDER_ID, message, { retryable: false });
 }
 
 let singleton: DeepSeekResponsesProvider | undefined;
