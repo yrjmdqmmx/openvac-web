@@ -22,6 +22,30 @@ function storageWithClient(client: Record<string, unknown>): AlibabaOssStorage {
 }
 
 describe("AlibabaOssStorage private uploads", () => {
+  it("can forbid overwrite for server-side private objects", async () => {
+    const put = vi.fn(async () => ({ etag: "etag" }));
+    const storage = storageWithClient({ put });
+
+    await storage.putPrivate({
+      key: "private/chat-artifacts/user/artifact/report.pdf",
+      body: new Uint8Array([1, 2, 3]),
+      contentType: "application/pdf",
+      forbidOverwrite: true
+    });
+
+    expect(put).toHaveBeenCalledWith(
+      "private/chat-artifacts/user/artifact/report.pdf",
+      expect.any(Buffer),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "x-oss-object-acl": "private",
+          "x-oss-forbid-overwrite": "true",
+          "Content-Type": "application/pdf"
+        })
+      })
+    );
+  });
+
   it("prefers OSS V4 and returns only browser-settable required headers", async () => {
     const signatureUrlV4 = vi.fn(async () => "https://oss.test/signed-v4");
     const signatureUrl = vi.fn(() => "https://oss.test/legacy");
@@ -43,6 +67,7 @@ describe("AlibabaOssStorage private uploads", () => {
       {
         headers: expect.objectContaining({
           "Content-Type": "model/step",
+          "Content-Length": "1024",
           "x-oss-object-acl": "private",
           "x-oss-forbid-overwrite": "true",
           "x-oss-meta-sha256": "a".repeat(64),
@@ -51,7 +76,8 @@ describe("AlibabaOssStorage private uploads", () => {
         }),
         queries: {}
       },
-      "modeling/user/project/imports/model.step"
+      "modeling/user/project/imports/model.step",
+      ["Content-Length"]
     );
     expect(result).toMatchObject({
       key: "modeling/user/project/imports/model.step",
@@ -69,25 +95,19 @@ describe("AlibabaOssStorage private uploads", () => {
     expect(result.requiredHeaders).not.toHaveProperty("Content-Length");
   });
 
-  it("binds forbid-overwrite in the legacy signed PUT path", async () => {
+  it("fails closed when only the legacy signer is available", async () => {
     const signatureUrl = vi.fn(() => "https://oss.test/legacy");
     const storage = storageWithClient({ signatureUrl });
 
-    const result = await storage.createPrivateUploadUrl({
-      key: "private/knowledge-originals/document/version/manual.pdf",
-      contentType: "application/pdf",
-      contentLength: 10,
-      checksumSha256: "a".repeat(64)
-    });
-
-    expect(signatureUrl).toHaveBeenCalledWith(
-      "private/knowledge-originals/document/version/manual.pdf",
-      expect.objectContaining({
-        method: "PUT",
-        "x-oss-forbid-overwrite": "true"
+    await expect(
+      storage.createPrivateUploadUrl({
+        key: "private/knowledge-originals/document/version/manual.pdf",
+        contentType: "application/pdf",
+        contentLength: 10,
+        checksumSha256: "a".repeat(64)
       })
-    );
-    expect(result.requiredHeaders["x-oss-forbid-overwrite"]).toBe("true");
+    ).rejects.toThrow(/size-bound V4/u);
+    expect(signatureUrl).not.toHaveBeenCalled();
   });
 
   it("reads the authoritative size and user metadata from OSS", async () => {

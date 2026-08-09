@@ -156,6 +156,9 @@ describeDatabase("migration upgrade compatibility", () => {
         target,
         "0012_account_mfa_knowledge_review_sections.sql"
       );
+      await applyMigration(target, "0013_talented_human_torch.sql");
+      await applyMigration(target, "0014_material_rage.sql");
+      await applyMigration(target, "0015_glossy_magus.sql");
 
       const fastTrackTables = await target<Array<{ table_name: string }>>`
         select table_name
@@ -173,6 +176,83 @@ describeDatabase("migration upgrade compatibility", () => {
         "knowledge_review_section",
         "knowledge_section_decision",
         "two_factor"
+      ]);
+
+      const chatStorageTables = await target<Array<{ table_name: string }>>`
+        select table_name
+        from information_schema.tables
+        where table_schema = 'public'
+          and table_name in (
+            'chat_attachment', 'chat_attachment_chunk',
+            'chat_artifact', 'chat_artifact_file',
+            'chat_storage_account', 'chat_storage_deletion_job'
+          )
+        order by table_name
+      `;
+      expect(chatStorageTables.map((row) => row.table_name)).toEqual([
+        "chat_artifact",
+        "chat_artifact_file",
+        "chat_attachment",
+        "chat_attachment_chunk",
+        "chat_storage_account",
+        "chat_storage_deletion_job"
+      ]);
+
+      const [storageDefaults] = await target<
+        Array<{
+          used_bytes: string;
+          reserved_bytes: string;
+          limit_bytes: string;
+        }>
+      >`
+        insert into chat_storage_account (user_id)
+        values (${legacyOwnerId})
+        returning used_bytes::text, reserved_bytes::text, limit_bytes::text
+      `;
+      expect(storageDefaults).toEqual({
+        used_bytes: "0",
+        reserved_bytes: "0",
+        limit_bytes: "524288000"
+      });
+
+      await expect(
+        target`
+          update chat_storage_account
+          set reserved_bytes = 524288001
+          where user_id = ${legacyOwnerId}
+        `
+      ).rejects.toMatchObject({ code: "23514" });
+
+      const chatStorageIndexes = await target<Array<{ indexname: string }>>`
+        select indexname
+        from pg_indexes
+        where schemaname = 'public'
+          and indexname in (
+            'chat_attachment_parse_queue_idx',
+            'chat_attachment_orphan_expiry_idx',
+            'chat_storage_deletion_job_object_key_unique',
+            'chat_storage_deletion_job_queue_idx'
+          )
+        order by indexname
+      `;
+      expect(chatStorageIndexes.map((row) => row.indexname)).toEqual([
+        "chat_attachment_orphan_expiry_idx",
+        "chat_attachment_parse_queue_idx",
+        "chat_storage_deletion_job_object_key_unique",
+        "chat_storage_deletion_job_queue_idx"
+      ]);
+
+      const parserBudgetColumns = await target<Array<{ column_name: string }>>`
+        select column_name
+        from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'chat_attachment'
+          and column_name in ('parse_poll_count', 'parse_submitted_at')
+        order by column_name
+      `;
+      expect(parserBudgetColumns.map((row) => row.column_name)).toEqual([
+        "parse_poll_count",
+        "parse_submitted_at"
       ]);
 
       const fastTrackUserColumns = await target<Array<{ column_name: string }>>`

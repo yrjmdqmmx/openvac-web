@@ -28,6 +28,7 @@ import {
   serializeStoredCitation,
   serializeStoredMessage
 } from "@/server/chat/stored-message";
+import { enqueueConversationStorageDeletion } from "@/server/chat-attachments/deletion";
 import {
   adminRoles,
   adminInvitations,
@@ -2506,6 +2507,12 @@ export const apiStore: ApiStore = {
         return false;
       }
 
+      const storageDeletion = await enqueueConversationStorageDeletion(tx, {
+        userId,
+        conversationIds: [conversationId],
+        deleteMetadata: true
+      });
+
       await tx
         .insert(auditLogs)
         .values(
@@ -2513,7 +2520,8 @@ export const apiStore: ApiStore = {
             audit,
             "conversation.delete",
             "conversation",
-            conversationId
+            conversationId,
+            storageDeletion
           )
         );
       return true;
@@ -2545,6 +2553,12 @@ export const apiStore: ApiStore = {
                 .where(inArray(messageCitations.messageId, messageIds))
             ).map((row) => row.id);
 
+      const storageDeletion = await enqueueConversationStorageDeletion(tx, {
+        userId,
+        conversationIds,
+        deleteMetadata: true
+      });
+
       if (conversationIds.length > 0) {
         await tx.delete(conversations).where(eq(conversations.userId, userId));
       }
@@ -2566,7 +2580,8 @@ export const apiStore: ApiStore = {
       const result = {
         conversationsDeleted: conversationIds.length,
         messagesDeleted: messageIds.length,
-        candidateCitationsDeleted: citationIds.length
+        candidateCitationsDeleted: citationIds.length,
+        ...storageDeletion
       };
       await tx
         .insert(auditLogs)

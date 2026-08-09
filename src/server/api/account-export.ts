@@ -2,6 +2,9 @@ import { asc, eq } from "drizzle-orm";
 
 import { db } from "@/server/db";
 import {
+  chatArtifact,
+  chatArtifactFile,
+  chatAttachment,
   conversation,
   conversationMemory,
   feedback,
@@ -122,6 +125,56 @@ type ProblemReportRecord = Pick<
   | "closedAt"
 >;
 
+type AttachmentRecord = Pick<
+  typeof chatAttachment.$inferSelect,
+  | "id"
+  | "conversationId"
+  | "messageId"
+  | "kind"
+  | "originalFilename"
+  | "mimeType"
+  | "declaredSizeBytes"
+  | "sizeBytes"
+  | "sha256"
+  | "status"
+  | "parseStatus"
+  | "failureCode"
+  | "failureMessage"
+  | "createdAt"
+  | "updatedAt"
+  | "readyAt"
+>;
+
+type ArtifactRecord = Pick<
+  typeof chatArtifact.$inferSelect,
+  | "id"
+  | "conversationId"
+  | "messageId"
+  | "sourceTurnId"
+  | "kind"
+  | "title"
+  | "status"
+  | "createdAt"
+  | "updatedAt"
+  | "readyAt"
+  | "deletedAt"
+>;
+
+type ArtifactFileRecord = Pick<
+  typeof chatArtifactFile.$inferSelect,
+  | "id"
+  | "artifactId"
+  | "format"
+  | "filename"
+  | "mimeType"
+  | "sizeBytes"
+  | "sha256"
+  | "quotaState"
+  | "deletionStatus"
+  | "createdAt"
+  | "deletedAt"
+>;
+
 export type AccountExportSnapshot = {
   account: AccountRecord | null;
   sessions: SessionRecord[];
@@ -131,6 +184,9 @@ export type AccountExportSnapshot = {
   userMemories: UserMemoryRecord[];
   feedback: FeedbackRecord[];
   problemReports: ProblemReportRecord[];
+  attachments: AttachmentRecord[];
+  artifacts: ArtifactRecord[];
+  artifactFiles: ArtifactFileRecord[];
 };
 
 export interface AccountExportRepository {
@@ -150,7 +206,10 @@ export const accountExportRepository: AccountExportRepository = {
       conversationMemories,
       userMemories,
       feedbackRows,
-      problemReports
+      problemReports,
+      attachments,
+      artifacts,
+      artifactFiles
     ] = await Promise.all([
       db
         .select({
@@ -283,7 +342,67 @@ export const accountExportRepository: AccountExportRepository = {
         })
         .from(problemReport)
         .where(eq(problemReport.userId, userId))
-        .orderBy(asc(problemReport.createdAt))
+        .orderBy(asc(problemReport.createdAt)),
+      db
+        .select({
+          id: chatAttachment.id,
+          conversationId: chatAttachment.conversationId,
+          messageId: chatAttachment.messageId,
+          kind: chatAttachment.kind,
+          originalFilename: chatAttachment.originalFilename,
+          mimeType: chatAttachment.mimeType,
+          declaredSizeBytes: chatAttachment.declaredSizeBytes,
+          sizeBytes: chatAttachment.sizeBytes,
+          sha256: chatAttachment.sha256,
+          status: chatAttachment.status,
+          parseStatus: chatAttachment.parseStatus,
+          failureCode: chatAttachment.failureCode,
+          failureMessage: chatAttachment.failureMessage,
+          createdAt: chatAttachment.createdAt,
+          updatedAt: chatAttachment.updatedAt,
+          readyAt: chatAttachment.readyAt
+        })
+        .from(chatAttachment)
+        .where(eq(chatAttachment.userId, userId))
+        .orderBy(asc(chatAttachment.createdAt)),
+      db
+        .select({
+          id: chatArtifact.id,
+          conversationId: chatArtifact.conversationId,
+          messageId: chatArtifact.messageId,
+          sourceTurnId: chatArtifact.sourceTurnId,
+          kind: chatArtifact.kind,
+          title: chatArtifact.title,
+          status: chatArtifact.status,
+          createdAt: chatArtifact.createdAt,
+          updatedAt: chatArtifact.updatedAt,
+          readyAt: chatArtifact.readyAt,
+          deletedAt: chatArtifact.deletedAt
+        })
+        .from(chatArtifact)
+        .where(eq(chatArtifact.userId, userId))
+        .orderBy(asc(chatArtifact.createdAt)),
+      db
+        .select({
+          id: chatArtifactFile.id,
+          artifactId: chatArtifactFile.artifactId,
+          format: chatArtifactFile.format,
+          filename: chatArtifactFile.filename,
+          mimeType: chatArtifactFile.mimeType,
+          sizeBytes: chatArtifactFile.sizeBytes,
+          sha256: chatArtifactFile.sha256,
+          quotaState: chatArtifactFile.quotaState,
+          deletionStatus: chatArtifactFile.deletionStatus,
+          createdAt: chatArtifactFile.createdAt,
+          deletedAt: chatArtifactFile.deletedAt
+        })
+        .from(chatArtifactFile)
+        .innerJoin(
+          chatArtifact,
+          eq(chatArtifactFile.artifactId, chatArtifact.id)
+        )
+        .where(eq(chatArtifact.userId, userId))
+        .orderBy(asc(chatArtifactFile.createdAt))
     ]);
 
     return {
@@ -294,7 +413,10 @@ export const accountExportRepository: AccountExportRepository = {
       conversationMemories,
       userMemories,
       feedback: feedbackRows,
-      problemReports
+      problemReports,
+      attachments,
+      artifacts,
+      artifactFiles
     };
   }
 };
@@ -315,7 +437,7 @@ export const handleExportAccountData = withApiErrors(
 
     const generatedAt = now();
     const document = {
-      exportVersion: 1,
+      exportVersion: 2,
       generatedAt: generatedAt.toISOString(),
       account: pickAccount(snapshot.account),
       sessions: snapshot.sessions.map((item) => ({
@@ -329,7 +451,10 @@ export const handleExportAccountData = withApiErrors(
       ),
       userMemories: snapshot.userMemories.map(pickUserMemory),
       feedback: snapshot.feedback.map(pickFeedback),
-      problemReports: snapshot.problemReports.map(pickProblemReport)
+      problemReports: snapshot.problemReports.map(pickProblemReport),
+      attachments: snapshot.attachments.map(pickAttachment),
+      artifacts: snapshot.artifacts.map(pickArtifact),
+      artifactFiles: snapshot.artifactFiles.map(pickArtifactFile)
     };
 
     const date = generatedAt.toISOString().slice(0, 10);
@@ -543,5 +668,102 @@ function pickProblemReport(item: ProblemReportRecord): ProblemReportRecord {
     createdAt,
     updatedAt,
     closedAt
+  };
+}
+
+function pickAttachment(item: AttachmentRecord): AttachmentRecord {
+  const {
+    id,
+    conversationId,
+    messageId,
+    kind,
+    originalFilename,
+    mimeType,
+    declaredSizeBytes,
+    sizeBytes,
+    sha256,
+    status,
+    parseStatus,
+    failureCode,
+    failureMessage,
+    createdAt,
+    updatedAt,
+    readyAt
+  } = item;
+  return {
+    id,
+    conversationId,
+    messageId,
+    kind,
+    originalFilename,
+    mimeType,
+    declaredSizeBytes,
+    sizeBytes,
+    sha256,
+    status,
+    parseStatus,
+    failureCode,
+    failureMessage,
+    createdAt,
+    updatedAt,
+    readyAt
+  };
+}
+
+function pickArtifact(item: ArtifactRecord): ArtifactRecord {
+  const {
+    id,
+    conversationId,
+    messageId,
+    sourceTurnId,
+    kind,
+    title,
+    status,
+    createdAt,
+    updatedAt,
+    readyAt,
+    deletedAt
+  } = item;
+  return {
+    id,
+    conversationId,
+    messageId,
+    sourceTurnId,
+    kind,
+    title,
+    status,
+    createdAt,
+    updatedAt,
+    readyAt,
+    deletedAt
+  };
+}
+
+function pickArtifactFile(item: ArtifactFileRecord): ArtifactFileRecord {
+  const {
+    id,
+    artifactId,
+    format,
+    filename,
+    mimeType,
+    sizeBytes,
+    sha256,
+    quotaState,
+    deletionStatus,
+    createdAt,
+    deletedAt
+  } = item;
+  return {
+    id,
+    artifactId,
+    format,
+    filename,
+    mimeType,
+    sizeBytes,
+    sha256,
+    quotaState,
+    deletionStatus,
+    createdAt,
+    deletedAt
   };
 }

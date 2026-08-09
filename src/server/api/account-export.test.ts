@@ -50,7 +50,7 @@ describe("account data export", () => {
     expect(repository.collectOwned).toHaveBeenCalledOnce();
     expect(repository.collectOwned).toHaveBeenCalledWith("user-1");
     expect(payload).toMatchObject({
-      exportVersion: 1,
+      exportVersion: 2,
       generatedAt: "2026-08-08T02:30:00.000Z",
       account: { id: "user-1", email: "user@example.test" }
     });
@@ -69,6 +69,8 @@ describe("account data export", () => {
       sessions: Array<Record<string, unknown>>;
       feedback: Array<Record<string, unknown>>;
       problemReports: Array<Record<string, unknown>>;
+      attachments: Array<Record<string, unknown>>;
+      artifactFiles: Array<Record<string, unknown>>;
     };
 
     expect(response.headers.get("content-type")).toBe(
@@ -87,6 +89,10 @@ describe("account data export", () => {
     expect(payload.sessions[0]).not.toHaveProperty("token");
     expect(payload.feedback[0]).not.toHaveProperty("adminNote");
     expect(payload.problemReports[0]).not.toHaveProperty("adminNote");
+    expect(payload.attachments[0]).not.toHaveProperty("objectKey");
+    expect(payload.attachments[0]).not.toHaveProperty("signedUrl");
+    expect(payload.artifactFiles[0]).not.toHaveProperty("objectKey");
+    expect(payload.artifactFiles[0]).not.toHaveProperty("signedUrl");
     expect(JSON.stringify(payload)).not.toContain("secret-session-token");
     expect(JSON.stringify(payload)).not.toContain("internal-only-note");
   });
@@ -180,6 +186,60 @@ function makeRepository() {
         updatedAt: new Date("2026-08-02T00:00:00.000Z"),
         closedAt: null,
         adminNote: "internal-only-note"
+      }
+    ],
+    attachments: [
+      {
+        id: "00000000-0000-4000-8000-000000000005",
+        conversationId: "00000000-0000-4000-8000-000000000001",
+        messageId: "00000000-0000-4000-8000-000000000002",
+        kind: "document" as const,
+        originalFilename: "manual.pdf",
+        mimeType: "application/pdf",
+        declaredSizeBytes: 123,
+        sizeBytes: 123,
+        sha256: "a".repeat(64),
+        status: "ready" as const,
+        parseStatus: "ready" as const,
+        failureCode: null,
+        failureMessage: null,
+        createdAt: new Date("2026-08-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-08-02T00:00:00.000Z"),
+        readyAt: new Date("2026-08-02T00:00:00.000Z"),
+        objectKey: "private/chat-attachments/secret-object",
+        signedUrl: "https://oss.test/permanent-secret"
+      }
+    ],
+    artifacts: [
+      {
+        id: "00000000-0000-4000-8000-000000000006",
+        conversationId: "00000000-0000-4000-8000-000000000001",
+        messageId: "00000000-0000-4000-8000-000000000002",
+        sourceTurnId: "00000000-0000-4000-8000-000000000007",
+        kind: "diagnosis_report" as const,
+        title: "Diagnosis",
+        status: "ready" as const,
+        createdAt: new Date("2026-08-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-08-02T00:00:00.000Z"),
+        readyAt: new Date("2026-08-02T00:00:00.000Z"),
+        deletedAt: null
+      }
+    ],
+    artifactFiles: [
+      {
+        id: "00000000-0000-4000-8000-000000000008",
+        artifactId: "00000000-0000-4000-8000-000000000006",
+        format: "pdf" as const,
+        filename: "diagnosis.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 456,
+        sha256: "b".repeat(64),
+        quotaState: "committed" as const,
+        deletionStatus: "active" as const,
+        createdAt: new Date("2026-08-02T00:00:00.000Z"),
+        deletedAt: null,
+        objectKey: "private/chat-artifacts/secret-object",
+        signedUrl: "https://oss.test/permanent-artifact-secret"
       }
     ]
   } as unknown as AccountExportSnapshot;

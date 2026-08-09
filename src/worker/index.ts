@@ -8,7 +8,12 @@ import {
 
 import { KnowledgeIngestionWorker } from "./knowledge-ingestion";
 import { PostgresKnowledgeIngestionRepository } from "./postgres-repository";
+import {
+  ChatStorageWorker,
+  PostgresChatStorageWorkerRepository
+} from "./chat-storage";
 
+export * from "./chat-storage";
 export * from "./knowledge-ingestion";
 export * from "./postgres-repository";
 export * from "./types";
@@ -35,6 +40,30 @@ export function createKnowledgeWorker(): KnowledgeIngestionWorker {
   });
 }
 
+export function createChatStorageWorker(): ChatStorageWorker {
+  return new ChatStorageWorker({
+    repository: new PostgresChatStorageWorkerRepository(),
+    parser: getDocumentParser(),
+    objectStorage: getObjectStorage(),
+    concurrency: parsePositiveInteger(
+      process.env.CHAT_STORAGE_WORKER_CONCURRENCY,
+      1
+    ),
+    leaseHeartbeatMs: parsePositiveInteger(
+      process.env.CHAT_STORAGE_WORKER_LEASE_HEARTBEAT_MS,
+      60_000
+    ),
+    maxParserPolls: parsePositiveInteger(
+      process.env.CHAT_STORAGE_WORKER_MAX_PARSER_POLLS,
+      240
+    ),
+    maxParserAgeMs: parsePositiveInteger(
+      process.env.CHAT_STORAGE_WORKER_MAX_PARSER_AGE_MS,
+      2 * 60 * 60 * 1_000
+    )
+  });
+}
+
 export async function main(): Promise<void> {
   const controller = new AbortController();
   const stop = () => controller.abort();
@@ -42,8 +71,12 @@ export async function main(): Promise<void> {
   process.once("SIGTERM", stop);
 
   try {
-    await createKnowledgeWorker().runUntilStopped(controller.signal);
+    await Promise.all([
+      createKnowledgeWorker().runUntilStopped(controller.signal),
+      createChatStorageWorker().runUntilStopped(controller.signal)
+    ]);
   } finally {
+    controller.abort();
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
   }

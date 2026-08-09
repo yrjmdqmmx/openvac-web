@@ -277,6 +277,7 @@ export interface PutObjectRequest {
   body: Uint8Array | string;
   contentType?: string;
   metadata?: Record<string, string>;
+  forbidOverwrite?: boolean;
 }
 
 export interface StoredObject {
