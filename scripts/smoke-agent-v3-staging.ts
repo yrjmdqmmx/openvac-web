@@ -68,6 +68,10 @@ const SMOKE_DIAGNOSTIC_STAGES = [
   "case_setup",
   "conversation_create",
   "attachment_upload",
+  "attachment_initiate",
+  "attachment_put",
+  "attachment_complete",
+  "attachment_ready",
   "chat_request",
   "chat_http",
   "chat_sse_parse",
@@ -490,6 +494,7 @@ async function captureCase(
     openConversations.add(targetConversationId);
     caseConversations.push(sourceConversationId, targetConversationId);
     attachmentId = await uploadAttachment(input, {
+      caseId: testCase.id,
       conversationId: sourceConversationId,
       filename: "cross-conversation-private.txt",
       mimeType: "text/plain",
@@ -558,6 +563,7 @@ async function captureCase(
     markSmokeDiagnostic("attachment_upload", { caseId: testCase.id });
     const bytes = await visualFixture(testCase.id);
     attachmentId = await uploadAttachment(input, {
+      caseId: testCase.id,
       conversationId,
       filename: `${testCase.id}.png`,
       mimeType: "image/png",
@@ -568,6 +574,7 @@ async function captureCase(
     markSmokeDiagnostic("attachment_upload", { caseId: testCase.id });
     const bytes = await documentFixture(testCase);
     attachmentId = await uploadAttachment(input, {
+      caseId: testCase.id,
       conversationId,
       filename: `${testCase.id}.pdf`,
       mimeType: "application/pdf",
@@ -984,6 +991,7 @@ async function deleteConversation(
 async function uploadAttachment(
   input: { principal: TemporaryPrincipal; baseUrl: URL },
   request: {
+    caseId: string;
     conversationId: string;
     filename: string;
     mimeType: string;
@@ -992,6 +1000,7 @@ async function uploadAttachment(
   }
 ): Promise<string> {
   const digest = sha256(request.bytes);
+  markSmokeDiagnostic("attachment_initiate", { caseId: request.caseId });
   const initiated = await appFetch(input, "/api/chat/attachments", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1003,6 +1012,10 @@ async function uploadAttachment(
       sha256: digest
     }),
     signal: AbortSignal.timeout(30_000)
+  });
+  markSmokeDiagnostic("attachment_initiate", {
+    caseId: request.caseId,
+    httpStatus: initiated.status
   });
   const initiatedBody = recordValue(await initiated.json().catch(() => null));
   if (!initiated.ok) {
@@ -1023,6 +1036,7 @@ async function uploadAttachment(
   for (const [name, value] of Object.entries(requiredHeaders)) {
     uploadHeaders.set(name, stringValue(value, `upload header ${name}`));
   }
+  markSmokeDiagnostic("attachment_put", { caseId: request.caseId });
   const uploaded = await fetch(uploadUrl, {
     method,
     headers: uploadHeaders,
@@ -1030,25 +1044,41 @@ async function uploadAttachment(
     redirect: "error",
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
   });
+  markSmokeDiagnostic("attachment_put", {
+    caseId: request.caseId,
+    httpStatus: uploaded.status
+  });
   if (!uploaded.ok)
     throw new Error(`OSS attachment upload returned ${uploaded.status}.`);
+  markSmokeDiagnostic("attachment_complete", { caseId: request.caseId });
   const completed = await appFetch(
     input,
     `/api/chat/attachments/${encodeURIComponent(attachmentId)}/complete`,
     { method: "POST", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }
   );
+  markSmokeDiagnostic("attachment_complete", {
+    caseId: request.caseId,
+    httpStatus: completed.status
+  });
   if (!completed.ok) {
     throw new Error(`Attachment completion returned ${completed.status}.`);
   }
-  await waitForAttachmentReady(input, attachmentId, request.requireParsed);
+  await waitForAttachmentReady(
+    input,
+    attachmentId,
+    request.requireParsed,
+    request.caseId
+  );
   return attachmentId;
 }
 
 async function waitForAttachmentReady(
   input: { principal: TemporaryPrincipal; baseUrl: URL },
   attachmentId: string,
-  requireParsed: boolean
+  requireParsed: boolean,
+  caseId: string
 ): Promise<void> {
+  markSmokeDiagnostic("attachment_ready", { caseId });
   const deadline = Date.now() + READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const response = await appFetch(
@@ -1057,8 +1087,13 @@ async function waitForAttachmentReady(
       { signal: AbortSignal.timeout(30_000) }
     );
     const body = recordValue(await response.json().catch(() => null));
-    if (!response.ok)
+    if (!response.ok) {
+      markSmokeDiagnostic("attachment_ready", {
+        caseId,
+        httpStatus: response.status
+      });
       throw new Error(`Attachment status returned ${response.status}.`);
+    }
     const attachment = recordValue(recordValue(body.data).attachment);
     if (
       attachment.status === "ready" &&
@@ -1067,10 +1102,20 @@ async function waitForAttachmentReady(
       return;
     }
     if (attachment.status === "failed" || attachment.parseStatus === "failed") {
+      markSmokeDiagnostic("attachment_ready", {
+        caseId,
+        code:
+          diagnosticToken(attachment.failureCode) ??
+          "ATTACHMENT_PROCESSING_FAILED"
+      });
       throw new Error("Attachment processing failed.");
     }
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
+  markSmokeDiagnostic("attachment_ready", {
+    caseId,
+    code: "ATTACHMENT_READY_TIMEOUT"
+  });
   throw new Error("Attachment did not become ready before the timeout.");
 }
 

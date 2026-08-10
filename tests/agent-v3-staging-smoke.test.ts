@@ -142,6 +142,23 @@ describe("Agent V3 staging runtime smoke safety", () => {
     );
   });
 
+  it("reports a bounded attachment substage without object or URL details", () => {
+    const diagnostic = publicSmokeFailureDiagnostic({
+      stage: "attachment_ready",
+      caseId: "v3-document-manual-01",
+      code: "ATTACHMENT_PARSE_FAILED"
+    });
+    expect(diagnostic).toEqual({
+      schemaVersion: "openvac.agent-v3-staging-failure.v1",
+      stage: "attachment_ready",
+      caseId: "v3-document-manual-01",
+      code: "ATTACHMENT_PARSE_FAILED"
+    });
+    expect(JSON.stringify(diagnostic)).not.toMatch(
+      /object|url|filename|message|request|session|secret/iu
+    );
+  });
+
   it("drops untrusted diagnostic values instead of echoing them", () => {
     const diagnostic = publicSmokeFailureDiagnostic({
       stage: "chat_terminal",

@@ -49,7 +49,7 @@ describe("chat storage worker", () => {
     );
   });
 
-  it("submits office documents to DocMind using only a short private URL", async () => {
+  it("submits verified office document bytes without a signed URL", async () => {
     const repository = makeRepository();
     const officeJob = {
       ...parseJob,
@@ -64,12 +64,10 @@ describe("chat storage worker", () => {
     const outcome = await makeWorker(repository, storage, parser).runOnce();
 
     expect(outcome).toBe("deferred");
-    expect(storage.createPrivateDownloadUrl).toHaveBeenCalledWith(
-      officeJob.objectKey,
-      900
-    );
+    expect(storage.getPrivate).toHaveBeenCalledWith(officeJob.objectKey);
+    expect(storage.createPrivateDownloadUrl).not.toHaveBeenCalled();
     expect(parser.submit).toHaveBeenCalledWith({
-      url: "https://oss.test/private",
+      bytes: new TextEncoder().encode("private"),
       filename: "manual.docx",
       outputFormats: ["markdown", "visualLayoutInfo"],
       llmEnhancement: true
