@@ -785,9 +785,20 @@ if ! OPENVAC_IMAGE="$release_image"   release_compose run --rm --no-deps web pnp
 fi
 
 echo "Verifying the configured Qwen-VL contract"
-if ! OPENVAC_IMAGE="$release_image"   release_compose run --rm --no-deps web pnpm smoke:qwen-vl; then
-  echo "Configured Qwen-VL contract is not usable; deployment stopped before migration" >&2
-  exit 1
+if [ -n "$desired_dashscope_workspace_id" ]; then
+  if ! DASHSCOPE_WORKSPACE_ID="$desired_dashscope_workspace_id" \
+    OPENVAC_IMAGE="$release_image" \
+    release_compose run --rm --no-deps -e DASHSCOPE_WORKSPACE_ID \
+      web pnpm smoke:qwen-vl; then
+    echo "Configured Qwen-VL contract is not usable; deployment stopped before migration" >&2
+    exit 1
+  fi
+else
+  if ! OPENVAC_IMAGE="$release_image" \
+    release_compose run --rm --no-deps web pnpm smoke:qwen-vl; then
+    echo "Configured Qwen-VL contract is not usable; deployment stopped before migration" >&2
+    exit 1
+  fi
 fi
 
 if ! begin_transaction_journal; then
@@ -801,7 +812,7 @@ if ! apply_runtime_env; then
   else
     echo "Runtime environment recovery failed; retaining the deployment transaction journal" >&2
   fi
-  echo "Could not transactionally configure the knowledge review token hash" >&2
+  echo "Could not transactionally configure the protected runtime environment" >&2
   exit 1
 fi
 
