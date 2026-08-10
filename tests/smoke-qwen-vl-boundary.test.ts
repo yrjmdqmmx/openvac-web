@@ -93,6 +93,18 @@ describe("Qwen-VL smoke public boundary", () => {
     });
   });
 
+  it("exposes only the fixed aggregate preflight detail", () => {
+    const failure = new QwenVlSmokeFailure(
+      "RESPONSE_INVALID",
+      "VISUAL_PREFLIGHT_FAILED"
+    );
+    expect(publicQwenVlSmokeFailure(failure)).toEqual({
+      schemaVersion: "openvac.qwen-vl-smoke-failure.v1",
+      code: "RESPONSE_INVALID",
+      detail: "VISUAL_PREFLIGHT_FAILED"
+    });
+  });
+
   it.each([
     "73194625",
     "校验数字：73194625",
