@@ -330,6 +330,7 @@ export class QwenVlProvider implements VisionProvider {
     maxOutputTokens: number,
     stream: boolean
   ): Record<string, unknown> {
+    const isQwen38Max = this.model === "qwen3.8-max";
     return {
       model: this.model,
       messages: [
@@ -354,8 +355,12 @@ export class QwenVlProvider implements VisionProvider {
       ...(this.model === "qwen3-vl-plus"
         ? { max_tokens: maxOutputTokens }
         : { max_completion_tokens: maxOutputTokens }),
-      enable_thinking: this.enableThinking,
-      ...(this.model === "qwen3.8-max" ? { preserve_thinking: false } : {}),
+      ...(isQwen38Max
+        ? {
+            reasoning_effort: this.enableThinking ? "xhigh" : "none",
+            preserve_thinking: false
+          }
+        : { enable_thinking: this.enableThinking }),
       vl_high_resolution_images: this.highResolutionImages,
       stream,
       ...(stream ? { stream_options: { include_usage: true } } : {})
