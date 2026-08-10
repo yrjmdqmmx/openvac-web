@@ -47,7 +47,7 @@ import type {
 export const AGENT_V3_STAGING_ORIGIN = "https://staging-openvac.openvac.cn";
 const COOKIE_NAME = "__Secure-better-auth.session_token";
 const REQUEST_TIMEOUT_MS = 6 * 60 * 1_000;
-const READY_TIMEOUT_MS = 5 * 60 * 1_000;
+const READY_TIMEOUT_MS = 12 * 60 * 1_000;
 const SSE_TYPES = new Set([
   "run.accepted",
   "stage.changed",
@@ -101,6 +101,20 @@ const DIAGNOSTIC_ACTIONS = new Set([
 ]);
 const DIAGNOSTIC_SETTLEMENTS = new Set(["released", "pending_recovery"]);
 const DIAGNOSTIC_STEPS = new Set(["history_1", "history_2", "final"]);
+const DIAGNOSTIC_ATTACHMENT_STATUSES = new Set([
+  "initiated",
+  "scanning",
+  "processing",
+  "ready",
+  "failed"
+]);
+const DIAGNOSTIC_PARSE_STATUSES = new Set([
+  "queued",
+  "processing",
+  "ready",
+  "failed",
+  "not_required"
+]);
 
 type SmokeDiagnosticStage = (typeof SMOKE_DIAGNOSTIC_STAGES)[number];
 type SmokeDiagnosticState = {
@@ -113,6 +127,8 @@ type SmokeDiagnosticState = {
   retryable?: boolean;
   suggestedAction?: string;
   settlement?: string;
+  attachmentStatus?: string;
+  parseStatus?: string;
 };
 
 let smokeDiagnosticState: SmokeDiagnosticState = { stage: "bootstrap" };
@@ -154,6 +170,15 @@ export function publicSmokeFailureDiagnostic(
     Number(input.httpStatus) <= 599
       ? Number(input.httpStatus)
       : undefined;
+  const attachmentStatus =
+    input.attachmentStatus &&
+    DIAGNOSTIC_ATTACHMENT_STATUSES.has(input.attachmentStatus)
+      ? input.attachmentStatus
+      : undefined;
+  const parseStatus =
+    input.parseStatus && DIAGNOSTIC_PARSE_STATUSES.has(input.parseStatus)
+      ? input.parseStatus
+      : undefined;
   return {
     schemaVersion: "openvac.agent-v3-staging-failure.v1",
     stage,
@@ -162,6 +187,8 @@ export function publicSmokeFailureDiagnostic(
     ...(terminalType ? { terminalType } : {}),
     ...(code ? { code } : {}),
     ...(httpStatus ? { httpStatus } : {}),
+    ...(attachmentStatus ? { attachmentStatus } : {}),
+    ...(parseStatus ? { parseStatus } : {}),
     ...(typeof input.retryable === "boolean"
       ? { retryable: input.retryable }
       : {}),
@@ -1080,6 +1107,8 @@ async function waitForAttachmentReady(
 ): Promise<void> {
   markSmokeDiagnostic("attachment_ready", { caseId });
   const deadline = Date.now() + READY_TIMEOUT_MS;
+  let lastAttachmentStatus: string | undefined;
+  let lastParseStatus: string | undefined;
   while (Date.now() < deadline) {
     const response = await appFetch(
       input,
@@ -1095,6 +1124,12 @@ async function waitForAttachmentReady(
       throw new Error(`Attachment status returned ${response.status}.`);
     }
     const attachment = recordValue(recordValue(body.data).attachment);
+    lastAttachmentStatus =
+      typeof attachment.status === "string" ? attachment.status : undefined;
+    lastParseStatus =
+      typeof attachment.parseStatus === "string"
+        ? attachment.parseStatus
+        : undefined;
     if (
       attachment.status === "ready" &&
       (!requireParsed || attachment.parseStatus === "ready")
@@ -1104,6 +1139,8 @@ async function waitForAttachmentReady(
     if (attachment.status === "failed" || attachment.parseStatus === "failed") {
       markSmokeDiagnostic("attachment_ready", {
         caseId,
+        attachmentStatus: lastAttachmentStatus,
+        parseStatus: lastParseStatus,
         code:
           diagnosticToken(attachment.failureCode) ??
           "ATTACHMENT_PROCESSING_FAILED"
@@ -1114,6 +1151,8 @@ async function waitForAttachmentReady(
   }
   markSmokeDiagnostic("attachment_ready", {
     caseId,
+    attachmentStatus: lastAttachmentStatus,
+    parseStatus: lastParseStatus,
     code: "ATTACHMENT_READY_TIMEOUT"
   });
   throw new Error("Attachment did not become ready before the timeout.");

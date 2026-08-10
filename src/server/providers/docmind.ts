@@ -121,6 +121,7 @@ export class AlibabaDocMindParser implements DocumentParser {
       );
     }
     const filename = resolveFilename(request);
+    const llmEnhancement = request.llmEnhancement ?? true;
 
     const sdk = this.createSdk();
     const Request = requireConstructor(PROVIDER_ID, sdk.sdkModule, [
@@ -133,9 +134,9 @@ export class AlibabaDocMindParser implements DocumentParser {
       fileName: filename,
       outputFormat: request.outputFormats ?? ["markdown", "visualLayoutInfo"],
       pageIndex: formatPageIndexes(request.pageIndexes),
-      llmEnhancement: request.llmEnhancement ?? true,
-      enhancementMode: "VLM",
-      formulaEnhancement: true,
+      llmEnhancement,
+      enhancementMode: llmEnhancement ? "VLM" : undefined,
+      formulaEnhancement: request.formulaEnhancement ?? true,
       ...(request.bytes
         ? { fileUrlObject: Readable.from(Buffer.from(request.bytes)) }
         : {})
