@@ -85,6 +85,73 @@ describe("chat storage worker", () => {
     );
   });
 
+  it("completes text-layer PDFs locally before submitting OCR", async () => {
+    const repository = makeRepository();
+    const pdfJob = {
+      ...parseJob,
+      filename: "manual.pdf",
+      mimeType: "application/pdf"
+    };
+    repository.claimAttachmentParse.mockResolvedValueOnce(pdfJob);
+    const storage = makeStorage(new TextEncoder().encode("%PDF-fixture"));
+    const parser = makeParser();
+    const pdfTextExtractor = vi.fn(async () => ({
+      jobId: "local-pdf-text",
+      pages: [{ pageNumber: 1, markdown: "维护间隔取决于运行工况。" }]
+    }));
+
+    const outcome = await makeWorker(repository, storage, parser, {
+      pdfTextExtractor
+    }).runOnce();
+
+    expect(outcome).toBe("completed");
+    expect(storage.getPrivate).toHaveBeenCalledWith(pdfJob.objectKey);
+    expect(storage.createPrivateDownloadUrl).not.toHaveBeenCalled();
+    expect(parser.submit).not.toHaveBeenCalled();
+    expect(repository.saveChunksAndComplete).toHaveBeenCalledWith(
+      pdfJob,
+      [
+        expect.objectContaining({
+          content: "维护间隔取决于运行工况。",
+          locator: expect.objectContaining({ type: "page", page: 1 })
+        })
+      ],
+      "local-pdf-text"
+    );
+  });
+
+  it("falls back to DocMind when a PDF has no usable local text layer", async () => {
+    const repository = makeRepository();
+    const pdfJob = {
+      ...parseJob,
+      filename: "scan.pdf",
+      mimeType: "application/pdf"
+    };
+    repository.claimAttachmentParse.mockResolvedValueOnce(pdfJob);
+    const storage = makeStorage(new TextEncoder().encode("%PDF-scan"));
+    const parser = makeParser();
+    const pdfTextExtractor = vi.fn(async () => null);
+
+    expect(
+      await makeWorker(repository, storage, parser, {
+        pdfTextExtractor
+      }).runOnce()
+    ).toBe("deferred");
+    expect(parser.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "https://oss.test/private",
+        urlTrust: "private-oss-v4",
+        filename: "scan.pdf"
+      })
+    );
+    expect(repository.markParserSubmitted).toHaveBeenCalledWith(
+      pdfJob,
+      "docmind-job-1",
+      expect.any(Date),
+      "test-parser"
+    );
+  });
+
   it("polls DocMind and persists page locators without touching knowledge", async () => {
     const repository = makeRepository();
     const remoteJob = {
