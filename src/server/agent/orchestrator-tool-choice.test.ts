@@ -364,7 +364,10 @@ describe("Agent V3 deterministic calculator routing", () => {
       question: "使用上一轮计算并生成报告。",
       allowTools: true
     });
-    expect(mixed.toolChoice).toBe("auto");
+    expect(mixed.toolChoice).toEqual({
+      type: "function",
+      name: "create_artifact"
+    });
     expect(
       mixed.tools?.map((tool) => ("name" in tool ? tool.name : tool.type))
     ).toEqual(["create_artifact", "estimate_pumpdown_time"]);

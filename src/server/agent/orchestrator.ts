@@ -61,7 +61,10 @@ import {
   shouldUseWeb
 } from "./mode-policy";
 import { RunStore, type CreatedRun } from "./run-store";
-import type { ArtifactStorage } from "./artifact-tools";
+import {
+  hasExplicitArtifactIntent,
+  type ArtifactStorage
+} from "./artifact-tools";
 import type { AttachmentStorage } from "./attachment-tools";
 import { ToolRegistry, type ToolExecutionResult } from "./tool-registry";
 import {
@@ -1506,6 +1509,9 @@ export function selectAnswerToolChoice(
   );
   if (attachmentChoice) return attachmentChoice;
 
+  const artifactChoice = selectArtifactToolChoice(question, modelInput, tools);
+  if (artifactChoice) return artifactChoice;
+
   const intent =
     /(?:抽空|抽气).{0,12}(?:时间|多久)|(?:时间|多久).{0,12}(?:抽空|抽气)|\bpump(?:\s|-)?down\s+time\b/iu;
   if (!intent.test(question)) return "auto";
@@ -1519,6 +1525,23 @@ export function selectAnswerToolChoice(
   return extractTrustedPumpdownArguments(question, modelInput)
     ? { type: "function", name: "estimate_pumpdown_time" }
     : "auto";
+}
+
+function selectArtifactToolChoice(
+  question: string,
+  modelInput: readonly ResponsesInputItem[],
+  tools: readonly ResponsesTool[]
+): ResponsesToolChoice | undefined {
+  if (!hasExplicitArtifactIntent(question)) return undefined;
+  const available = tools.some(
+    (tool) => tool.type === "function" && tool.name === "create_artifact"
+  );
+  const alreadyCalled = modelInput.some(
+    (item) => item.type === "function_call" && item.name === "create_artifact"
+  );
+  return available && !alreadyCalled
+    ? { type: "function", name: "create_artifact" }
+    : undefined;
 }
 
 function selectAttachmentToolChoice(
