@@ -97,6 +97,100 @@ describe("Agent V3 deterministic calculator routing", () => {
     ).toBe("auto");
   });
 
+  it("forces the private document search and excerpt sequence", () => {
+    const tools: ResponsesTool[] = [
+      {
+        type: "function",
+        name: "search_attachment",
+        description: "search",
+        parameters: { type: "object" }
+      },
+      {
+        type: "function",
+        name: "open_attachment_excerpt",
+        description: "open",
+        parameters: { type: "object" }
+      },
+      {
+        type: "function",
+        name: "analyze_image",
+        description: "vision",
+        parameters: { type: "object" }
+      }
+    ];
+    const question = "根据上传手册回答维护间隔，并精确绑定页内证据。";
+
+    expect(selectAnswerToolChoice(question, [], [], tools)).toEqual({
+      type: "function",
+      name: "search_attachment"
+    });
+
+    const searched: ResponsesInputItem[] = [
+      {
+        type: "function_call",
+        call_id: "call-search",
+        name: "search_attachment",
+        arguments: "{}"
+      },
+      {
+        type: "function_call_output",
+        call_id: "call-search",
+        output: '{"ok":true}'
+      }
+    ];
+    expect(selectAnswerToolChoice(question, searched, [], tools)).toEqual({
+      type: "function",
+      name: "open_attachment_excerpt"
+    });
+
+    expect(
+      selectAnswerToolChoice(
+        question,
+        [
+          ...searched,
+          {
+            type: "function_call",
+            call_id: "call-open",
+            name: "open_attachment_excerpt",
+            arguments: "{}"
+          },
+          {
+            type: "function_call_output",
+            call_id: "call-open",
+            output: '{"ok":true}'
+          }
+        ],
+        [],
+        tools
+      )
+    ).toBe("auto");
+  });
+
+  it("keeps visual attachment routing automatic", () => {
+    const tools: ResponsesTool[] = [
+      {
+        type: "function",
+        name: "search_attachment",
+        description: "search",
+        parameters: { type: "object" }
+      },
+      {
+        type: "function",
+        name: "analyze_image",
+        description: "vision",
+        parameters: { type: "object" }
+      }
+    ];
+    expect(
+      selectAnswerToolChoice(
+        "从铭牌图片提取额定电压，并说明图像不足之处。",
+        [],
+        [],
+        tools
+      )
+    ).toBe("auto");
+  });
+
   it("removes only the completed calculator while preserving other tools", () => {
     const tools: ResponsesTool[] = [
       {

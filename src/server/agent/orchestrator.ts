@@ -1404,8 +1404,16 @@ function readPositiveInteger(name: string, fallback: number): number {
 export function selectAnswerToolChoice(
   question: string,
   modelInput: ResponsesInputItem[],
-  calculations: Iterable<CalculationResult>
+  calculations: Iterable<CalculationResult>,
+  tools: readonly ResponsesTool[] = []
 ): ResponsesToolChoice {
+  const attachmentChoice = selectAttachmentToolChoice(
+    question,
+    modelInput,
+    tools
+  );
+  if (attachmentChoice) return attachmentChoice;
+
   const intent =
     /(?:抽空|抽气).{0,12}(?:时间|多久)|(?:时间|多久).{0,12}(?:抽空|抽气)|\bpump(?:\s|-)?down\s+time\b/iu;
   if (!intent.test(question)) return "auto";
@@ -1419,6 +1427,40 @@ export function selectAnswerToolChoice(
   return extractTrustedPumpdownArguments(question, modelInput)
     ? { type: "function", name: "estimate_pumpdown_time" }
     : "auto";
+}
+
+function selectAttachmentToolChoice(
+  question: string,
+  modelInput: readonly ResponsesInputItem[],
+  tools: readonly ResponsesTool[]
+): ResponsesToolChoice | undefined {
+  const documentIntent =
+    /(?:手册|文档|报告|记录|\bpdf\b|\bdocument\b|\bmanual\b|附件.{0,8}(?:内容|文字|摘要|页|证据)|(?:内容|文字|摘要|页内|证据).{0,8}附件)/iu;
+  const visualIntent =
+    /(?:图片|图像|照片|截图|铭牌|\bimage\b|\bphoto\b|\bscreenshot\b|\bnameplate\b)/iu;
+  if (!documentIntent.test(question) || visualIntent.test(question)) {
+    return undefined;
+  }
+
+  const available = new Set(
+    tools.flatMap((tool) => (tool.type === "function" ? [tool.name] : []))
+  );
+  const called = new Set(
+    modelInput.flatMap((item) =>
+      item.type === "function_call" ? [item.name] : []
+    )
+  );
+  if (available.has("search_attachment") && !called.has("search_attachment")) {
+    return { type: "function", name: "search_attachment" };
+  }
+  if (
+    available.has("open_attachment_excerpt") &&
+    called.has("search_attachment") &&
+    !called.has("open_attachment_excerpt")
+  ) {
+    return { type: "function", name: "open_attachment_excerpt" };
+  }
+  return undefined;
 }
 
 export function selectAnswerTools(
@@ -1492,7 +1534,8 @@ export function selectAnswerToolRequestPolicy(input: {
       ? selectAnswerToolChoice(
           input.question,
           [...input.modelInput],
-          calculations
+          calculations,
+          callableTools
         )
       : "none";
   const callableFunctionNames =
