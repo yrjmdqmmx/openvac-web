@@ -10,6 +10,7 @@ import type {
   ArtifactStorageCreateInput,
   StoredArtifact
 } from "@/server/agent/artifact-tools";
+import { ArtifactToolError } from "@/server/agent/artifact-tools";
 import type { ArtifactFormat, ArtifactSpec } from "@/types/chat-v3";
 
 import {
@@ -30,17 +31,36 @@ export class ProductionArtifactStorage implements ArtifactStorage {
 
   async create(input: ArtifactStorageCreateInput): Promise<StoredArtifact> {
     input.signal?.throwIfAborted();
-    const spec = parseArtifactSpec(input.spec);
-    if (spec.sourceTurnId !== input.turnId) {
-      throw new Error("Artifact source turn does not match the active turn.");
+    let spec: ArtifactSpec;
+    try {
+      spec = parseArtifactSpec(input.spec);
+    } catch (error) {
+      throw new ArtifactToolError(
+        artifactRecordCreationFailureCode(error),
+        "Artifact specification could not be prepared."
+      );
     }
-    const artifact = await this.storage.create({
-      userId: input.userId,
-      conversationId: input.conversationId,
-      runId: input.runId,
-      assistantMessageId: input.assistantMessageId,
-      spec
-    });
+    if (spec.sourceTurnId !== input.turnId) {
+      throw new ArtifactToolError(
+        "ARTIFACT_SCOPE_MISMATCH",
+        "Artifact source turn does not match the active turn."
+      );
+    }
+    let artifact: ChatArtifactView;
+    try {
+      artifact = await this.storage.create({
+        userId: input.userId,
+        conversationId: input.conversationId,
+        runId: input.runId,
+        assistantMessageId: input.assistantMessageId,
+        spec
+      });
+    } catch (error) {
+      throw new ArtifactToolError(
+        artifactRecordCreationFailureCode(error),
+        "Artifact metadata could not be created."
+      );
+    }
 
     let failureCode: ArtifactGenerationFailureCode = "ARTIFACT_RENDER_FAILED";
     try {
@@ -109,6 +129,44 @@ export const chatArtifactStorageService = new ChatArtifactStorageService(
 export const agentArtifactStorage = new ProductionArtifactStorage(
   chatArtifactStorageService
 );
+
+export function artifactRecordCreationFailureCode(
+  error: unknown
+):
+  | "INVALID_ARTIFACT_SPEC"
+  | "ARTIFACT_SCOPE_MISMATCH"
+  | "ARTIFACT_SCHEMA_UNAVAILABLE"
+  | "ARTIFACT_STORAGE_FORBIDDEN"
+  | "ARTIFACT_STORAGE_UNAVAILABLE"
+  | "ARTIFACT_RECORD_CREATE_TIMEOUT"
+  | "ARTIFACT_RECORD_CREATE_FAILED" {
+  const code =
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof error.code === "string"
+      ? error.code
+      : undefined;
+  if (code === "ARTIFACT_SPEC_INVALID") return "INVALID_ARTIFACT_SPEC";
+  if (code === "NOT_FOUND" || code === "23503") {
+    return "ARTIFACT_SCOPE_MISMATCH";
+  }
+  if (["42P01", "42703", "42704", "42883"].includes(code ?? "")) {
+    return "ARTIFACT_SCHEMA_UNAVAILABLE";
+  }
+  if (code === "42501") return "ARTIFACT_STORAGE_FORBIDDEN";
+  if (
+    /^08/u.test(code ?? "") ||
+    ["53300", "57P01", "57P02", "57P03"].includes(code ?? "")
+  ) {
+    return "ARTIFACT_STORAGE_UNAVAILABLE";
+  }
+  if (code === "57014") return "ARTIFACT_RECORD_CREATE_TIMEOUT";
+  if (["22P02", "23502", "23514"].includes(code ?? "")) {
+    return "INVALID_ARTIFACT_SPEC";
+  }
+  return "ARTIFACT_RECORD_CREATE_FAILED";
+}
 
 function assertRenderedFiles(
   spec: ArtifactSpec,
