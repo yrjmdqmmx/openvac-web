@@ -97,7 +97,8 @@ describe("Qwen-VL smoke public boundary", () => {
     "73194625",
     "校验数字：73194625",
     "图片中的8位校验数字是：73194625",
-    "7319 4625"
+    "7319 4625",
+    "７３１９４６２５"
   ])("accepts an exact visual nonce with harmless formatting: %s", (value) => {
     expect(recognizesVisualNonce(value, "73194625")).toBe(true);
   });
@@ -107,7 +108,9 @@ describe("Qwen-VL smoke public boundary", () => {
     "731946250",
     "73194626",
     "73194625，另一个数字是12345678",
+    "73194625，另一个读数是7319 4626",
     "73194625，重复为73194625",
+    "73194625，重复为7319 4625",
     "无法读取 73194625",
     "未清晰识别到 73194625"
   ])(

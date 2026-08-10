@@ -85,13 +85,11 @@ export function recognizesVisualNonce(value: string, nonce: string): boolean {
   if (/(?:未|无法|没有|不能)(?:清晰)?(?:识别|读取)/iu.test(value)) {
     return false;
   }
-  const digitRuns = value.match(/\d+/gu) ?? [];
-  const eightDigitRuns = digitRuns.filter((run) => run.length === 8);
-  if (eightDigitRuns.length > 0) {
-    return (
-      eightDigitRuns.filter((run) => run === nonce).length === 1 &&
-      eightDigitRuns.every((run) => run === nonce)
-    );
-  }
-  return digitRuns.join("") === nonce;
+  const normalized = value.replace(/[０-９]/gu, (digit) =>
+    String(digit.charCodeAt(0) - 0xff10)
+  );
+  const candidates = (
+    normalized.match(/(?<!\d)(?:\d[\s,，._-]*){7}\d(?!\d)/gu) ?? []
+  ).map((candidate) => candidate.replace(/\D/gu, ""));
+  return candidates.length === 1 && candidates[0] === nonce;
 }
