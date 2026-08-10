@@ -644,6 +644,11 @@ jobs:
           DASHSCOPE_WORKSPACE_ID: ${{ secrets.DASHSCOPE_WORKSPACE_ID }}
         run: |
           set -Eeuo pipefail
+          deploy_gate_fail() {
+            code="$1"
+            printf '{"schema":"openvac.staging-deploy-gate-failure.v1","stage":"activation","code":"%s"}\n' "$code" >&2
+            exit 64
+          }
           case "$TARGET" in
             production)
               deploy_dir=/opt/openvac
@@ -655,13 +660,13 @@ jobs:
               compose_project=openvac-staging
               health_url=https://staging-openvac.openvac.cn/api/health
               ;;
-            *) exit 64 ;;
+            *) deploy_gate_fail "TARGET_INVALID" ;;
           esac
-          case "$RELEASE_SHA" in ""|*[!0-9a-f]*) exit 64 ;; esac
-          test "${#RELEASE_SHA}" -eq 40
-          case "$WEB_IMAGE_DIGEST" in sha256:*) web_digest="${WEB_IMAGE_DIGEST#sha256:}" ;; *) exit 64 ;; esac
-          case "$web_digest" in ""|*[!0-9a-f]*) exit 64 ;; esac
-          test "${#web_digest}" -eq 64
+          case "$RELEASE_SHA" in ""|*[!0-9a-f]*) deploy_gate_fail "RELEASE_SHA_CHARACTERS_INVALID" ;; esac
+          [ "${#RELEASE_SHA}" -eq 40 ] || deploy_gate_fail "RELEASE_SHA_LENGTH_INVALID"
+          case "$WEB_IMAGE_DIGEST" in sha256:*) web_digest="${WEB_IMAGE_DIGEST#sha256:}" ;; *) deploy_gate_fail "IMAGE_DIGEST_PREFIX_INVALID" ;; esac
+          case "$web_digest" in ""|*[!0-9a-f]*) deploy_gate_fail "IMAGE_DIGEST_CHARACTERS_INVALID" ;; esac
+          [ "${#web_digest}" -eq 64 ] || deploy_gate_fail "IMAGE_DIGEST_LENGTH_INVALID"
 
           image_repository="ghcr.io/${GITHUB_REPOSITORY,,}"
           release_registry_image="$image_repository@$WEB_IMAGE_DIGEST"
@@ -713,17 +718,17 @@ jobs:
             ssh "${ssh_options[@]}" "$ssh_base" \
               'umask 077; mktemp -d /tmp/openvac-deploy.XXXXXX'
           )"
-          case "$remote_stage" in /tmp/openvac-deploy.*) ;; *) exit 1 ;; esac
-          case "$remote_stage" in *[!A-Za-z0-9._/-]*|*/*/*/*) exit 1 ;; esac
+          case "$remote_stage" in /tmp/openvac-deploy.*) ;; *) deploy_gate_fail "REMOTE_STAGE_PREFIX_INVALID" ;; esac
+          case "$remote_stage" in *[!A-Za-z0-9._/-]*|*/*/*/*) deploy_gate_fail "REMOTE_STAGE_PATH_INVALID" ;; esac
           token_hash="$KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256"
-          case "$token_hash" in ""|*[!0-9a-f]*) exit 64 ;; esac
-          test "${#token_hash}" -eq 64
+          case "$token_hash" in ""|*[!0-9a-f]*) deploy_gate_fail "TOKEN_HASH_CHARACTERS_INVALID" ;; esac
+          [ "${#token_hash}" -eq 64 ] || deploy_gate_fail "TOKEN_HASH_LENGTH_INVALID"
           token_hash_file="$RUNNER_TEMP/openvac-knowledge-review-token-hash"
           (umask 077 && printf '%s\n' "$token_hash" >"$token_hash_file")
           unset token_hash
           workspace_id="$DASHSCOPE_WORKSPACE_ID"
-          case "$workspace_id" in ""|*[!A-Za-z0-9_-]*) exit 64 ;; esac
-          test "${#workspace_id}" -le 128
+          case "$workspace_id" in ""|*[!A-Za-z0-9_-]*) deploy_gate_fail "WORKSPACE_ID_CHARACTERS_INVALID" ;; esac
+          [ "${#workspace_id}" -le 128 ] || deploy_gate_fail "WORKSPACE_ID_LENGTH_INVALID"
           workspace_id_file="$RUNNER_TEMP/openvac-dashscope-workspace-id"
           (umask 077 && printf '%s\n' "$workspace_id" >"$workspace_id_file")
           unset workspace_id DASHSCOPE_WORKSPACE_ID
@@ -747,7 +752,12 @@ jobs:
           release_id="$2"
           loaded_tag="$3"
           expected_registry_digest="$4"
-          case "$remote_stage" in /tmp/openvac-deploy.*) ;; *) exit 64 ;; esac
+          remote_deploy_gate_fail() {
+            code="$1"
+            printf '{"schema":"openvac.staging-deploy-gate-failure.v1","stage":"remote_prepare","code":"%s"}\n' "$code" >&2
+            exit 64
+          }
+          case "$remote_stage" in /tmp/openvac-deploy.*) ;; *) remote_deploy_gate_fail "REMOTE_STAGE_PREFIX_INVALID" ;; esac
           cd "$remote_stage"
           sha256sum --check openvac-web-release.tar.zst.sha256 >&2
           sha256sum --check openvac-deploy-bundle.tar.gz.sha256 >&2
@@ -791,21 +801,26 @@ jobs:
           loaded_web_id="$5"
           compose_project="$6"
           health_url="$7"
-          case "$remote_stage" in /tmp/openvac-deploy.*) ;; *) exit 64 ;; esac
+          remote_deploy_gate_fail() {
+            code="$1"
+            printf '{"schema":"openvac.staging-deploy-gate-failure.v1","stage":"remote_activation","code":"%s"}\n' "$code" >&2
+            exit 64
+          }
+          case "$remote_stage" in /tmp/openvac-deploy.*) ;; *) remote_deploy_gate_fail "REMOTE_STAGE_PREFIX_INVALID" ;; esac
           token_hash_file="$remote_stage/knowledge-review-token-hash"
-          [ -f "$token_hash_file" ] && [ ! -L "$token_hash_file" ] || exit 64
-          [ "$(stat -c '%a' "$token_hash_file")" = 600 ] || exit 64
+          [ -f "$token_hash_file" ] && [ ! -L "$token_hash_file" ] || remote_deploy_gate_fail "TOKEN_HASH_FILE_INVALID"
+          [ "$(stat -c '%a' "$token_hash_file")" = 600 ] || remote_deploy_gate_fail "TOKEN_HASH_FILE_MODE_INVALID"
           IFS= read -r token_hash <"$token_hash_file"
           rm -f -- "$token_hash_file"
-          case "$token_hash" in ""|*[!0-9a-f]*) exit 64 ;; esac
-          [ "${#token_hash}" -eq 64 ] || exit 64
+          case "$token_hash" in ""|*[!0-9a-f]*) remote_deploy_gate_fail "TOKEN_HASH_CHARACTERS_INVALID" ;; esac
+          [ "${#token_hash}" -eq 64 ] || remote_deploy_gate_fail "TOKEN_HASH_LENGTH_INVALID"
           workspace_id_file="$remote_stage/dashscope-workspace-id"
-          [ -f "$workspace_id_file" ] && [ ! -L "$workspace_id_file" ] || exit 64
-          [ "$(stat -c '%a' "$workspace_id_file")" = 600 ] || exit 64
+          [ -f "$workspace_id_file" ] && [ ! -L "$workspace_id_file" ] || remote_deploy_gate_fail "WORKSPACE_ID_FILE_INVALID"
+          [ "$(stat -c '%a' "$workspace_id_file")" = 600 ] || remote_deploy_gate_fail "WORKSPACE_ID_FILE_MODE_INVALID"
           IFS= read -r workspace_id <"$workspace_id_file"
           rm -f -- "$workspace_id_file"
-          case "$workspace_id" in ""|*[!A-Za-z0-9_-]*) exit 64 ;; esac
-          [ "${#workspace_id}" -le 128 ] || exit 64
+          case "$workspace_id" in ""|*[!A-Za-z0-9_-]*) remote_deploy_gate_fail "WORKSPACE_ID_CHARACTERS_INVALID" ;; esac
+          [ "${#workspace_id}" -le 128 ] || remote_deploy_gate_fail "WORKSPACE_ID_LENGTH_INVALID"
           KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256="$token_hash" \
             DASHSCOPE_WORKSPACE_ID="$workspace_id" \
             OPENVAC_WEB_PRELOADED_ID="$loaded_web_id" \

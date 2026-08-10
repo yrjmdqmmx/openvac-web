@@ -98,6 +98,22 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     expect(release).toContain(
       "DASHSCOPE_WORKSPACE_ID: ${{ secrets.DASHSCOPE_WORKSPACE_ID }}"
     );
+    expect(release).toContain(
+      '"schema":"openvac.staging-deploy-gate-failure.v1"'
+    );
+    const activation = release.slice(
+      release.indexOf("name: Activate immutable web-only release")
+    );
+    expect(activation.indexOf("deploy_gate_fail() {")).toBeGreaterThan(-1);
+    expect(activation.indexOf("deploy_gate_fail() {")).toBeLessThan(
+      activation.indexOf('deploy_gate_fail "TARGET_INVALID"')
+    );
+    expect(release).toContain('deploy_gate_fail "TOKEN_HASH_LENGTH_INVALID"');
+    expect(release).toContain(
+      'remote_deploy_gate_fail "WORKSPACE_ID_FILE_MODE_INVALID"'
+    );
+    expect(release).not.toContain("printf '%s\\n' \"$token_hash\" >&2");
+    expect(release).not.toContain("printf '%s\\n' \"$workspace_id\" >&2");
     expect(release).toContain('provenance_workflow_sha="$(');
     expect(release).toContain(
       '--data-urlencode "sha=$provenance_workflow_sha"'
