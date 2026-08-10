@@ -14,6 +14,7 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 bundle_dir="$(dirname "$script_dir")"
 compose_file="$bundle_dir/docker-compose.yml"
 preflight_script="$script_dir/preflight-host.sh"
+staging_image_prune_script="$script_dir/prune-staging-images.sh"
 
 case "$deploy_dir:$compose_project" in
   /opt/openvac:openvac-production) deployment_target=production ;;
@@ -214,6 +215,14 @@ fi
   echo "host preflight script must be a regular file, not a symlink" >&2
   exit 64
 }
+if [ "$deploy_dir" = /opt/openvac-staging ]; then
+  [ -f "$staging_image_prune_script" ] &&
+    [ ! -L "$staging_image_prune_script" ] || {
+    echo "staging deployment requires the bundled image cleanup script" >&2
+    exit 64
+  }
+  sh "$staging_image_prune_script" "$release_image"
+fi
 sh "$preflight_script" "$deployment_target"
 
 durable_sync() {

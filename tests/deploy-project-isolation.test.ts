@@ -118,6 +118,15 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     expect(release).toContain('"stage":"remote_acceptance"');
     expect(release).not.toContain("printf '%s\\n' \"$token_hash\" >&2");
     expect(release).not.toContain("printf '%s\\n' \"$workspace_id\" >&2");
+    expect(deploy).toContain(
+      'sh "$staging_image_prune_script" "$release_image"'
+    );
+    expect(deploy.indexOf('sh "$staging_image_prune_script"')).toBeLessThan(
+      deploy.indexOf('sh "$preflight_script" "$deployment_target"')
+    );
+    expect(deploy).toContain(
+      'if [ "$deploy_dir" = /opt/openvac-staging ]; then'
+    );
     expect(release).toContain('provenance_workflow_sha="$(');
     expect(release).toContain(
       '--data-urlencode "sha=$provenance_workflow_sha"'
