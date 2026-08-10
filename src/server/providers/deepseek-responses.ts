@@ -479,7 +479,7 @@ function portableToolRequest(request: ResponsesStreamRequest): {
     // non-thinking and tool-only. The continuation restores the caller's
     // reasoning effort and structured AnswerV3 output after the local result.
     return {
-      tools: serializeTools(matches),
+      tools: serializeTools(matches).map(portableForcedFunctionTool),
       toolChoice: "required",
       reasoningEffort: "none"
     };
@@ -493,6 +493,61 @@ function portableToolRequest(request: ResponsesStreamRequest): {
     ...(request.reasoningEffort
       ? { reasoningEffort: request.reasoningEffort }
       : {})
+  };
+}
+
+function portableForcedFunctionTool(tool: ResponsesTool): ResponsesTool {
+  if (tool.type !== "function" || tool.name !== "estimate_pumpdown_time") {
+    return tool;
+  }
+
+  const quantity = (units: readonly string[]) => ({
+    type: "object",
+    additionalProperties: false,
+    required: ["value", "unit"],
+    properties: {
+      value: { type: "number" },
+      unit: { type: "string", enum: [...units] }
+    }
+  });
+
+  // The forced first leg only extracts the four quantities required by the
+  // deterministic calculator. Optional gas-load/output formatting fields make
+  // the provider's non-strict tool path needlessly ambiguous; the local
+  // calculator already supplies the audited zero-load and seconds defaults.
+  return {
+    ...tool,
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["volume", "pumpingSpeed", "initialPressure", "targetPressure"],
+      properties: {
+        volume: quantity(["m3", "m³", "L", "liter", "litre"]),
+        pumpingSpeed: quantity(["m3/s", "m³/s", "L/s", "m3/h", "m³/h", "cfm"]),
+        initialPressure: quantity([
+          "Pa",
+          "kPa",
+          "MPa",
+          "bar",
+          "mbar",
+          "Torr",
+          "mTorr",
+          "micron",
+          "atm"
+        ]),
+        targetPressure: quantity([
+          "Pa",
+          "kPa",
+          "MPa",
+          "bar",
+          "mbar",
+          "Torr",
+          "mTorr",
+          "micron",
+          "atm"
+        ])
+      }
+    }
   };
 }
 

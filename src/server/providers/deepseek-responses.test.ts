@@ -226,7 +226,24 @@ describe("DeepSeekResponsesProvider", () => {
             type: "function",
             name: "estimate_pumpdown_time",
             description: "Calculate pumpdown time",
-            parameters: { type: "object" },
+            parameters: {
+              type: "object",
+              additionalProperties: false,
+              required: [
+                "volume",
+                "pumpingSpeed",
+                "initialPressure",
+                "targetPressure"
+              ],
+              properties: {
+                volume: { type: "object" },
+                pumpingSpeed: { type: "object" },
+                initialPressure: { type: "object" },
+                targetPressure: { type: "object" },
+                gasLoad: { type: "object" },
+                outputUnit: { enum: ["s", "min", "h"] }
+              }
+            },
             strict: true
           },
           {
@@ -255,13 +272,65 @@ describe("DeepSeekResponsesProvider", () => {
         {
           type: "function",
           name: "estimate_pumpdown_time",
-          parameters: { type: "object" }
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            required: [
+              "volume",
+              "pumpingSpeed",
+              "initialPressure",
+              "targetPressure"
+            ],
+            properties: {
+              volume: {
+                type: "object",
+                required: ["value", "unit"],
+                properties: {
+                  value: { type: "number" },
+                  unit: { type: "string", enum: expect.arrayContaining(["L"]) }
+                }
+              },
+              pumpingSpeed: {
+                type: "object",
+                properties: {
+                  unit: {
+                    type: "string",
+                    enum: expect.arrayContaining(["L/s"])
+                  }
+                }
+              },
+              initialPressure: {
+                type: "object",
+                properties: {
+                  unit: {
+                    type: "string",
+                    enum: expect.arrayContaining(["Pa"])
+                  }
+                }
+              },
+              targetPressure: {
+                type: "object",
+                properties: {
+                  unit: {
+                    type: "string",
+                    enum: expect.arrayContaining(["Pa"])
+                  }
+                }
+              }
+            }
+          }
         }
       ],
       reasoning: { effort: "none" }
     });
     expect(sentBody).not.toHaveProperty("text");
     expect(sentBody).not.toHaveProperty("tools.0.strict");
+    expect(sentBody).not.toHaveProperty(
+      "tools.0.parameters.properties.gasLoad"
+    );
+    expect(sentBody).not.toHaveProperty(
+      "tools.0.parameters.properties.outputUnit"
+    );
   });
 
   it("restores high structured output from a fresh trusted calculation input", async () => {

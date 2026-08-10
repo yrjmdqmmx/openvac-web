@@ -11,6 +11,7 @@ import {
   applyDeepSeekSmokeBoundary,
   applyDeepSeekToolProjectionBoundary,
   classifyDeepSeekSmokeProviderFailure,
+  classifyDeepSeekToolExecutionFailure,
   collectCompletedSafetyProbeWithOneRetry,
   DeepSeekSmokeFailure,
   parseDeepSeekSmokeAnswer,
@@ -313,5 +314,28 @@ describe("DeepSeek release smoke semantic boundary", () => {
         /401|402|422|429|503|secret|providerRequestId|request-secret/u
       );
     }
+  });
+
+  it("classifies tool execution failures without exposing arguments", () => {
+    expect(
+      publicDeepSeekSmokeFailure(
+        classifyDeepSeekToolExecutionFailure("INVALID_TOOL_ARGUMENTS")
+      )
+    ).toEqual({
+      schemaVersion: "openvac.deepseek-smoke-failure.v2",
+      code: "TOOL_EXECUTION_FAILED",
+      phase: "tool_first",
+      kind: "tool_arguments"
+    });
+    expect(
+      publicDeepSeekSmokeFailure(
+        classifyDeepSeekToolExecutionFailure("CALCULATION_INPUT_INVALID")
+      )
+    ).toEqual({
+      schemaVersion: "openvac.deepseek-smoke-failure.v2",
+      code: "TOOL_EXECUTION_FAILED",
+      phase: "tool_first",
+      kind: "calculation_input"
+    });
   });
 });
