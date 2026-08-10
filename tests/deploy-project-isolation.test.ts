@@ -93,6 +93,10 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     expect(release).not.toContain("AGENT_V3_STAGING_SESSION_COOKIE");
     expect(release).not.toContain("secrets.DEEPSEEK_API_KEY");
     expect(release).not.toContain("secrets.DASHSCOPE_API_KEY");
+    expect(release).not.toContain("secrets.QWEN_VL_API_KEY");
+    expect(release).toContain(
+      "DASHSCOPE_WORKSPACE_ID: ${{ secrets.DASHSCOPE_WORKSPACE_ID }}"
+    );
     expect(release).toContain('provenance_workflow_sha="$(');
     expect(release).toContain(
       '--data-urlencode "sha=$provenance_workflow_sha"'
