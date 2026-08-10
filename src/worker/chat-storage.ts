@@ -193,7 +193,12 @@ export class ChatStorageWorker {
             urlTrust: "private-oss-v4",
             filename: job.filename,
             outputFormats: ["markdown", "visualLayoutInfo"],
-            llmEnhancement: true
+            // Private chat attachments need bounded, deterministic parsing.
+            // DocMind documents that LLM/VLM enhancement can significantly
+            // increase latency; the base parser already preserves Markdown
+            // and layout data for attachment search/open tools.
+            llmEnhancement: false,
+            formulaEnhancement: false
           });
         });
         await this.repository.markParserSubmitted(

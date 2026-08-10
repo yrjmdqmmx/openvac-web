@@ -246,6 +246,7 @@ export interface DocumentParseRequest {
   outputFormats?: Array<"markdown" | "visualLayoutInfo">;
   pageIndexes?: number[];
   llmEnhancement?: boolean;
+  formulaEnhancement?: boolean;
 }
 
 export type DocumentParseStatus =

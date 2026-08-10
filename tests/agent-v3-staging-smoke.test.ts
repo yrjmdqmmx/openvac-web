@@ -146,12 +146,16 @@ describe("Agent V3 staging runtime smoke safety", () => {
     const diagnostic = publicSmokeFailureDiagnostic({
       stage: "attachment_ready",
       caseId: "v3-document-manual-01",
+      attachmentStatus: "processing",
+      parseStatus: "queued",
       code: "ATTACHMENT_PARSE_FAILED"
     });
     expect(diagnostic).toEqual({
       schemaVersion: "openvac.agent-v3-staging-failure.v1",
       stage: "attachment_ready",
       caseId: "v3-document-manual-01",
+      attachmentStatus: "processing",
+      parseStatus: "queued",
       code: "ATTACHMENT_PARSE_FAILED"
     });
     expect(JSON.stringify(diagnostic)).not.toMatch(
@@ -166,6 +170,8 @@ describe("Agent V3 staging runtime smoke safety", () => {
       terminalType: "run.failed",
       code: "bad code: bearer secret",
       httpStatus: 999,
+      attachmentStatus: "leak-secret",
+      parseStatus: "unknown",
       suggestedAction: "dump-session",
       settlement: "unknown"
     });

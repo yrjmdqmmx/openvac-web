@@ -74,7 +74,8 @@ describe("chat storage worker", () => {
       urlTrust: "private-oss-v4",
       filename: "manual.docx",
       outputFormats: ["markdown", "visualLayoutInfo"],
-      llmEnhancement: true
+      llmEnhancement: false,
+      formulaEnhancement: false
     });
     expect(repository.markParserSubmitted).toHaveBeenCalledWith(
       officeJob,
