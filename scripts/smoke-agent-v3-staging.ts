@@ -634,8 +634,6 @@ async function captureCase(
     }
   }
 
-  markSmokeDiagnostic("artifact_validation", { caseId: testCase.id });
-  const artifactSpec = await validateRuntimeArtifacts(input, result, testCase);
   markSmokeDiagnostic("tool_validation", { caseId: testCase.id });
   const missingTool = missingRequiredToolEvidence(testCase, database.toolAudit);
   if (missingTool) {
@@ -652,6 +650,8 @@ async function captureCase(
       `Runtime case ${testCase.id} did not complete ${missingTool}.`
     );
   }
+  markSmokeDiagnostic("artifact_validation", { caseId: testCase.id });
+  const artifactSpec = await validateRuntimeArtifacts(input, result, testCase);
   const authorizationAudit = authorizationAudits(
     testCase,
     result.runId,
@@ -1168,6 +1168,10 @@ async function validateRuntimeArtifacts(
     ? result.meta.artifacts.map(recordValue)
     : [];
   if (artifacts.length !== 1) {
+    markSmokeDiagnostic("artifact_validation", {
+      caseId: testCase.id,
+      code: "ARTIFACT_META_COUNT_INVALID"
+    });
     throw new Error(
       `Runtime artifact case ${testCase.id} did not return one artifact.`
     );
@@ -1184,12 +1188,38 @@ async function validateRuntimeArtifacts(
       )
     )
     .limit(1);
-  if (!stored || stored.status !== "ready") {
+  if (!stored) {
+    markSmokeDiagnostic("artifact_validation", {
+      caseId: testCase.id,
+      code: "ARTIFACT_RECORD_NOT_FOUND"
+    });
     throw new Error(
       "Runtime artifact is not ready or not bound to its message."
     );
   }
-  const spec = artifactSpecSchema.parse(stored.spec);
+  if (stored.status !== "ready") {
+    markSmokeDiagnostic("artifact_validation", {
+      caseId: testCase.id,
+      code:
+        stored.status === "failed"
+          ? "ARTIFACT_GENERATION_FAILED"
+          : stored.status === "generating"
+            ? "ARTIFACT_STILL_GENERATING"
+            : "ARTIFACT_STATUS_INVALID"
+    });
+    throw new Error(
+      "Runtime artifact is not ready or not bound to its message."
+    );
+  }
+  const parsedSpec = artifactSpecSchema.safeParse(stored.spec);
+  if (!parsedSpec.success) {
+    markSmokeDiagnostic("artifact_validation", {
+      caseId: testCase.id,
+      code: "ARTIFACT_SPEC_INVALID"
+    });
+    throw new Error("Runtime artifact specification is invalid.");
+  }
+  const spec = parsedSpec.data;
   for (const format of spec.formats) {
     const response = await appFetch(
       input,
@@ -1197,6 +1227,11 @@ async function validateRuntimeArtifacts(
       { redirect: "manual", signal: AbortSignal.timeout(30_000) }
     );
     if (response.status !== 302) {
+      markSmokeDiagnostic("artifact_validation", {
+        caseId: testCase.id,
+        code: "ARTIFACT_DOWNLOAD_REDIRECT_INVALID",
+        httpStatus: response.status
+      });
       throw new Error(
         `Artifact ${format} download did not return a private redirect.`
       );
@@ -1204,14 +1239,39 @@ async function validateRuntimeArtifacts(
     const location = response.headers.get("location");
     const url = location ? new URL(location) : undefined;
     if (!url || url.protocol !== "https:") {
+      markSmokeDiagnostic("artifact_validation", {
+        caseId: testCase.id,
+        code: "ARTIFACT_DOWNLOAD_URL_INVALID"
+      });
       throw new Error(`Artifact ${format} download URL is invalid.`);
     }
-    const downloaded = await fetch(url, {
-      redirect: "error",
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-    });
+    let downloaded: Response;
+    try {
+      downloaded = await fetch(url, {
+        redirect: "error",
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+      });
+    } catch {
+      markSmokeDiagnostic("artifact_validation", {
+        caseId: testCase.id,
+        code: "ARTIFACT_DOWNLOAD_REQUEST_FAILED"
+      });
+      throw new Error(`Artifact ${format} download request failed.`);
+    }
     const bytes = await downloaded.arrayBuffer();
-    if (!downloaded.ok || bytes.byteLength < 1) {
+    if (!downloaded.ok) {
+      markSmokeDiagnostic("artifact_validation", {
+        caseId: testCase.id,
+        code: "ARTIFACT_DOWNLOAD_STATUS_INVALID",
+        httpStatus: downloaded.status
+      });
+      throw new Error(`Artifact ${format} download failed validation.`);
+    }
+    if (bytes.byteLength < 1) {
+      markSmokeDiagnostic("artifact_validation", {
+        caseId: testCase.id,
+        code: "ARTIFACT_DOWNLOAD_EMPTY"
+      });
       throw new Error(`Artifact ${format} download failed validation.`);
     }
   }
