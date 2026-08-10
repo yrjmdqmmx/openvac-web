@@ -16,7 +16,7 @@ export type QwenVlSmokeFailureCode =
   | "RESPONSE_INVALID"
   | "UNEXPECTED_FAILURE";
 
-export type QwenVlSmokeFailureDetail = "UNIT_NOT_RECOGNIZED";
+export type QwenVlSmokeFailureDetail = "VISUAL_NONCE_MISMATCH";
 
 export class QwenVlSmokeFailure extends Error {
   constructor(
@@ -78,17 +78,12 @@ export function publicQwenVlSmokeFailure(
   return result;
 }
 
-export function recognizesPascalUnit(value: string): boolean {
-  if (/(?:未|无法|没有|不能)(?:清晰)?识别/iu.test(value)) {
+export function recognizesVisualNonce(value: string, nonce: string): boolean {
+  if (!/^\d{8}$/u.test(nonce)) {
     return false;
   }
-  const normalized = value
-    .toLowerCase()
-    .replace(/大写|小写|英文字母|字母|字符|和|与|及/gu, "");
-  const compact = normalized.replace(/[^\p{L}\p{N}]+/gu, "");
-  return (
-    compact.includes("pa") ||
-    compact.includes("pascal") ||
-    compact.includes("帕")
-  );
+  if (/(?:未|无法|没有|不能)(?:清晰)?(?:识别|读取)/iu.test(value)) {
+    return false;
+  }
+  return value.replace(/\D/gu, "") === nonce;
 }

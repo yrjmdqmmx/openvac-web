@@ -9,7 +9,7 @@ import {
   classifyQwenVlSmokeFailure,
   publicQwenVlSmokeFailure,
   QwenVlSmokeFailure,
-  recognizesPascalUnit
+  recognizesVisualNonce
 } from "../scripts/smoke-qwen-vl-boundary";
 
 describe("Qwen-VL smoke public boundary", () => {
@@ -84,36 +84,39 @@ describe("Qwen-VL smoke public boundary", () => {
   it("exposes only the fixed semantic detail, never provider text", () => {
     const failure = new QwenVlSmokeFailure(
       "RESPONSE_INVALID",
-      "UNIT_NOT_RECOGNIZED"
+      "VISUAL_NONCE_MISMATCH"
     );
     expect(publicQwenVlSmokeFailure(failure)).toEqual({
       schemaVersion: "openvac.qwen-vl-smoke-failure.v1",
       code: "RESPONSE_INVALID",
-      detail: "UNIT_NOT_RECOGNIZED"
+      detail: "VISUAL_NONCE_MISMATCH"
     });
   });
 
-  it.each([
-    "Pa",
-    "单位为 Pa（帕斯卡）",
-    "帕",
-    "帕斯卡",
-    "pascal",
-    "图中显示的是大写字母 P 和小写字母 a",
-    "单位由字母 P 与 a 组成"
-  ])("accepts an equivalent Pascal-unit recognition: %s", (value) => {
-    expect(recognizesPascalUnit(value)).toBe(true);
-  });
+  it.each(["73194625", "校验数字：73194625", "7319 4625"])(
+    "accepts an exact visual nonce with harmless formatting: %s",
+    (value) => {
+      expect(recognizesVisualNonce(value, "73194625")).toBe(true);
+    }
+  );
 
   it.each([
-    "bar",
-    "mbar",
-    "Torr",
-    "无法识别",
-    "字母 P 和 B",
-    "未识别到大写字母 P 与小写字母 a",
-    "没有清晰识别出 Pa"
-  ])("rejects a different or missing pressure unit: %s", (value) => {
-    expect(recognizesPascalUnit(value)).toBe(false);
-  });
+    "7319462",
+    "731946250",
+    "73194626",
+    "无法读取 73194625",
+    "未清晰识别到 73194625"
+  ])(
+    "rejects an incomplete, different, or negated visual nonce: %s",
+    (value) => {
+      expect(recognizesVisualNonce(value, "73194625")).toBe(false);
+    }
+  );
+
+  it.each(["7319462", "abcdefgh", "123456789"])(
+    "rejects an invalid expected nonce: %s",
+    (nonce) => {
+      expect(recognizesVisualNonce("73194625", nonce)).toBe(false);
+    }
+  );
 });
