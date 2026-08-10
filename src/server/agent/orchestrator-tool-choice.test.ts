@@ -36,6 +36,12 @@ describe("Agent V3 deterministic calculator routing", () => {
     expect(safeArtifactFailureCode("ARTIFACT_PERSIST_FAILED")).toBe(
       "ARTIFACT_PERSIST_FAILED"
     );
+    expect(safeArtifactFailureCode("TOOL_TIMEOUT")).toBe(
+      "ARTIFACT_GENERATION_TIMEOUT"
+    );
+    expect(safeArtifactFailureCode("ARTIFACT_SCHEMA_UNAVAILABLE")).toBe(
+      "ARTIFACT_SCHEMA_UNAVAILABLE"
+    );
     expect(safeArtifactFailureCode("secret request-id=private")).toBe(
       "ARTIFACT_CREATION_FAILED"
     );

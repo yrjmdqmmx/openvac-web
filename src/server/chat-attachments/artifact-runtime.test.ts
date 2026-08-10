@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { ObjectStorage } from "@/server/providers";
 import type { ArtifactSpec } from "@/types/chat-v3";
 
-import { ProductionArtifactStorage } from "./artifact-runtime";
+import {
+  artifactRecordCreationFailureCode,
+  ProductionArtifactStorage
+} from "./artifact-runtime";
 import {
   ChatArtifactStorageService,
   type ChatArtifactStorageRepository,
@@ -158,10 +161,35 @@ describe("production artifact storage runtime", () => {
     input.spec = { ...(input.spec as object), internal: "must reject" };
 
     await expect(runtime.create(input as never)).rejects.toMatchObject({
-      code: "ARTIFACT_SPEC_INVALID"
+      code: "INVALID_ARTIFACT_SPEC"
     });
     expect(renderer).not.toHaveBeenCalled();
     expect(harness.repository.createArtifact).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["NOT_FOUND", "ARTIFACT_SCOPE_MISMATCH"],
+    ["23503", "ARTIFACT_SCOPE_MISMATCH"],
+    ["42P01", "ARTIFACT_SCHEMA_UNAVAILABLE"],
+    ["42501", "ARTIFACT_STORAGE_FORBIDDEN"],
+    ["08006", "ARTIFACT_STORAGE_UNAVAILABLE"],
+    ["57014", "ARTIFACT_RECORD_CREATE_TIMEOUT"],
+    ["23514", "INVALID_ARTIFACT_SPEC"],
+    ["UNEXPECTED", "ARTIFACT_RECORD_CREATE_FAILED"]
+  ])("maps record creation error %s to safe code %s", (code, expected) => {
+    expect(artifactRecordCreationFailureCode({ code })).toBe(expected);
+  });
+
+  it("surfaces a safe code when artifact metadata creation fails", async () => {
+    const harness = makeHarness();
+    vi.mocked(harness.repository.createArtifact).mockRejectedValueOnce({
+      code: "42P01"
+    });
+    const runtime = new ProductionArtifactStorage(harness.service);
+
+    await expect(runtime.create(createInput())).rejects.toMatchObject({
+      code: "ARTIFACT_SCHEMA_UNAVAILABLE"
+    });
   });
 });
 
