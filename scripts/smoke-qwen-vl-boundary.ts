@@ -24,6 +24,9 @@ export class QwenVlSmokeFailure extends Error {
 }
 
 export function classifyQwenVlSmokeFailure(error: unknown): QwenVlSmokeFailure {
+  if (error instanceof QwenVlSmokeFailure) {
+    return error;
+  }
   if (error instanceof ConfigurationError) {
     return new QwenVlSmokeFailure("CONFIG_MISSING");
   }
