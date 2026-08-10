@@ -309,7 +309,7 @@ function visionBenchmark() {
     imageTransport: "base64-data-url",
     defaultModel: "qwen3.8-max",
     defaultThinking: true,
-    thinkingBudgetTokens: 8192,
+    thinkingBudgetTokens: 4096,
     priceVersion: "aliyun-standard-cn-beijing-2026-08-10",
     measurements: [
       ...caseIds.map((caseId) => measurement(caseId, "qwen3.8-max", true)),

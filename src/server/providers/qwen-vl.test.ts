@@ -73,9 +73,9 @@ describe("QwenVlProvider", () => {
     expect(content[2]).toEqual({ type: "text", text: "识别真空仪表" });
     expect(sentBody).toMatchObject({
       model: "qwen3.8-max",
-      max_completion_tokens: 10_240,
+      max_completion_tokens: 6144,
       enable_thinking: true,
-      thinking_budget: 8192,
+      thinking_budget: 4096,
       preserve_thinking: false,
       vl_high_resolution_images: false,
       stream: false
@@ -210,9 +210,9 @@ describe("QwenVlProvider", () => {
     );
     expect(sentBody).toMatchObject({
       model: "qwen3.8-max",
-      max_completion_tokens: 10_240,
+      max_completion_tokens: 6144,
       enable_thinking: true,
-      thinking_budget: 8192,
+      thinking_budget: 4096,
       preserve_thinking: false,
       stream: true,
       stream_options: { include_usage: true }

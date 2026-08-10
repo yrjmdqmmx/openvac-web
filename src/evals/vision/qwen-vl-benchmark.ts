@@ -48,7 +48,7 @@ export const qwenVisionBenchmarkSchema = z
     imageTransport: z.literal("base64-data-url"),
     defaultModel: z.literal("qwen3.8-max"),
     defaultThinking: z.literal(true),
-    thinkingBudgetTokens: z.literal(8192),
+    thinkingBudgetTokens: z.literal(4096),
     priceVersion: z.literal("aliyun-standard-cn-beijing-2026-08-10"),
     measurements: z
       .array(qwenVisionBenchmarkMeasurementSchema)

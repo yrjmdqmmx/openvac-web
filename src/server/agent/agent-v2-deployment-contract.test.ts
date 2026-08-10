@@ -64,8 +64,8 @@ describe("Agent deployment contract", () => {
     expect(compose).toContain("QWEN_VL_MODEL: ${QWEN_VL_MODEL:-qwen3.8-max}");
     expect(example).toContain("QWEN_VL_ENABLE_THINKING=true");
     expect(compose).toContain('QWEN_VL_ENABLE_THINKING: "true"');
-    expect(example).toContain("QWEN_VL_THINKING_BUDGET=8192");
-    expect(compose).toContain('QWEN_VL_THINKING_BUDGET: "8192"');
+    expect(example).toContain("QWEN_VL_THINKING_BUDGET=4096");
+    expect(compose).toContain('QWEN_VL_THINKING_BUDGET: "4096"');
     expect(example).toContain("QWEN_VL_BASE_URL=");
     expect(example).toContain("QWEN_VL_ALLOWED_HOSTS=");
     expect(compose).toContain("QWEN_VL_BASE_URL: ${QWEN_VL_BASE_URL:-}");
