@@ -421,6 +421,75 @@ describe("Agent V3 deterministic calculator routing", () => {
     expect(artifactAlreadyAttempted.callableFunctionNames).toEqual([]);
   });
 
+  it("runs a required calculation before forcing artifact creation", () => {
+    const tools: ResponsesTool[] = [
+      {
+        type: "function",
+        name: "estimate_pumpdown_time",
+        description: "calculator",
+        parameters: { type: "object" }
+      },
+      {
+        type: "function",
+        name: "create_artifact",
+        description: "artifact",
+        parameters: { type: "object" }
+      }
+    ];
+    expect(
+      selectAnswerToolChoice(
+        "腔体体积 100 L，抽速 10 L/s，从 100 Pa 抽到 1 Pa，计算抽空时间并生成报告。",
+        [],
+        [],
+        tools
+      )
+    ).toEqual({
+      type: "function",
+      name: "estimate_pumpdown_time"
+    });
+  });
+
+  it("grounds linked and visual inputs before forcing artifact creation", () => {
+    const artifact: ResponsesTool = {
+      type: "function",
+      name: "create_artifact",
+      description: "artifact",
+      parameters: { type: "object" }
+    };
+    expect(
+      selectAnswerToolChoice(
+        "根据这个链接生成诊断报告。",
+        [],
+        [],
+        [
+          artifact,
+          {
+            type: "function",
+            name: "read_verified_url",
+            description: "url",
+            parameters: { type: "object" }
+          }
+        ]
+      )
+    ).toEqual({ type: "function", name: "read_verified_url" });
+    expect(
+      selectAnswerToolChoice(
+        "根据这张铭牌图片生成报告。",
+        [],
+        [],
+        [
+          artifact,
+          {
+            type: "function",
+            name: "analyze_image",
+            description: "vision",
+            parameters: { type: "object" }
+          }
+        ]
+      )
+    ).toEqual({ type: "function", name: "analyze_image" });
+  });
+
   it("reserves create_artifact at most once per run and parallel batch", () => {
     const attempted = new Set<string>();
     reserveNonRepeatableToolCalls([{ name: "create_artifact" }], attempted);

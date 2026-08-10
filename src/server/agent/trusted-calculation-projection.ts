@@ -214,6 +214,42 @@ export function trustedPumpdownEligibilityFailure(input: {
   return undefined;
 }
 
+export function trustedPumpdownArtifactEligibilityFailure(input: {
+  riskLevel: AgentV3RiskLevel;
+  webRequired: boolean;
+  inputPartTypes: readonly string[];
+  hasArtifactIntent: boolean;
+  toolRounds: number;
+  calculationCount: number;
+  calls: readonly { name: string }[];
+}): TrustedPumpdownEligibilityFailure | undefined {
+  if (input.riskLevel === "high") {
+    return "TRUSTED_CALCULATION_PROJECTION_HIGH_RISK";
+  }
+  if (input.webRequired) {
+    return "TRUSTED_CALCULATION_PROJECTION_WEB_REQUIRED";
+  }
+  if (input.inputPartTypes.some((type) => type !== "text")) {
+    return "TRUSTED_CALCULATION_PROJECTION_NON_TEXT_INPUT";
+  }
+  if (!input.hasArtifactIntent) {
+    return "TRUSTED_CALCULATION_PROJECTION_ARTIFACT_INTENT";
+  }
+  if (input.toolRounds !== 1) {
+    return "TRUSTED_CALCULATION_PROJECTION_TOOL_ROUND_MISMATCH";
+  }
+  if (input.calculationCount !== 1) {
+    return "TRUSTED_CALCULATION_PROJECTION_CALCULATION_COUNT_MISMATCH";
+  }
+  if (input.calls.length !== 1) {
+    return "TRUSTED_CALCULATION_PROJECTION_CALL_COUNT_MISMATCH";
+  }
+  if (input.calls[0]?.name !== PUMPDOWN_TOOL) {
+    return "TRUSTED_CALCULATION_PROJECTION_TOOL_NAME_MISMATCH";
+  }
+  return undefined;
+}
+
 export function buildTrustedPumpdownProjection(
   value: unknown
 ): TrustedPumpdownProjection {
@@ -267,6 +303,31 @@ export function buildTrustedCalculationFinalInput(
         dataOnly: true,
         requiredCalculationIds: [projection.calculationId],
         requiredAnswerShape: "calculation_blocks_only",
+        calculation: projection
+      })
+    }
+  ];
+}
+
+export function buildTrustedCalculationArtifactInput(
+  originalInput: readonly ResponsesInputItem[],
+  projection: TrustedPumpdownProjection
+): ResponsesInputItem[] {
+  if (originalInput.some((item) => item.type !== "message")) {
+    throw new TypeError(
+      "Trusted calculation input must start from message-only context."
+    );
+  }
+  return [
+    ...originalInput,
+    {
+      type: "message",
+      role: "system",
+      content: JSON.stringify({
+        schemaVersion: "openvac.trusted-calculation-artifact-context.v1",
+        dataOnly: true,
+        requiredCalculationIds: [projection.calculationId],
+        requiredAction: "create_artifact",
         calculation: projection
       })
     }

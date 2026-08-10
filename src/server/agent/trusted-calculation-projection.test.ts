@@ -10,10 +10,12 @@ import { executeCalculator } from "./calculators";
 import {
   answerUsesOnlyProjectedCalculations,
   boundCalculationIdFromToolResult,
+  buildTrustedCalculationArtifactInput,
   buildTrustedCalculationFinalInput,
   buildTrustedPumpdownProjection,
   calculationsForProjection,
   isPurePumpdownCalculationRequest,
+  trustedPumpdownArtifactEligibilityFailure,
   trustedPumpdownEligibilityFailure,
   trustedPumpdownProjectionFromToolTurn
 } from "./trusted-calculation-projection";
@@ -166,6 +168,39 @@ describe("trusted calculation projection", () => {
       projection!
     );
     expect(input.map((item) => item.type)).toEqual(["message", "message"]);
+    expect(JSON.stringify(input)).not.toMatch(
+      /function_call|formulaId|rawArguments/u
+    );
+  });
+
+  it("creates a fresh trusted context for calculation-backed artifacts", () => {
+    const value = fixture();
+    const projection = buildTrustedPumpdownProjection(value.calculation);
+    expect(
+      trustedPumpdownArtifactEligibilityFailure({
+        riskLevel: "medium",
+        webRequired: false,
+        inputPartTypes: ["text"],
+        hasArtifactIntent: true,
+        toolRounds: 1,
+        calculationCount: 1,
+        calls: [{ name: "estimate_pumpdown_time" }]
+      })
+    ).toBeUndefined();
+    const input = buildTrustedCalculationArtifactInput(
+      [{ type: "message", role: "user", content: "calculate and export" }],
+      projection
+    );
+    expect(input.map((item) => item.type)).toEqual(["message", "message"]);
+    const context = input[1];
+    expect(context?.type).toBe("message");
+    expect(
+      JSON.parse(
+        context?.type === "message" && typeof context.content === "string"
+          ? context.content
+          : "{}"
+      )
+    ).toMatchObject({ requiredAction: "create_artifact" });
     expect(JSON.stringify(input)).not.toMatch(
       /function_call|formulaId|rawArguments/u
     );
