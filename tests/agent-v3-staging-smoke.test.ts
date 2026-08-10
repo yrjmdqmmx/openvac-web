@@ -80,6 +80,22 @@ describe("Agent V3 staging runtime smoke safety", () => {
     expect(source).not.toContain("00000000-0000-4000-8000-000000000000");
   });
 
+  it("runs the audited eight-case visual benchmark before runtime evidence capture", () => {
+    const workflow = readFileSync(
+      resolve(import.meta.dirname, "../.github/workflows/release.yml"),
+      "utf8"
+    );
+    const benchmark = workflow.indexOf("QWEN_VL_SMOKE_MODE=benchmark");
+    const runtime = workflow.indexOf("pnpm smoke:agent:v3:staging");
+    expect(benchmark).toBeGreaterThan(-1);
+    expect(runtime).toBeGreaterThan(benchmark);
+    expect(workflow).toContain(
+      "QWEN_VL_BENCHMARK_EVIDENCE=$container_dir/qwen-vision-benchmark.json"
+    );
+    expect(workflow).not.toContain("QWEN_VL_API_KEY: ${{ secrets.");
+    expect(workflow).not.toContain("DASHSCOPE_API_KEY: ${{ secrets.");
+  });
+
   it("reports only allowlisted staging failure fields", () => {
     const diagnostic = publicSmokeFailureDiagnostic({
       stage: "chat_terminal",

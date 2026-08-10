@@ -23,6 +23,7 @@ import {
   type RuntimeEvidence
 } from "./runtime-evidence";
 import type { AnswerV3EvalCase, AnswerV3Judge } from "./types";
+import { QWEN_VISION_BENCHMARK_CASE_IDS } from "../vision/qwen-vl-benchmark";
 
 const GIT_SHA = "a".repeat(40);
 const IMAGE_DIGEST = `sha256:${"b".repeat(64)}`;
@@ -353,8 +354,7 @@ async function runtimeEvidence(): Promise<RuntimeEvidence> {
         caseId: testCase.id,
         runId,
         provider: output.provider,
-        model:
-          output.provider === "qwen" ? "qwen3-vl-plus" : "deepseek-v4-flash",
+        model: output.provider === "qwen" ? "qwen3.8-max" : "deepseek-v4-flash",
         answer: output.answer,
         verifiedLinks: output.verifiedLinks,
         linkAudit: output.linkAudit ?? [],
@@ -405,8 +405,68 @@ async function runtimeEvidence(): Promise<RuntimeEvidence> {
     imageDigest: IMAGE_DIGEST,
     generatedAt: "2026-08-09T00:00:00.000Z",
     source: { environment: "staging", baseUrl: BASE_URL },
+    visionBenchmark: visionBenchmark(GIT_SHA, IMAGE_DIGEST),
     cases
   });
+}
+
+function visionBenchmark(gitSha: string, imageDigest: string) {
+  const measurement = (
+    caseId: (typeof QWEN_VISION_BENCHMARK_CASE_IDS)[number],
+    model: "qwen3.8-max" | "qwen3-vl-plus",
+    thinking: boolean
+  ) => ({
+    caseId,
+    model,
+    thinking,
+    qualityScore: 100,
+    passedChecks: 2,
+    totalChecks: 2,
+    firstTokenLatencyMs: 100,
+    totalDurationMs: 200,
+    inputTokens: 100,
+    outputTokens: 10,
+    totalTokens: 110,
+    estimatedCostMicrosCny: model === "qwen3.8-max" ? 1_560 : 200
+  });
+  return {
+    schemaVersion: "openvac.qwen-vision-benchmark.v1",
+    gitSha,
+    imageDigest,
+    generatedAt: "2026-08-09T00:00:00.000Z",
+    environment: "staging",
+    endpointRegion: "cn-beijing",
+    protocol: "openai-chat-completions",
+    imageTransport: "base64-data-url",
+    defaultModel: "qwen3.8-max",
+    defaultThinking: false,
+    priceVersion: "aliyun-standard-cn-beijing-2026-08-10",
+    measurements: [
+      ...QWEN_VISION_BENCHMARK_CASE_IDS.map((caseId) =>
+        measurement(caseId, "qwen3.8-max", false)
+      ),
+      ...QWEN_VISION_BENCHMARK_CASE_IDS.map((caseId) =>
+        measurement(caseId, "qwen3-vl-plus", false)
+      ),
+      measurement("pump_curve", "qwen3.8-max", true),
+      measurement("vacuum_schematic", "qwen3.8-max", true)
+    ],
+    summary: {
+      currentQualityScore: 100,
+      baselineQualityScore: 100,
+      currentMedianFirstTokenLatencyMs: 100,
+      baselineMedianFirstTokenLatencyMs: 100,
+      currentTotalDurationMs: 1_600,
+      baselineTotalDurationMs: 1_600,
+      currentTotalTokens: 880,
+      baselineTotalTokens: 880,
+      currentEstimatedCostMicrosCny: 12_480,
+      baselineEstimatedCostMicrosCny: 1_600,
+      complexThinkingQualityDelta: 0,
+      recommendation: "retain_non_thinking",
+      passed: true
+    }
+  };
 }
 
 async function writeAndLoad(evidence: RuntimeEvidence) {

@@ -122,6 +122,84 @@ export function normalizeTrustedHttpsBaseUrl(
   return normalizeBaseUrl(url.toString());
 }
 
+export interface BailianBeijingEndpointOptions {
+  baseUrl?: string;
+  workspaceId?: string;
+  allowedHosts?: readonly string[];
+}
+
+/**
+ * Resolves the China (Beijing) Model Studio workspace endpoint without ever
+ * placing the workspace identifier in an error message.
+ */
+export function resolveBailianBeijingCompatibleEndpoint(
+  provider: string,
+  options: BailianBeijingEndpointOptions
+): { baseUrl: string; allowedHosts: readonly string[] } {
+  const workspaceId = optionalString(options.workspaceId);
+  if (
+    workspaceId &&
+    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/iu.test(workspaceId)
+  ) {
+    throw new ConfigurationError(
+      provider,
+      `${provider} workspace configuration is malformed.`
+    );
+  }
+
+  const workspaceHost = workspaceId
+    ? `${workspaceId.toLowerCase()}.cn-beijing.maas.aliyuncs.com`
+    : undefined;
+  const baseUrl = optionalString(options.baseUrl);
+  if (!baseUrl && !workspaceHost) {
+    throw new ConfigurationError(
+      provider,
+      `${provider} requires a China (Beijing) workspace endpoint.`
+    );
+  }
+
+  const configuredHosts = (options.allowedHosts ?? [])
+    .map(normalizeDomain)
+    .filter(Boolean);
+  const allowedHosts = configuredHosts.length
+    ? configuredHosts
+    : workspaceHost
+      ? [workspaceHost]
+      : [];
+  if (allowedHosts.length === 0) {
+    throw new ConfigurationError(
+      provider,
+      `${provider} requires an explicitly trusted endpoint host.`
+    );
+  }
+  if (
+    workspaceHost &&
+    (allowedHosts.length !== 1 || allowedHosts[0] !== workspaceHost)
+  ) {
+    throw new ConfigurationError(
+      provider,
+      `${provider} allowed hosts must match its China (Beijing) workspace.`
+    );
+  }
+
+  const normalizedBaseUrl = normalizeTrustedHttpsBaseUrl(
+    provider,
+    baseUrl ?? `https://${workspaceHost}/compatible-mode/v1`,
+    allowedHosts
+  );
+  if (workspaceHost && new URL(normalizedBaseUrl).hostname !== workspaceHost) {
+    throw new ConfigurationError(
+      provider,
+      `${provider} base URL must match its China (Beijing) workspace.`
+    );
+  }
+
+  return {
+    baseUrl: normalizedBaseUrl,
+    allowedHosts
+  };
+}
+
 export function parseCommaSeparated(value: string | undefined): string[] {
   return (value ?? "").split(",").map(normalizeDomain).filter(Boolean);
 }

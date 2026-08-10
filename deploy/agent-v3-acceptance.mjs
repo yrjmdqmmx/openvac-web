@@ -293,6 +293,11 @@ function validateRuntimeEvidence(value, commitSha, imageDigest) {
     fail("runtime evidence identity does not match the staging release");
   }
   validTimestamp(report.generatedAt, "runtime evidence generatedAt");
+  const visionBenchmark = validateVisionBenchmark(
+    report.visionBenchmark,
+    commitSha,
+    imageDigest
+  );
   const caseVersion = string(
     report.caseVersion,
     "runtime evidence caseVersion"
@@ -309,6 +314,12 @@ function validateRuntimeEvidence(value, commitSha, imageDigest) {
   for (const item of cases) {
     if (!/^[0-9a-f-]{36}$/u.test(item.runId ?? "")) {
       fail(`runtime case ${String(item.caseId)} has an invalid run ID`);
+    }
+    if (
+      ["v3-visual-gauge-01", "v3-visual-nameplate-02"].includes(item.caseId) &&
+      (item.provider !== "qwen" || item.model !== "qwen3.8-max")
+    ) {
+      fail(`runtime case ${String(item.caseId)} used the wrong visual model`);
     }
     runIds.add(item.runId);
     const provenance = record(item.provenance);
@@ -363,7 +374,102 @@ function validateRuntimeEvidence(value, commitSha, imageDigest) {
     caseVersion,
     caseCount: cases.length,
     source: "staging_api_chat_sse",
-    crossConversationAuthorization: "passed"
+    crossConversationAuthorization: "passed",
+    visionBenchmark
+  };
+}
+
+function validateVisionBenchmark(value, commitSha, imageDigest) {
+  const report = record(value);
+  const expectedCaseIds = [
+    "device_identification",
+    "nameplate_ocr",
+    "gauge_reading",
+    "pump_curve",
+    "vacuum_schematic",
+    "fault_screenshot",
+    "table_image",
+    "multi_image_comparison"
+  ];
+  if (
+    report.schemaVersion !== "openvac.qwen-vision-benchmark.v1" ||
+    report.gitSha !== commitSha ||
+    report.imageDigest !== imageDigest ||
+    report.environment !== "staging" ||
+    report.endpointRegion !== "cn-beijing" ||
+    report.protocol !== "openai-chat-completions" ||
+    report.imageTransport !== "base64-data-url" ||
+    report.defaultModel !== "qwen3.8-max" ||
+    report.defaultThinking !== false ||
+    report.priceVersion !== "aliyun-standard-cn-beijing-2026-08-10" ||
+    !Array.isArray(report.measurements) ||
+    report.measurements.length !== 18
+  ) {
+    fail("runtime evidence has invalid Qwen visual benchmark identity");
+  }
+  validTimestamp(report.generatedAt, "Qwen visual benchmark generatedAt");
+  const measurements = report.measurements.map((value) => record(value));
+  for (const model of ["qwen3.8-max", "qwen3-vl-plus"]) {
+    const modelCases = measurements.filter(
+      (item) => item.model === model && item.thinking === false
+    );
+    const ids = modelCases.map((item) => item.caseId).sort();
+    if (
+      ids.length !== expectedCaseIds.length ||
+      ids.some((id, index) => id !== [...expectedCaseIds].sort()[index])
+    ) {
+      fail(`Qwen visual benchmark ${model} case set is incomplete`);
+    }
+  }
+  for (const item of measurements) {
+    if (
+      !expectedCaseIds.includes(item.caseId) ||
+      !["qwen3.8-max", "qwen3-vl-plus"].includes(item.model) ||
+      typeof item.thinking !== "boolean" ||
+      !Number.isInteger(item.qualityScore) ||
+      item.qualityScore < 0 ||
+      item.qualityScore > 100 ||
+      !Number.isInteger(item.firstTokenLatencyMs) ||
+      item.firstTokenLatencyMs < 0 ||
+      !Number.isInteger(item.totalDurationMs) ||
+      item.totalDurationMs < item.firstTokenLatencyMs ||
+      !Number.isInteger(item.totalTokens) ||
+      item.totalTokens < 0 ||
+      !Number.isInteger(item.estimatedCostMicrosCny) ||
+      item.estimatedCostMicrosCny < 0
+    ) {
+      fail("Qwen visual benchmark contains an invalid measurement");
+    }
+  }
+  const summary = record(report.summary);
+  if (
+    summary.passed !== true ||
+    !Number.isFinite(summary.currentQualityScore) ||
+    summary.currentQualityScore < 85 ||
+    !Number.isFinite(summary.baselineQualityScore) ||
+    !Number.isFinite(summary.currentMedianFirstTokenLatencyMs) ||
+    !Number.isFinite(summary.baselineMedianFirstTokenLatencyMs) ||
+    !Number.isFinite(summary.currentTotalDurationMs) ||
+    !Number.isFinite(summary.baselineTotalDurationMs) ||
+    !Number.isFinite(summary.currentTotalTokens) ||
+    !Number.isFinite(summary.baselineTotalTokens) ||
+    !Number.isFinite(summary.currentEstimatedCostMicrosCny) ||
+    !Number.isFinite(summary.baselineEstimatedCostMicrosCny) ||
+    !Number.isFinite(summary.complexThinkingQualityDelta) ||
+    !["retain_non_thinking", "review_thinking_for_complex_diagrams"].includes(
+      summary.recommendation
+    )
+  ) {
+    fail("Qwen visual benchmark summary did not pass");
+  }
+  return {
+    status: "passed",
+    model: "qwen3.8-max",
+    baselineModel: "qwen3-vl-plus",
+    caseCount: expectedCaseIds.length,
+    currentQualityScore: summary.currentQualityScore,
+    baselineQualityScore: summary.baselineQualityScore,
+    recommendation: summary.recommendation
   };
 }
 

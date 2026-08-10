@@ -70,6 +70,19 @@ describe("Agent V3 release acceptance provenance", () => {
       /does not prove migration, health, and rollback/u
     );
   });
+
+  it("refuses a visual benchmark that is not bound to qwen3.8-max", () => {
+    const fixture = createFixture();
+    const runtime = JSON.parse(readFileSync(fixture.runtime, "utf8")) as {
+      visionBenchmark: { defaultModel: string };
+    };
+    runtime.visionBenchmark.defaultModel = "qwen3-vl-plus";
+    writeJson(fixture.runtime, runtime);
+
+    expect(() => runVerifier("create", fixture)).toThrow(
+      /invalid Qwen visual benchmark identity/u
+    );
+  });
 });
 
 type Fixture = ReturnType<typeof createFixture>;
@@ -118,11 +131,16 @@ function createFixture(options: { rollback?: string } = {}) {
       environment: "staging",
       baseUrl: "https://staging-openvac.openvac.cn"
     },
+    visionBenchmark: visionBenchmark(),
     cases: caseIds.map((caseId, index) => {
       const runId = `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`;
       return {
         caseId,
         runId,
+        provider: caseId.startsWith("v3-visual-") ? "qwen" : "deepseek",
+        model: caseId.startsWith("v3-visual-")
+          ? "qwen3.8-max"
+          : "deepseek-v4-flash",
         browserEvents: [
           { type: "run.accepted", runId, sequence: 1 },
           { type: "run.completed", runId, sequence: 2 }
@@ -253,6 +271,67 @@ function runVerifier(command: "create" | "verify", fixture: Fixture) {
     encoding: "utf8",
     stdio: "pipe"
   });
+}
+
+function visionBenchmark() {
+  const caseIds = [
+    "device_identification",
+    "nameplate_ocr",
+    "gauge_reading",
+    "pump_curve",
+    "vacuum_schematic",
+    "fault_screenshot",
+    "table_image",
+    "multi_image_comparison"
+  ];
+  const measurement = (caseId: string, model: string, thinking = false) => ({
+    caseId,
+    model,
+    thinking,
+    qualityScore: 100,
+    passedChecks: 2,
+    totalChecks: 2,
+    firstTokenLatencyMs: 100,
+    totalDurationMs: 200,
+    inputTokens: 100,
+    outputTokens: 10,
+    totalTokens: 110,
+    estimatedCostMicrosCny: model === "qwen3.8-max" ? 1_560 : 200
+  });
+  return {
+    schemaVersion: "openvac.qwen-vision-benchmark.v1",
+    gitSha: commitSha,
+    imageDigest,
+    generatedAt: "2026-08-09T00:00:00.000Z",
+    environment: "staging",
+    endpointRegion: "cn-beijing",
+    protocol: "openai-chat-completions",
+    imageTransport: "base64-data-url",
+    defaultModel: "qwen3.8-max",
+    defaultThinking: false,
+    priceVersion: "aliyun-standard-cn-beijing-2026-08-10",
+    measurements: [
+      ...caseIds.map((caseId) => measurement(caseId, "qwen3.8-max")),
+      ...caseIds.map((caseId) => measurement(caseId, "qwen3-vl-plus")),
+      measurement("pump_curve", "qwen3.8-max", true),
+      measurement("vacuum_schematic", "qwen3.8-max", true)
+    ],
+    summary: {
+      currentQualityScore: 100,
+      baselineQualityScore: 100,
+      currentMedianFirstTokenLatencyMs: 100,
+      baselineMedianFirstTokenLatencyMs: 100,
+      currentTotalDurationMs: 1_600,
+      baselineTotalDurationMs: 1_600,
+      currentTotalTokens: 880,
+      baselineTotalTokens: 880,
+      currentEstimatedCostMicrosCny: 12_480,
+      baselineEstimatedCostMicrosCny: 1_600,
+      complexThinkingQualityDelta: 0,
+      recommendation: "retain_non_thinking",
+      passed: true
+    }
+  };
 }
 
 function writeJson(file: string, value: unknown) {

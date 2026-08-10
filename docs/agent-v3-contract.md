@@ -40,8 +40,13 @@ live in `src/types/chat-v3.ts` and `src/server/chat-v3/contracts.ts`.
 ## Agent integration points
 
 - `AgentRunOrchestrator` always uses DeepSeek Responses for the final
-  `openvac.answer.v3` reasoning pass. `routeCapabilities` adds Qwen-VL only for
-  image analysis and DocMind only for document parsing.
+  `openvac.answer.v3` reasoning pass. `routeCapabilities` adds
+  `qwen3.8-max` only for image analysis and DocMind only for document parsing.
+  The visual provider uses the China (Beijing) workspace-specific
+  OpenAI-compatible `/chat/completions` endpoint with Base64 `image_url`
+  inputs. Its production default is explicitly non-thinking; the staging
+  release gate separately compares thinking on complex pump-curve and system
+  schematic cases without changing that default.
 - Storage workstreams connect through `AttachmentStorage` and
   `ArtifactStorage`. The built-in implementations are deliberately
   unconfigured, fail-closed stubs; the Agent does not create attachment or

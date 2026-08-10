@@ -23,7 +23,9 @@ const requiredAgentEnvironment = [
   "QWEN_VL_BASE_URL",
   "QWEN_VL_ALLOWED_HOSTS",
   "QWEN_VL_MODEL",
-  "QWEN_VL_MAX_OUTPUT_TOKENS"
+  "QWEN_VL_MAX_OUTPUT_TOKENS",
+  "QWEN_VL_ENABLE_THINKING",
+  "QWEN_VL_HIGH_RESOLUTION_IMAGES"
 ] as const;
 
 describe("Agent deployment contract", () => {
@@ -52,6 +54,31 @@ describe("Agent deployment contract", () => {
     expect(compose).toContain(
       "AGENT_QUERY_EMBEDDING_TIMEOUT_MS: ${AGENT_QUERY_EMBEDDING_TIMEOUT_MS:-8000}"
     );
+    expect(example).toContain("QWEN_VL_MODEL=qwen3.8-max");
+    expect(compose).toContain("QWEN_VL_MODEL: ${QWEN_VL_MODEL:-qwen3.8-max}");
+    expect(example).toContain("QWEN_VL_ENABLE_THINKING=false");
+    expect(compose).toContain(
+      "QWEN_VL_ENABLE_THINKING: ${QWEN_VL_ENABLE_THINKING:-false}"
+    );
+    expect(example).toContain("QWEN_VL_BASE_URL=");
+    expect(example).toContain("QWEN_VL_ALLOWED_HOSTS=");
+    expect(compose).toContain("QWEN_VL_BASE_URL: ${QWEN_VL_BASE_URL:-}");
+    expect(compose).toContain(
+      "QWEN_VL_ALLOWED_HOSTS: ${QWEN_VL_ALLOWED_HOSTS:-}"
+    );
+    expect(`${example}\n${compose}`).not.toContain(
+      "QWEN_VL_BASE_URL=https://dashscope.aliyuncs.com"
+    );
+    expect(`${example}\n${compose}`).not.toContain(
+      "QWEN_VL_ALLOWED_HOSTS=dashscope.aliyuncs.com"
+    );
+    const provider = readFileSync(
+      join(process.cwd(), "src/server/providers/qwen-vl.ts"),
+      "utf8"
+    );
+    expect(provider).toContain('configured === "qwen3-vl-plus"');
+    expect(provider).toContain("optionalString(process.env.QWEN_VL_API_KEY)");
+    expect(provider).toContain("optionalString(process.env.DASHSCOPE_API_KEY)");
   });
 
   it("wires the timeout floor and mode-specific tool-round budget into the orchestrator", () => {

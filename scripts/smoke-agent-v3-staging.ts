@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -13,6 +13,10 @@ import {
 import { runtimeEvidenceSchema } from "../src/evals/answer-v3/runtime-evidence";
 import type { AnswerV3EvalCase } from "../src/evals/answer-v3/types";
 import {
+  qwenVisionBenchmarkSchema,
+  type QwenVisionBenchmark
+} from "../src/evals/vision/qwen-vl-benchmark";
+import {
   cleanupDeletedUser,
   prepareUserDeletion
 } from "../src/server/auth/account-cleanup";
@@ -22,6 +26,7 @@ import {
   artifactSpecSchema,
   verifiedLinkPartSchema
 } from "../src/server/chat-v3/contracts";
+import { configuredQwenVlModel } from "../src/server/providers";
 import { db, sqlClient } from "../src/server/db";
 import {
   agentRuns,
@@ -339,6 +344,11 @@ async function main(): Promise<void> {
     "answer-v3-runtime-evidence.json"
   );
   const smokePath = path.join(outputDirectory, "agent-v3-staging-smoke.json");
+  const visionBenchmark = await loadVisionBenchmark(
+    required("QWEN_VL_BENCHMARK_EVIDENCE"),
+    gitSha,
+    imageDigest
+  );
   markSmokeDiagnostic("health");
   await assertHealth(baseUrl);
 
@@ -360,7 +370,8 @@ async function main(): Promise<void> {
           principal,
           baseUrl,
           gitSha,
-          imageDigest
+          imageDigest,
+          visionBenchmark
         })
     });
     const serializedEvidence = `${JSON.stringify(runtimeEvidence, null, 2)}\n`;
@@ -397,6 +408,7 @@ async function captureRuntimeEvidence(input: {
   baseUrl: URL;
   gitSha: string;
   imageDigest: string;
+  visionBenchmark: QwenVisionBenchmark;
 }) {
   const openConversations = new Set<string>();
   const cases: Array<Record<string, unknown>> = [];
@@ -424,8 +436,36 @@ async function captureRuntimeEvidence(input: {
     imageDigest: input.imageDigest,
     generatedAt: new Date().toISOString(),
     source: { environment: "staging", baseUrl: input.baseUrl.origin },
+    visionBenchmark: input.visionBenchmark,
     cases
   });
+}
+
+async function loadVisionBenchmark(
+  benchmarkPath: string,
+  gitSha: string,
+  imageDigest: string
+): Promise<QwenVisionBenchmark> {
+  const metadata = await lstat(benchmarkPath);
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.size < 2 ||
+    metadata.size > 1024 * 1024
+  ) {
+    throw new Error(
+      "Qwen vision benchmark evidence is not a bounded regular file."
+    );
+  }
+  const parsed = qwenVisionBenchmarkSchema.parse(
+    JSON.parse(await readFile(benchmarkPath, "utf8"))
+  );
+  if (parsed.gitSha !== gitSha || parsed.imageDigest !== imageDigest) {
+    throw new Error(
+      "Qwen vision benchmark identity does not match this release."
+    );
+  }
+  return parsed;
 }
 
 async function captureCase(
@@ -585,8 +625,7 @@ async function captureCase(
   );
   const observedFacts = visibleExpectedFacts(testCase, result.answer);
   const provider = testCase.outputProvider;
-  const model =
-    provider === "qwen" ? required("QWEN_VL_MODEL") : database.model;
+  const model = provider === "qwen" ? configuredQwenVlModel() : database.model;
   const captured = {
     caseId: testCase.id,
     runId: result.runId,

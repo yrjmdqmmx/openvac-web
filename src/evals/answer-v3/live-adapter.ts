@@ -8,7 +8,6 @@ import {
 import {
   asRecord,
   normalizeTrustedHttpsBaseUrl,
-  parseCommaSeparated,
   pickString,
   readJsonResponse,
   requireString
@@ -166,10 +165,7 @@ export class QwenTextAnswerV3Judge implements AnswerV3Judge {
       options.baseUrl ??
         process.env.DASHSCOPE_COMPATIBLE_BASE_URL ??
         DEFAULT_QWEN_BASE_URL,
-      options.allowedHosts ??
-        parseCommaSeparated(
-          process.env.QWEN_VL_ALLOWED_HOSTS ?? "dashscope.aliyuncs.com"
-        )
+      options.allowedHosts ?? ["dashscope.aliyuncs.com"]
     );
     this.fetchFn = options.fetch ?? fetch;
     this.requestTimeoutMs =
