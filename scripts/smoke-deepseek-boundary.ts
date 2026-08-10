@@ -154,6 +154,16 @@ export function classifyDeepSeekToolExecutionFailure(
   return new DeepSeekSmokeFailure("TOOL_EXECUTION_FAILED", "tool_first", kind);
 }
 
+export function shouldRetryDeepSeekToolArguments(
+  errorCode: string | undefined
+): boolean {
+  return (
+    errorCode === "INVALID_TOOL_ARGUMENTS_JSON" ||
+    errorCode === "INVALID_TOOL_ARGUMENTS" ||
+    errorCode === "CALCULATION_INPUT_INVALID"
+  );
+}
+
 export function applyDeepSeekSmokeBoundary(input: {
   candidate: unknown;
   riskLevel: RiskLevel;

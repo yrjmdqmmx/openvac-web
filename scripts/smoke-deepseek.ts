@@ -23,7 +23,8 @@ import {
   collectCompletedSafetyProbeWithOneRetry,
   DeepSeekSmokeFailure,
   parseDeepSeekSmokeAnswer,
-  publicDeepSeekSmokeFailure
+  publicDeepSeekSmokeFailure,
+  shouldRetryDeepSeekToolArguments
 } from "./smoke-deepseek-boundary";
 
 async function main() {
@@ -144,45 +145,56 @@ async function runToolContinuationProbe(
   const input: ResponsesInputItem[] = [
     { type: "message", role: "user", content: question }
   ];
-  let first: ProbeResult;
-  try {
-    first = await collectProbe(provider, {
-      instructions: buildAgentV3InstructionsForRisk(risk.level),
-      input,
-      tools: registry.definitions,
-      toolChoice: { type: "function", name: "estimate_pumpdown_time" },
-      reasoningEffort: "high",
-      textFormat: {
-        type: "json_schema",
-        name: "openvac_answer_v3",
-        schema: answerV3JsonSchemaForRisk(risk.level),
-        strict: true
-      },
-      user: userPartition
+  let first: ProbeResult | undefined;
+  let execution: Awaited<ReturnType<ToolRegistry["execute"]>> | undefined;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      first = await collectProbe(provider, {
+        instructions: buildAgentV3InstructionsForRisk(risk.level),
+        input,
+        tools: registry.definitions,
+        toolChoice: { type: "function", name: "estimate_pumpdown_time" },
+        reasoningEffort: "high",
+        textFormat: {
+          type: "json_schema",
+          name: "openvac_answer_v3",
+          schema: answerV3JsonSchemaForRisk(risk.level),
+          strict: true
+        },
+        user: userPartition
+      });
+    } catch (error) {
+      throw classifyDeepSeekSmokeProviderFailure(
+        "PROVIDER_REQUEST_FAILED",
+        "tool_first",
+        error
+      );
+    }
+    const call = first.calls[0];
+    if (
+      first.terminal !== "completed" ||
+      first.calls.length !== 1 ||
+      !call ||
+      call.name !== "estimate_pumpdown_time"
+    ) {
+      throw new DeepSeekSmokeFailure("TOOL_CALL_INVALID");
+    }
+    execution = await registry.execute({
+      callId: call.callId,
+      name: call.name,
+      arguments: call.arguments
     });
-  } catch (error) {
-    throw classifyDeepSeekSmokeProviderFailure(
-      "PROVIDER_REQUEST_FAILED",
-      "tool_first",
-      error
-    );
-  }
-  const call = first.calls[0];
-  if (
-    first.terminal !== "completed" ||
-    first.calls.length !== 1 ||
-    !call ||
-    call.name !== "estimate_pumpdown_time"
-  ) {
-    throw new DeepSeekSmokeFailure("TOOL_CALL_INVALID");
-  }
-  const execution = await registry.execute({
-    callId: call.callId,
-    name: call.name,
-    arguments: call.arguments
-  });
-  if (!execution.ok) {
+    if (execution.ok) break;
+    if (
+      attempt === 0 &&
+      shouldRetryDeepSeekToolArguments(execution.errorCode)
+    ) {
+      continue;
+    }
     throw classifyDeepSeekToolExecutionFailure(execution.errorCode);
+  }
+  if (!first || !execution?.ok) {
+    throw new DeepSeekSmokeFailure("TOOL_EXECUTION_FAILED");
   }
   const projection = trustedPumpdownProjectionFromToolTurn({
     calls: first.calls,
