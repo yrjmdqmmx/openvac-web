@@ -26,6 +26,10 @@ case "$deploy_dir:$compose_project" in
     fi
     ;;
 esac
+activation_is_test=false
+if [ "${OPENVAC_ACTIVATION_TEST_ROOT:-}" = "$deploy_dir" ]; then
+  activation_is_test=true
+fi
 
 case "$release_id" in
   ""|*[!0-9a-f]*) fail "release ID must be lowercase hexadecimal" ;;
@@ -95,9 +99,18 @@ activation_lock_dir="$deploy_dir/.activation-lock"
 activation_lock_owner_file="$activation_lock_dir/owner"
 activation_lock_owned=false
 activation_child_pid=""
+activation_heartbeat_pid=""
 activation_child_starting=false
 activation_signal_pending=false
+stop_activation_heartbeat() {
+  if [ -n "$activation_heartbeat_pid" ]; then
+    kill -TERM "$activation_heartbeat_pid" >/dev/null 2>&1 || true
+    wait "$activation_heartbeat_pid" >/dev/null 2>&1 || true
+    activation_heartbeat_pid=""
+  fi
+}
 cleanup() {
+  stop_activation_heartbeat
   if [ -n "$staged_dir" ] && [ -d "$staged_dir" ]; then
     rm -rf -- "$staged_dir"
   fi
@@ -123,8 +136,96 @@ handle_activation_signal() {
 trap cleanup EXIT
 trap handle_activation_signal HUP INT TERM
 
+recover_stale_staging_activation() {
+  if [ "$deploy_dir" != /opt/openvac-staging ] && [ "$activation_is_test" != true ]; then
+    return 1
+  fi
+  [ -d "$activation_lock_dir" ] && [ ! -L "$activation_lock_dir" ] || return 1
+  [ -f "$activation_lock_owner_file" ] && [ ! -L "$activation_lock_owner_file" ] ||
+    return 1
+  [ "$(stat -c '%a' "$activation_lock_owner_file" 2>/dev/null)" = 600 ] ||
+    return 1
+
+  existing_activation_id=""
+  IFS= read -r existing_activation_id <"$activation_lock_owner_file" || return 1
+  existing_release_id="${existing_activation_id%%-*}"
+  existing_nonce="${existing_activation_id#*-}"
+  [ "$existing_activation_id" = "$existing_release_id-$existing_nonce" ] || return 1
+  case "$existing_release_id" in
+    ""|*[!0-9a-f]*) return 1 ;;
+  esac
+  case "$existing_nonce" in
+    ""|*[!0-9a-f]*) return 1 ;;
+  esac
+  [ "${#existing_release_id}" -eq 40 ] || return 1
+  [ "${#existing_nonce}" -eq 32 ] || return 1
+
+  lock_mtime="$(stat -c '%Y' "$activation_lock_owner_file" 2>/dev/null)" || return 1
+  now_epoch="$(date +%s)" || return 1
+  case "$lock_mtime:$now_epoch" in
+    *[!0-9:]*) return 1 ;;
+  esac
+  lock_age_seconds=$((now_epoch - lock_mtime))
+  [ "$lock_age_seconds" -ge 1800 ] || return 1
+
+  stale_child_pid=""
+  for process_dir in /proc/[0-9]*; do
+    [ -r "$process_dir/environ" ] && [ -r "$process_dir/cmdline" ] || continue
+    if ! tr '\000' '\n' <"$process_dir/environ" 2>/dev/null |
+      grep -Fqx "OPENVAC_ACTIVATION_ID=$existing_activation_id"; then
+      continue
+    fi
+    if ! tr '\000' '\n' <"$process_dir/cmdline" 2>/dev/null |
+      grep -Eq '/deploy/deploy\.sh$'; then
+      continue
+    fi
+    if ! tr '\000' '\n' <"$process_dir/cmdline" 2>/dev/null |
+      grep -Fqx "$deploy_dir"; then
+      continue
+    fi
+    candidate_pid="${process_dir##*/}"
+    case "$candidate_pid" in
+      ""|*[!0-9]*) return 1 ;;
+    esac
+    [ -z "$stale_child_pid" ] || return 1
+    stale_child_pid="$candidate_pid"
+  done
+  [ -n "$stale_child_pid" ] || return 1
+
+  confirmed_activation_id=""
+  IFS= read -r confirmed_activation_id <"$activation_lock_owner_file" || return 1
+  [ "$confirmed_activation_id" = "$existing_activation_id" ] || return 1
+  confirmed_mtime="$(stat -c '%Y' "$activation_lock_owner_file" 2>/dev/null)" ||
+    return 1
+  confirmed_now="$(date +%s)" || return 1
+  case "$confirmed_mtime:$confirmed_now" in
+    *[!0-9:]*) return 1 ;;
+  esac
+  confirmed_age_seconds=$((confirmed_now - confirmed_mtime))
+  [ "$confirmed_age_seconds" -ge 1800 ] || return 1
+  kill -0 "$stale_child_pid" >/dev/null 2>&1 || return 1
+
+  echo "Recovering a stale staging deployment activation after its lease expired" >&2
+  kill -TERM "$stale_child_pid" >/dev/null 2>&1 || return 1
+  recovery_wait=0
+  while [ "$recovery_wait" -lt 60 ]; do
+    [ ! -d "$activation_lock_dir" ] && return 0
+    if [ -f "$activation_lock_owner_file" ]; then
+      current_activation_id=""
+      IFS= read -r current_activation_id <"$activation_lock_owner_file" || return 1
+      [ "$current_activation_id" = "$existing_activation_id" ] || return 1
+    fi
+    sleep 1
+    recovery_wait=$((recovery_wait + 1))
+  done
+  return 1
+}
+
 if ! mkdir -m 700 "$activation_lock_dir" 2>/dev/null; then
-  fail "another deployment activation is already in progress"
+  if ! recover_stale_staging_activation ||
+    ! mkdir -m 700 "$activation_lock_dir" 2>/dev/null; then
+    fail "another deployment activation is already in progress"
+  fi
 fi
 activation_lock_owned=true
 (umask 077 && printf "%s\n" "$activation_id" >"$activation_lock_owner_file") ||
@@ -197,12 +298,35 @@ activation_child_starting=false
 if [ "$activation_signal_pending" = true ]; then
   handle_activation_signal
 fi
+if [ "$activation_is_test" != true ] ||
+  [ "${OPENVAC_ACTIVATION_TEST_DISABLE_HEARTBEAT:-}" != true ]; then
+  (
+    heartbeat_sleep_pid=""
+    stop_heartbeat_sleep() {
+      if [ -n "$heartbeat_sleep_pid" ]; then
+        kill -TERM "$heartbeat_sleep_pid" >/dev/null 2>&1 || true
+        wait "$heartbeat_sleep_pid" >/dev/null 2>&1 || true
+      fi
+      exit 0
+    }
+    trap stop_heartbeat_sleep HUP INT TERM
+    while kill -0 "$activation_child_pid" >/dev/null 2>&1; do
+      touch "$activation_lock_owner_file" || exit 0
+      sleep 30 &
+      heartbeat_sleep_pid="$!"
+      wait "$heartbeat_sleep_pid" || exit 0
+      heartbeat_sleep_pid=""
+    done
+  ) &
+  activation_heartbeat_pid="$!"
+fi
 if wait "$activation_child_pid"; then
   deployment_status=0
 else
   deployment_status="$?"
 fi
 activation_child_pid=""
+stop_activation_heartbeat
 
 if [ "$deployment_status" -ne 0 ] &&
   { [ "$deployment_status" -lt 128 ] || [ "$deployment_status" -gt 255 ]; }; then
