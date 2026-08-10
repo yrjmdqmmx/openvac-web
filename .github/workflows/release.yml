@@ -855,11 +855,16 @@ jobs:
           image_digest="$4"
           expected_image_id="$5"
           compose_project="$6"
-          [ "$deploy_dir" = /opt/openvac-staging ] || exit 64
-          [ "$compose_project" = openvac-staging ] || exit 64
-          case "$remote_stage" in /tmp/openvac-deploy.*) ;; *) exit 64 ;; esac
+          acceptance_gate_fail() {
+            code="$1"
+            printf '{"schema":"openvac.staging-deploy-gate-failure.v1","stage":"remote_acceptance","code":"%s"}\n' "$code" >&2
+            exit 64
+          }
+          [ "$deploy_dir" = /opt/openvac-staging ] || acceptance_gate_fail "DEPLOY_DIR_INVALID"
+          [ "$compose_project" = openvac-staging ] || acceptance_gate_fail "COMPOSE_PROJECT_INVALID"
+          case "$remote_stage" in /tmp/openvac-deploy.*) ;; *) acceptance_gate_fail "REMOTE_STAGE_PREFIX_INVALID" ;; esac
           compose_file="$deploy_dir/releases/$release_id/docker-compose.yml"
-          [ -f "$compose_file" ] && [ ! -L "$compose_file" ] || exit 64
+          [ -f "$compose_file" ] && [ ! -L "$compose_file" ] || acceptance_gate_fail "RELEASE_COMPOSE_FILE_INVALID"
           web_container="$(
             docker compose --project-name "$compose_project" \
               --env-file "$deploy_dir/.env" -f "$compose_file" ps -q web

@@ -112,6 +112,10 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     expect(release).toContain(
       'remote_deploy_gate_fail "WORKSPACE_ID_FILE_MODE_INVALID"'
     );
+    expect(release).toContain(
+      'acceptance_gate_fail "RELEASE_COMPOSE_FILE_INVALID"'
+    );
+    expect(release).toContain('"stage":"remote_acceptance"');
     expect(release).not.toContain("printf '%s\\n' \"$token_hash\" >&2");
     expect(release).not.toContain("printf '%s\\n' \"$workspace_id\" >&2");
     expect(release).toContain('provenance_workflow_sha="$(');
