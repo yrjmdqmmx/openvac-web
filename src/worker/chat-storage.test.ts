@@ -49,7 +49,7 @@ describe("chat storage worker", () => {
     );
   });
 
-  it("submits verified office document bytes without a signed URL", async () => {
+  it("submits office documents using a server-minted private OSS URL", async () => {
     const repository = makeRepository();
     const officeJob = {
       ...parseJob,
@@ -64,10 +64,14 @@ describe("chat storage worker", () => {
     const outcome = await makeWorker(repository, storage, parser).runOnce();
 
     expect(outcome).toBe("deferred");
-    expect(storage.getPrivate).toHaveBeenCalledWith(officeJob.objectKey);
-    expect(storage.createPrivateDownloadUrl).not.toHaveBeenCalled();
+    expect(storage.getPrivate).not.toHaveBeenCalled();
+    expect(storage.createPrivateDownloadUrl).toHaveBeenCalledWith(
+      officeJob.objectKey,
+      900
+    );
     expect(parser.submit).toHaveBeenCalledWith({
-      bytes: new TextEncoder().encode("private"),
+      url: "https://oss.test/private",
+      urlTrust: "private-oss-v4",
       filename: "manual.docx",
       outputFormats: ["markdown", "visualLayoutInfo"],
       llmEnhancement: true
