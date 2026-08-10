@@ -96,6 +96,25 @@ describe("Agent V3 staging runtime smoke safety", () => {
     expect(workflow).not.toContain("DASHSCOPE_API_KEY: ${{ secrets.");
   });
 
+  it("keeps the long-running staging acceptance SSH session alive", () => {
+    const workflow = readFileSync(
+      resolve(import.meta.dirname, "../.github/workflows/release.yml"),
+      "utf8"
+    );
+    const options = workflow.indexOf("ssh_options=(");
+    const acceptance = workflow.indexOf("<<'REMOTE_ACCEPTANCE'");
+    expect(options).toBeGreaterThan(-1);
+    expect(acceptance).toBeGreaterThan(options);
+    expect(workflow).toContain("-o ServerAliveInterval=30");
+    expect(workflow).toContain("-o ServerAliveCountMax=20");
+    expect(workflow).toContain("-o TCPKeepAlive=yes");
+    expect(workflow).toContain('ssh "${ssh_options[@]}" "$ssh_base"');
+    expect(workflow).toContain('scp "${ssh_options[@]}"');
+    expect(workflow).not.toContain(
+      'ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base"'
+    );
+  });
+
   it("reports only allowlisted staging failure fields", () => {
     const diagnostic = publicSmokeFailureDiagnostic({
       stage: "chat_terminal",

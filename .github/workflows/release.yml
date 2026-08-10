@@ -702,8 +702,15 @@ jobs:
           )
 
           ssh_base="${ECS_USER}@${ECS_HOST}"
+          ssh_options=(
+            -i "$HOME/.ssh/openvac"
+            -o BatchMode=yes
+            -o ServerAliveInterval=30
+            -o ServerAliveCountMax=20
+            -o TCPKeepAlive=yes
+          )
           remote_stage="$(
-            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
+            ssh "${ssh_options[@]}" "$ssh_base" \
               'umask 077; mktemp -d /tmp/openvac-deploy.XXXXXX'
           )"
           case "$remote_stage" in /tmp/openvac-deploy.*) ;; *) exit 1 ;; esac
@@ -721,20 +728,20 @@ jobs:
           (umask 077 && printf '%s\n' "$workspace_id" >"$workspace_id_file")
           unset workspace_id DASHSCOPE_WORKSPACE_ID
           cleanup() {
-            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base"               "case '$remote_stage' in /tmp/openvac-deploy.*) rm -rf -- '$remote_stage' ;; esac"               >/dev/null 2>&1 || true
+            ssh "${ssh_options[@]}" "$ssh_base"               "case '$remote_stage' in /tmp/openvac-deploy.*) rm -rf -- '$remote_stage' ;; esac"               >/dev/null 2>&1 || true
             rm -f -- "$token_hash_file" "$workspace_id_file"
           }
           trap cleanup EXIT HUP INT TERM
-          scp -i "$HOME/.ssh/openvac" -o BatchMode=yes             "$archive" "$archive_checksum" "$bundle_archive" "$bundle_checksum"             "$ssh_base:$remote_stage/"
-          scp -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+          scp "${ssh_options[@]}"             "$archive" "$archive_checksum" "$bundle_archive" "$bundle_checksum"             "$ssh_base:$remote_stage/"
+          scp "${ssh_options[@]}" \
             "$token_hash_file" "$ssh_base:$remote_stage/knowledge-review-token-hash"
-          scp -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+          scp "${ssh_options[@]}" \
             "$workspace_id_file" "$ssh_base:$remote_stage/dashscope-workspace-id"
-          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
+          ssh "${ssh_options[@]}" "$ssh_base" \
             "chmod 600 '$remote_stage/knowledge-review-token-hash' '$remote_stage/dashscope-workspace-id'"
 
           loaded_web_id="$(
-            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base"               sh -s -- "$remote_stage" "$RELEASE_SHA" "$image_repository:archive-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$WEB_IMAGE_DIGEST" <<'REMOTE_PREPARE'
+            ssh "${ssh_options[@]}" "$ssh_base"               sh -s -- "$remote_stage" "$RELEASE_SHA" "$image_repository:archive-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$WEB_IMAGE_DIGEST" <<'REMOTE_PREPARE'
           set -eu
           remote_stage="$1"
           release_id="$2"
@@ -775,7 +782,7 @@ jobs:
           case "$loaded_web_id" in sha256:*) loaded_hex="${loaded_web_id#sha256:}" ;; *) exit 1 ;; esac
           release_image="openvac-web-release:$loaded_hex"
 
-          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base"             sh -s -- "$remote_stage" "$deploy_dir" "$RELEASE_SHA"             "$release_image" "$loaded_web_id" "$compose_project" "$health_url" <<'REMOTE_ACTIVATE'
+          ssh "${ssh_options[@]}" "$ssh_base"             sh -s -- "$remote_stage" "$deploy_dir" "$RELEASE_SHA"             "$release_image" "$loaded_web_id" "$compose_project" "$health_url" <<'REMOTE_ACTIVATE'
           set -eu
           remote_stage="$1"
           deploy_dir="$2"
@@ -818,12 +825,12 @@ jobs:
             printf -- '- Loaded image ID: `%s`\n' "$loaded_web_id"
           } >>"$GITHUB_STEP_SUMMARY"
           echo "digest_hex=$web_digest" >>"$GITHUB_OUTPUT"
-          ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
+          ssh "${ssh_options[@]}" "$ssh_base" \
             "cat '$deploy_dir/releases/$RELEASE_SHA/deployment-receipt'" \
             >"$RUNNER_TEMP/openvac-deployment-receipt"
           test -s "$RUNNER_TEMP/openvac-deployment-receipt"
           if [ "$TARGET" = staging ]; then
-            ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
+            ssh "${ssh_options[@]}" "$ssh_base" \
               sh -s -- "$remote_stage" "$deploy_dir" "$RELEASE_SHA" \
               "$WEB_IMAGE_DIGEST" "$loaded_web_id" "$compose_project" <<'REMOTE_ACCEPTANCE'
           set -eu
@@ -916,7 +923,7 @@ jobs:
               answer-v3-live-report.json \
               agent-v3-artifacts.json \
               agent-v3-staging-smoke.json; do
-              scp -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+              scp "${ssh_options[@]}" \
                 "$ssh_base:$remote_stage/acceptance/$evidence" \
                 "$acceptance_dir/$evidence"
               test -f "$acceptance_dir/$evidence" && test ! -L "$acceptance_dir/$evidence"
