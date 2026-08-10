@@ -24,6 +24,9 @@ export class QwenVlSmokeFailure extends Error {
 }
 
 export function classifyQwenVlSmokeFailure(error: unknown): QwenVlSmokeFailure {
+  if (error instanceof QwenVlSmokeFailure) {
+    return error;
+  }
   if (error instanceof ConfigurationError) {
     return new QwenVlSmokeFailure("CONFIG_MISSING");
   }
@@ -64,4 +67,13 @@ export function publicQwenVlSmokeFailure(
     code:
       error instanceof QwenVlSmokeFailure ? error.code : "UNEXPECTED_FAILURE"
   };
+}
+
+export function recognizesPascalUnit(value: string): boolean {
+  const compact = value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  return (
+    compact.includes("pa") ||
+    compact.includes("pascal") ||
+    compact.includes("帕")
+  );
 }

@@ -7,7 +7,9 @@ import {
 } from "../src/server/providers";
 import {
   classifyQwenVlSmokeFailure,
-  publicQwenVlSmokeFailure
+  publicQwenVlSmokeFailure,
+  QwenVlSmokeFailure,
+  recognizesPascalUnit
 } from "../scripts/smoke-qwen-vl-boundary";
 
 describe("Qwen-VL smoke public boundary", () => {
@@ -66,4 +68,30 @@ describe("Qwen-VL smoke public boundary", () => {
       }
     );
   });
+
+  it.each(["CONFIG_MISSING", "RESPONSE_INVALID"] as const)(
+    "preserves an explicitly classified smoke failure: %s",
+    (code) => {
+      const failure = new QwenVlSmokeFailure(code);
+      expect(classifyQwenVlSmokeFailure(failure)).toBe(failure);
+      expect(publicQwenVlSmokeFailure(failure)).toEqual({
+        schemaVersion: "openvac.qwen-vl-smoke-failure.v1",
+        code
+      });
+    }
+  );
+
+  it.each(["Pa", "单位为 Pa（帕斯卡）", "帕", "帕斯卡", "pascal"])(
+    "accepts an equivalent Pascal-unit recognition: %s",
+    (value) => {
+      expect(recognizesPascalUnit(value)).toBe(true);
+    }
+  );
+
+  it.each(["bar", "mbar", "Torr", "无法识别"])(
+    "rejects a different or missing pressure unit: %s",
+    (value) => {
+      expect(recognizesPascalUnit(value)).toBe(false);
+    }
+  );
 });
