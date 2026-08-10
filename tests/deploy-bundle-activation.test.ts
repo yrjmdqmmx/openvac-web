@@ -1,16 +1,18 @@
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
+  utimesSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
 const activationScript = join(process.cwd(), "deploy", "activate-bundle.sh");
@@ -38,6 +40,8 @@ function write(path: string, value: string, mode = 0o600): void {
 function createBundle(
   root: string,
   options: {
+    blockDeployment?: boolean;
+    bundleName?: string;
     deployExit?: number;
     deployExitAfterCommit?: number;
     includeEnv?: boolean;
@@ -47,7 +51,7 @@ function createBundle(
     publishedReleaseId?: string;
   } = {}
 ): string {
-  const bundle = join(root, "bundle");
+  const bundle = join(root, options.bundleName ?? "bundle");
   const deployDirectory = join(bundle, "deploy");
   mkdirSync(deployDirectory, { recursive: true });
   write(join(bundle, "docker-compose.yml"), "services: {}\n");
@@ -56,6 +60,13 @@ function createBundle(
     [
       "#!/bin/sh",
       'printf "%s\\n" "$*" > "$1/deploy-invocation"',
+      ...(options.blockDeployment
+        ? [
+            'printf "%s\\n" "ready" >"$1/deploy-child-ready"',
+            "trap 'exit 143' TERM",
+            "while :; do sleep 1; done"
+          ]
+        : []),
       `if [ ${options.deployExit ?? 0} -ne 0 ]; then exit ${options.deployExit ?? 0}; fi`,
       'release_dir="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"',
       'case "${OPENVAC_WEB_PRELOADED_ID:-}" in',
@@ -171,6 +182,53 @@ function runActivationWithImages(
       }
     }
   );
+}
+
+function spawnActivation(
+  deployRoot: string,
+  bundle: string,
+  releaseId: string,
+  extraEnv: Record<string, string> = {}
+): ChildProcess {
+  return spawn(
+    "sh",
+    [
+      activationScript,
+      deployRoot,
+      releaseId,
+      bundle,
+      `ghcr.io/example/openvac@sha256:${"a".repeat(64)}`,
+      "openvac-production",
+      "https://openvac.example/api/health"
+    ],
+    {
+      env: {
+        ...process.env,
+        PATH: `${join(dirname(deployRoot), "bin")}:${process.env.PATH ?? ""}`,
+        OPENVAC_ACTIVATION_TEST_ROOT: deployRoot,
+        ...extraEnv
+      },
+      stdio: ["ignore", "pipe", "pipe"]
+    }
+  );
+}
+
+async function waitForPath(path: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for ${path}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+async function waitForChild(child: ChildProcess): Promise<number | null> {
+  if (child.exitCode !== null) return child.exitCode;
+  return await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => resolve(code));
+  });
 }
 
 describe("deployment bundle activation", () => {
@@ -520,6 +578,77 @@ describe("deployment bundle activation", () => {
     expect(() => readFileSync(join(deployRoot, "current-release"))).toThrow();
     expect(readdirSync(deployRoot)).toContain(".activation-lock");
   });
+
+  it("never removes an expired lock without one exact live deployment child", () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    mkdirSync(deployRoot);
+    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+    const lockDirectory = join(deployRoot, ".activation-lock");
+    mkdirSync(lockDirectory, { mode: 0o700 });
+    const ownerFile = join(lockDirectory, "owner");
+    write(ownerFile, `${"8".repeat(40)}-${"9".repeat(32)}\n`);
+    const expiredAt = new Date(Date.now() - 31 * 60 * 1000);
+    utimesSync(ownerFile, expiredAt, expiredAt);
+    const bundle = createBundle(root);
+
+    const result = runActivation(deployRoot, bundle, "a".repeat(40));
+
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain("activation is already in progress");
+    expect(readFileSync(ownerFile, "utf8")).toBe(
+      `${"8".repeat(40)}-${"9".repeat(32)}\n`
+    );
+  });
+
+  it.skipIf(process.platform !== "linux")(
+    "terminates only the exact expired staging activation child before reacquiring its lock",
+    async () => {
+      const root = temporaryRoot();
+      const deployRoot = join(root, "host");
+      mkdirSync(deployRoot);
+      write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+      const blockingBundle = createBundle(root, {
+        blockDeployment: true,
+        bundleName: "blocking-bundle"
+      });
+      const recoveryBundle = createBundle(root, {
+        bundleName: "recovery-bundle"
+      });
+      const blockedRelease = "6".repeat(40);
+      const recoveredRelease = "7".repeat(40);
+      const blocked = spawnActivation(
+        deployRoot,
+        blockingBundle,
+        blockedRelease,
+        { OPENVAC_ACTIVATION_TEST_DISABLE_HEARTBEAT: "true" }
+      );
+
+      try {
+        await waitForPath(join(deployRoot, "deploy-child-ready"));
+        const ownerFile = join(deployRoot, ".activation-lock", "owner");
+        const expiredAt = new Date(Date.now() - 31 * 60 * 1000);
+        utimesSync(ownerFile, expiredAt, expiredAt);
+
+        const recovered = runActivation(
+          deployRoot,
+          recoveryBundle,
+          recoveredRelease
+        );
+        expect(recovered.status, recovered.stderr).toBe(0);
+        expect(recovered.stderr).toContain(
+          "Recovering a stale staging deployment activation after its lease expired"
+        );
+        expect(readFileSync(join(deployRoot, "current-release"), "utf8")).toBe(
+          `${recoveredRelease}\n`
+        );
+        expect(await waitForChild(blocked)).not.toBe(0);
+      } finally {
+        if (blocked.exitCode === null) blocked.kill("SIGTERM");
+      }
+    },
+    10_000
+  );
 
   it("rejects a preloaded web tag that does not match its image ID", () => {
     const root = temporaryRoot();
