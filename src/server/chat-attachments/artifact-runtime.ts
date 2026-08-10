@@ -5,6 +5,7 @@ import {
   type RenderedArtifactFile
 } from "@/server/artifacts";
 import type {
+  ArtifactGenerationFailureCode,
   ArtifactStorage,
   ArtifactStorageCreateInput,
   StoredArtifact
@@ -41,10 +42,12 @@ export class ProductionArtifactStorage implements ArtifactStorage {
       spec
     });
 
+    let failureCode: ArtifactGenerationFailureCode = "ARTIFACT_RENDER_FAILED";
     try {
       const files = await this.renderer(spec);
       input.signal?.throwIfAborted();
       assertRenderedFiles(spec, files);
+      failureCode = "ARTIFACT_PERSIST_FAILED";
       for (const file of files) {
         input.signal?.throwIfAborted();
         await this.storage.persistFile({
@@ -58,6 +61,7 @@ export class ProductionArtifactStorage implements ArtifactStorage {
         input.signal?.throwIfAborted();
       }
       input.signal?.throwIfAborted();
+      failureCode = "ARTIFACT_FINALIZE_FAILED";
       const ready = await this.storage.complete({
         artifactId: artifact.id,
         conversationId: input.conversationId,
@@ -67,14 +71,20 @@ export class ProductionArtifactStorage implements ArtifactStorage {
       assertReadyArtifact(ready, artifact, spec);
       return storedArtifact(ready, input.userId);
     } catch {
-      await this.storage.fail({
-        artifactId: artifact.id,
-        conversationId: input.conversationId,
-        userId: input.userId
-      });
+      if (input.signal?.aborted) failureCode = "ARTIFACT_RUN_ABORTED";
+      try {
+        await this.storage.fail({
+          artifactId: artifact.id,
+          conversationId: input.conversationId,
+          userId: input.userId
+        });
+      } catch {
+        failureCode = "ARTIFACT_CLEANUP_FAILED";
+      }
       return {
         ...storedArtifact(artifact, input.userId),
-        status: "failed"
+        status: "failed",
+        failureCode
       };
     }
   }

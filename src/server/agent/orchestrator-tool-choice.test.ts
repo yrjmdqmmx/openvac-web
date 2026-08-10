@@ -12,6 +12,7 @@ import {
   extractTrustedPumpdownArguments,
   reserveNonRepeatableToolCalls,
   requiresDocumentAttachmentEvidence,
+  safeArtifactFailureCode,
   safeModelInvocationErrorMessage,
   safeProviderTerminalErrorCode,
   selectAnswerToolRequestPolicy,
@@ -31,6 +32,15 @@ const history: ResponsesInputItem[] = [
 ];
 
 describe("Agent V3 deterministic calculator routing", () => {
+  it("exposes only allowlisted artifact failure stages", () => {
+    expect(safeArtifactFailureCode("ARTIFACT_PERSIST_FAILED")).toBe(
+      "ARTIFACT_PERSIST_FAILED"
+    );
+    expect(safeArtifactFailureCode("secret request-id=private")).toBe(
+      "ARTIFACT_CREATION_FAILED"
+    );
+  });
+
   it("never persists provider response text as an invocation error", () => {
     const value = safeModelInvocationErrorMessage(
       new ProviderError("secret body request-id=private", {

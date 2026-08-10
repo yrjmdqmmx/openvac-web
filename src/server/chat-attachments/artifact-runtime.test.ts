@@ -76,7 +76,8 @@ describe("production artifact storage runtime", () => {
 
     await expect(runtime.create(createInput())).resolves.toMatchObject({
       artifactId,
-      status: "failed"
+      status: "failed",
+      failureCode: "ARTIFACT_PERSIST_FAILED"
     });
     expect(harness.repository.abortFile).toHaveBeenCalledTimes(1);
     expect(harness.repository.failArtifact).toHaveBeenCalledWith({
@@ -106,7 +107,8 @@ describe("production artifact storage runtime", () => {
     ]);
 
     await expect(runtime.create(createInput())).resolves.toMatchObject({
-      status: "failed"
+      status: "failed",
+      failureCode: "ARTIFACT_FINALIZE_FAILED"
     });
     expect(harness.repository.failArtifact).toHaveBeenCalledTimes(1);
   });
@@ -134,7 +136,11 @@ describe("production artifact storage runtime", () => {
 
     await expect(
       runtime.create({ ...createInput(), signal: controller.signal })
-    ).resolves.toMatchObject({ artifactId, status: "failed" });
+    ).resolves.toMatchObject({
+      artifactId,
+      status: "failed",
+      failureCode: "ARTIFACT_RUN_ABORTED"
+    });
     expect(harness.repository.failArtifact).toHaveBeenCalledWith({
       artifactId,
       conversationId,
