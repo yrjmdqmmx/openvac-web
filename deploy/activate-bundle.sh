@@ -98,6 +98,7 @@ staged_dir=""
 activation_lock_dir="$deploy_dir/.activation-lock"
 activation_lock_owner_file="$activation_lock_dir/owner"
 activation_lock_owned=false
+recovered_orphan_lock_dir=""
 activation_child_pid=""
 activation_heartbeat_pid=""
 activation_child_starting=false
@@ -168,11 +169,32 @@ recover_stale_staging_activation() {
   lock_age_seconds=$((now_epoch - lock_mtime))
   [ "$lock_age_seconds" -ge 1800 ] || return 1
 
+  current_uid="$(id -u)" || return 1
+  case "$current_uid" in
+    ""|*[!0-9]*) return 1 ;;
+  esac
   stale_child_pid=""
+  owner_process_count=0
+  wrapper_process_count=0
   for process_dir in /proc/[0-9]*; do
-    [ -r "$process_dir/environ" ] && [ -r "$process_dir/cmdline" ] || continue
-    if ! tr '\000' '\n' <"$process_dir/environ" 2>/dev/null |
+    process_uid="$(stat -c '%u' "$process_dir" 2>/dev/null)" || continue
+    [ "$process_uid" = "$current_uid" ] || continue
+    [ -r "$process_dir/cmdline" ] || continue
+
+    if tr '\000' '\n' <"$process_dir/cmdline" 2>/dev/null |
+      grep -Eq '/deploy/activate-bundle\.sh$' &&
+      tr '\000' '\n' <"$process_dir/cmdline" 2>/dev/null |
+        grep -Fqx "$deploy_dir" &&
+      tr '\000' '\n' <"$process_dir/cmdline" 2>/dev/null |
+        grep -Fqx "$existing_release_id"; then
+      wrapper_process_count=$((wrapper_process_count + 1))
+    fi
+
+    [ -r "$process_dir/environ" ] || continue
+    if tr '\000' '\n' <"$process_dir/environ" 2>/dev/null |
       grep -Fqx "OPENVAC_ACTIVATION_ID=$existing_activation_id"; then
+      owner_process_count=$((owner_process_count + 1))
+    else
       continue
     fi
     if ! tr '\000' '\n' <"$process_dir/cmdline" 2>/dev/null |
@@ -190,7 +212,6 @@ recover_stale_staging_activation() {
     [ -z "$stale_child_pid" ] || return 1
     stale_child_pid="$candidate_pid"
   done
-  [ -n "$stale_child_pid" ] || return 1
 
   confirmed_activation_id=""
   IFS= read -r confirmed_activation_id <"$activation_lock_owner_file" || return 1
@@ -203,22 +224,35 @@ recover_stale_staging_activation() {
   esac
   confirmed_age_seconds=$((confirmed_now - confirmed_mtime))
   [ "$confirmed_age_seconds" -ge 1800 ] || return 1
-  kill -0 "$stale_child_pid" >/dev/null 2>&1 || return 1
 
-  echo "Recovering a stale staging deployment activation after its lease expired" >&2
-  kill -TERM "$stale_child_pid" >/dev/null 2>&1 || return 1
-  recovery_wait=0
-  while [ "$recovery_wait" -lt 60 ]; do
-    [ ! -d "$activation_lock_dir" ] && return 0
-    if [ -f "$activation_lock_owner_file" ]; then
-      current_activation_id=""
-      IFS= read -r current_activation_id <"$activation_lock_owner_file" || return 1
-      [ "$current_activation_id" = "$existing_activation_id" ] || return 1
-    fi
-    sleep 1
-    recovery_wait=$((recovery_wait + 1))
-  done
-  return 1
+  if [ -n "$stale_child_pid" ]; then
+    [ "$wrapper_process_count" -eq 1 ] || return 1
+    kill -0 "$stale_child_pid" >/dev/null 2>&1 || return 1
+    echo "Recovering a stale staging deployment activation after its lease expired" >&2
+    kill -TERM "$stale_child_pid" >/dev/null 2>&1 || return 1
+    recovery_wait=0
+    while [ "$recovery_wait" -lt 60 ]; do
+      [ ! -d "$activation_lock_dir" ] && return 0
+      if [ -f "$activation_lock_owner_file" ]; then
+        current_activation_id=""
+        IFS= read -r current_activation_id <"$activation_lock_owner_file" || return 1
+        [ "$current_activation_id" = "$existing_activation_id" ] || return 1
+      fi
+      sleep 1
+      recovery_wait=$((recovery_wait + 1))
+    done
+    return 1
+  fi
+
+  [ "$owner_process_count" -eq 0 ] || return 1
+  [ "$wrapper_process_count" -eq 0 ] || return 1
+  recovered_orphan_lock_dir="$deploy_dir/.activation-lock.orphan-$existing_nonce"
+  [ ! -e "$recovered_orphan_lock_dir" ] && [ ! -L "$recovered_orphan_lock_dir" ] ||
+    return 1
+  echo "Quarantining an expired orphan staging deployment lock" >&2
+  mv "$activation_lock_dir" "$recovered_orphan_lock_dir" || return 1
+  durable_sync "$deploy_dir"
+  return 0
 }
 
 if ! mkdir -m 700 "$activation_lock_dir" 2>/dev/null; then
@@ -233,6 +267,15 @@ activation_lock_owned=true
 chmod 600 "$activation_lock_owner_file"
 durable_sync "$activation_lock_owner_file"
 durable_sync "$activation_lock_dir"
+if [ -n "$recovered_orphan_lock_dir" ]; then
+  [ -d "$recovered_orphan_lock_dir" ] && [ ! -L "$recovered_orphan_lock_dir" ] ||
+    fail "recovered activation lock quarantine is invalid"
+  rm -f -- "$recovered_orphan_lock_dir/owner"
+  rmdir "$recovered_orphan_lock_dir" ||
+    fail "recovered activation lock quarantine could not be removed"
+  recovered_orphan_lock_dir=""
+  durable_sync "$deploy_dir"
+fi
 
 current_release_file="$deploy_dir/current-release"
 
