@@ -1,8 +1,6 @@
 import { randomInt } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 
-import sharp from "sharp";
-
 import {
   QWEN_VISION_BENCHMARK_CASE_IDS,
   QWEN_VISION_COMPLEX_CASE_IDS,
@@ -23,6 +21,7 @@ import {
   QwenVlSmokeFailure,
   recognizesVisualNonce
 } from "./smoke-qwen-vl-boundary";
+import { renderVisualFixture, renderVisualNonce } from "./qwen-vl-fixtures";
 
 type BenchmarkCase = {
   id: (typeof QWEN_VISION_BENCHMARK_CASE_IDS)[number];
@@ -58,27 +57,70 @@ async function contractSmoke(): Promise<void> {
   if (provider.model !== CURRENT_MODEL) {
     throw new QwenVlSmokeFailure("CONFIG_MISSING");
   }
+  const outcomes: Array<Record<string, string | number | boolean>> = [];
+  const measurements: QwenVisionBenchmarkMeasurement[] = [];
   const visualNonce = String(randomInt(10_000_000, 100_000_000));
-  const image = await renderSvg(
-    `<rect width="640" height="320" fill="#f8fafc"/><text x="100" y="105" font-family="Arial" font-size="42" font-weight="700">VISION CHECK</text><text x="100" y="220" font-family="Arial" font-size="82" font-weight="700">${visualNonce}</text>`
-  );
+  const image = await renderVisualNonce(visualNonce);
   const result = await analyzeWithOneRetry(provider, {
     prompt: "读取图片中清晰显示的8位校验数字。只输出数字。",
     images: [{ mimeType: "image/png", bytes: new Uint8Array(image) }],
     maxOutputTokens: 128
   });
-  if (!recognizesVisualNonce(result.text, visualNonce)) {
-    throw new QwenVlSmokeFailure("RESPONSE_INVALID", "VISUAL_NONCE_MISMATCH");
+  const noncePassed = recognizesVisualNonce(result.text, visualNonce);
+  outcomes.push({
+    caseId: "visual_nonce",
+    model: provider.model,
+    thinking: false,
+    passed: noncePassed,
+    ...(!noncePassed ? { code: "RESPONSE_INVALID" } : {})
+  });
+
+  for (const testCase of await benchmarkCases()) {
+    try {
+      const measurement = await measure(provider, testCase, false);
+      measurements.push(measurement);
+      outcomes.push({
+        ...measurement,
+        passed: measurement.qualityScore >= 75
+      });
+    } catch (error) {
+      outcomes.push({
+        caseId: testCase.id,
+        model: provider.model,
+        thinking: false,
+        passed: false,
+        code: classifyQwenVlSmokeFailure(error).code
+      });
+    } finally {
+      activeBenchmarkCase = undefined;
+    }
   }
+
+  const currentQualityScore =
+    measurements.length === QWEN_VISION_BENCHMARK_CASE_IDS.length
+      ? average(measurements.map((item) => item.qualityScore))
+      : 0;
+  const passed =
+    noncePassed &&
+    outcomes.every((outcome) => outcome.passed) &&
+    currentQualityScore >= 85;
   console.log(
     JSON.stringify({
-      provider: provider.id,
+      schemaVersion: "openvac.qwen-vl-preflight.v1",
       model: provider.model,
       protocol: provider.capabilities.protocol,
       thinking: false,
-      terminal: "completed"
+      currentQualityScore,
+      passed,
+      outcomes
     })
   );
+  if (!passed) {
+    throw new QwenVlSmokeFailure(
+      "RESPONSE_INVALID",
+      noncePassed ? "VISUAL_PREFLIGHT_FAILED" : "VISUAL_NONCE_MISMATCH"
+    );
+  }
 }
 
 async function benchmarkSmoke(): Promise<void> {
@@ -239,7 +281,7 @@ async function measure(
 async function benchmarkCases(): Promise<BenchmarkCase[]> {
   const image = async (body: string): Promise<VisionImage> => ({
     mimeType: "image/png",
-    bytes: new Uint8Array(await renderSvg(body))
+    bytes: new Uint8Array(await renderVisualFixture(body))
   });
   return [
     {
@@ -375,17 +417,6 @@ function table(): string {
         .join("")
     )
     .join("")}`;
-}
-
-async function renderSvg(body: string): Promise<Buffer> {
-  return sharp(
-    Buffer.from(
-      `<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="540">${body}</svg>`,
-      "utf8"
-    )
-  )
-    .png({ compressionLevel: 9, adaptiveFiltering: false })
-    .toBuffer();
 }
 
 async function analyzeWithOneRetry(

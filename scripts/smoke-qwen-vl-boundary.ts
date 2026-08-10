@@ -16,7 +16,8 @@ export type QwenVlSmokeFailureCode =
   | "RESPONSE_INVALID"
   | "UNEXPECTED_FAILURE";
 
-export type QwenVlSmokeFailureDetail = "VISUAL_NONCE_MISMATCH";
+export type QwenVlSmokeFailureDetail =
+  "VISUAL_NONCE_MISMATCH" | "VISUAL_PREFLIGHT_FAILED";
 
 export class QwenVlSmokeFailure extends Error {
   constructor(
