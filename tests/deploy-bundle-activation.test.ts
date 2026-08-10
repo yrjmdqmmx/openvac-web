@@ -579,7 +579,37 @@ describe("deployment bundle activation", () => {
     expect(readdirSync(deployRoot)).toContain(".activation-lock");
   });
 
-  it("never removes an expired lock without one exact live deployment child", () => {
+  it.skipIf(process.platform !== "linux")(
+    "quarantines an expired orphan lock before starting a new activation",
+    () => {
+      const root = temporaryRoot();
+      const deployRoot = join(root, "host");
+      mkdirSync(deployRoot);
+      write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+      const lockDirectory = join(deployRoot, ".activation-lock");
+      mkdirSync(lockDirectory, { mode: 0o700 });
+      const ownerFile = join(lockDirectory, "owner");
+      write(ownerFile, `${"8".repeat(40)}-${"9".repeat(32)}\n`);
+      const expiredAt = new Date(Date.now() - 31 * 60 * 1000);
+      utimesSync(ownerFile, expiredAt, expiredAt);
+      const bundle = createBundle(root);
+
+      const result = runActivation(deployRoot, bundle, "a".repeat(40));
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toContain(
+        "Quarantining an expired orphan staging deployment lock"
+      );
+      expect(readFileSync(join(deployRoot, "current-release"), "utf8")).toBe(
+        `${"a".repeat(40)}\n`
+      );
+      expect(readdirSync(deployRoot)).not.toContain(
+        `.activation-lock.orphan-${"9".repeat(32)}`
+      );
+    }
+  );
+
+  it("keeps a recent well-formed orphan lock fail-closed", () => {
     const root = temporaryRoot();
     const deployRoot = join(root, "host");
     mkdirSync(deployRoot);
@@ -587,17 +617,15 @@ describe("deployment bundle activation", () => {
     const lockDirectory = join(deployRoot, ".activation-lock");
     mkdirSync(lockDirectory, { mode: 0o700 });
     const ownerFile = join(lockDirectory, "owner");
-    write(ownerFile, `${"8".repeat(40)}-${"9".repeat(32)}\n`);
-    const expiredAt = new Date(Date.now() - 31 * 60 * 1000);
-    utimesSync(ownerFile, expiredAt, expiredAt);
+    write(ownerFile, `${"b".repeat(40)}-${"c".repeat(32)}\n`);
     const bundle = createBundle(root);
 
-    const result = runActivation(deployRoot, bundle, "a".repeat(40));
+    const result = runActivation(deployRoot, bundle, "d".repeat(40));
 
     expect(result.status).toBe(64);
     expect(result.stderr).toContain("activation is already in progress");
     expect(readFileSync(ownerFile, "utf8")).toBe(
-      `${"8".repeat(40)}-${"9".repeat(32)}\n`
+      `${"b".repeat(40)}-${"c".repeat(32)}\n`
     );
   });
 
