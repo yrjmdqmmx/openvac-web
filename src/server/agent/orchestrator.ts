@@ -61,7 +61,10 @@ import {
   shouldUseWeb
 } from "./mode-policy";
 import { RunStore, type CreatedRun } from "./run-store";
-import type { ArtifactStorage } from "./artifact-tools";
+import {
+  hasExplicitArtifactIntent,
+  type ArtifactStorage
+} from "./artifact-tools";
 import type { AttachmentStorage } from "./attachment-tools";
 import { ToolRegistry, type ToolExecutionResult } from "./tool-registry";
 import {
@@ -210,6 +213,15 @@ export class AgentRunOrchestrator {
       signal,
       ...this.adapters
     });
+    if (
+      shouldBlockArtifactCreation(
+        input.run.question,
+        input.riskLevel,
+        input.run.inputParts
+      )
+    ) {
+      this.serverBlockedCallableToolNames.add("create_artifact");
+    }
 
     this.stage("analyzing", "正在分析问题风险与所需依据…");
     signal.throwIfAborted();
@@ -326,15 +338,10 @@ export class AgentRunOrchestrator {
           "fresh_trusted_projection" &&
         result.forcedFunctionName === "estimate_pumpdown_time";
       assertAuthorizedFunctionCalls(result.calls, result.callableFunctionNames);
-      if (
-        result.calls.length === 0 &&
-        result.forcedFunctionName === "estimate_pumpdown_time" &&
-        this.provider.capabilities.forcedFunctionResultTransport ===
-          "fresh_trusted_projection"
-      ) {
+      if (result.calls.length === 0 && result.forcedFunctionName) {
         throw new AgentRuntimeError(
           "REQUIRED_TOOL_NOT_COMPLETED",
-          "模型未返回已强制要求的确定性计算调用。",
+          "模型未返回已强制要求的工具调用。",
           false
         );
       }
@@ -394,10 +401,7 @@ export class AgentRunOrchestrator {
               requiresFreshWebEvidence(input.run.question),
             question: input.run.question,
             inputPartTypes: input.run.inputParts.map((part) => part.type),
-            hasArtifactIntent: this.tools.definitions.some(
-              (tool) =>
-                tool.type === "function" && tool.name === "create_artifact"
-            ),
+            hasArtifactIntent: false,
             toolRounds: this.toolRounds,
             calculationCount: this.calculations.size,
             calls: executionCalls
@@ -1508,17 +1512,57 @@ export function selectAnswerToolChoice(
 
   const intent =
     /(?:抽空|抽气).{0,12}(?:时间|多久)|(?:时间|多久).{0,12}(?:抽空|抽气)|\bpump(?:\s|-)?down\s+time\b/iu;
-  if (!intent.test(question)) return "auto";
+  const hasPumpdownCalculation = [...calculations].some(
+    (calculation) => calculation.tool === "estimate_pumpdown_time"
+  );
   if (
-    [...calculations].some(
-      (calculation) => calculation.tool === "estimate_pumpdown_time"
+    intent.test(question) &&
+    !hasPumpdownCalculation &&
+    !hasArtifactCalculationPrerequisite(question)
+  ) {
+    const trustedArguments = extractTrustedPumpdownArguments(
+      question,
+      modelInput
+    );
+    if (trustedArguments) {
+      return { type: "function", name: "estimate_pumpdown_time" };
+    }
+  }
+
+  const artifactChoice = selectArtifactToolChoice(question, modelInput, tools);
+  return artifactChoice ?? "auto";
+}
+
+function selectArtifactToolChoice(
+  question: string,
+  modelInput: readonly ResponsesInputItem[],
+  tools: readonly ResponsesTool[]
+): ResponsesToolChoice | undefined {
+  if (
+    !hasExplicitArtifactIntent(question) ||
+    hasArtifactCalculationPrerequisite(question) ||
+    tools.some(
+      (tool) =>
+        tool.type === "function" &&
+        [
+          "read_verified_url",
+          "search_attachment",
+          "open_attachment_excerpt",
+          "analyze_image"
+        ].includes(tool.name)
     )
   ) {
-    return "auto";
+    return undefined;
   }
-  return extractTrustedPumpdownArguments(question, modelInput)
-    ? { type: "function", name: "estimate_pumpdown_time" }
-    : "auto";
+  const available = tools.some(
+    (tool) => tool.type === "function" && tool.name === "create_artifact"
+  );
+  const alreadyCalled = modelInput.some(
+    (item) => item.type === "function_call" && item.name === "create_artifact"
+  );
+  return available && !alreadyCalled
+    ? { type: "function", name: "create_artifact" }
+    : undefined;
 }
 
 function selectAttachmentToolChoice(
@@ -1558,6 +1602,30 @@ export function requiresDocumentAttachmentEvidence(question: string): boolean {
   const visualIntent =
     /(?:图片|图像|照片|截图|铭牌|\bimage\b|\bphoto\b|\bscreenshot\b|\bnameplate\b)/iu;
   return documentIntent.test(normalized) && !visualIntent.test(normalized);
+}
+
+const ARTIFACT_CALCULATION_PREREQUISITE =
+  /(?:计算|估算|求解|抽空时间|流导|漏率|气载|吞吐量|有效抽速|\bcalculate\b|\bestimate\b|\bconductance\b|\bthroughput\b|\bpump(?:\s|-)?down\b)/iu;
+
+function hasArtifactCalculationPrerequisite(question: string): boolean {
+  return (
+    hasExplicitArtifactIntent(question) &&
+    ARTIFACT_CALCULATION_PREREQUISITE.test(question.normalize("NFKC"))
+  );
+}
+
+export function shouldBlockArtifactCreation(
+  question: string,
+  riskLevel: RiskLevel,
+  inputParts: readonly InputMessagePart[]
+): boolean {
+  if (!hasExplicitArtifactIntent(question)) return false;
+  if (riskLevel === "high") return true;
+  if (inputParts.some((part) => part.type !== "text")) return true;
+  if (hasArtifactCalculationPrerequisite(question)) return true;
+  return Boolean(
+    buildDeterministicAttachmentScopeAnswerV3(question, riskLevel)
+  );
 }
 
 export function selectAnswerTools(
