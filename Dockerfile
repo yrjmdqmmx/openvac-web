@@ -37,7 +37,9 @@ FROM base AS web
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app
-RUN addgroup --system --gid 1001 nodejs \
+RUN apk add --no-cache font-dejavu \
+    && fc-cache -f >/dev/null \
+    && addgroup --system --gid 1001 nodejs \
     && adduser --system --uid 1001 nextjs
 COPY --from=deps --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
