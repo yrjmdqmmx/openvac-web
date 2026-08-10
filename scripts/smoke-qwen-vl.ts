@@ -62,33 +62,33 @@ async function contractSmoke(): Promise<void> {
   const image = await renderVisualNonce(visualNonce);
   const nonceProbes = [
     {
-      probeId: "current_non_thinking_default",
+      probeId: "current_thinking_default",
       provider,
-      thinking: false,
+      thinking: true,
       highResolution: false,
       required: true
     },
     {
-      probeId: "current_non_thinking_high_resolution",
+      probeId: "current_thinking_high_resolution",
       provider: new QwenVlProvider({
         model: CURRENT_MODEL,
-        enableThinking: false,
+        enableThinking: true,
         highResolutionImages: true
       }),
-      thinking: false,
+      thinking: true,
       highResolution: true,
       required: false
     },
     {
-      probeId: "current_thinking_default_resolution",
+      probeId: "current_non_thinking_default",
       provider: new QwenVlProvider({
         model: CURRENT_MODEL,
-        enableThinking: true,
+        enableThinking: false,
         highResolutionImages: false
       }),
-      thinking: true,
+      thinking: false,
       highResolution: false,
-      required: true
+      required: false
     },
     {
       probeId: "baseline_non_thinking_default",
@@ -117,12 +117,12 @@ async function contractSmoke(): Promise<void> {
   }
   const noncePassed = outcomes.some(
     (outcome) =>
-      outcome.probeId === "current_non_thinking_default" && outcome.passed
+      outcome.probeId === "current_thinking_default" && outcome.passed
   );
 
   for (const testCase of await benchmarkCases()) {
     try {
-      const measurement = await measure(provider, testCase, false);
+      const measurement = await measure(provider, testCase, true);
       measurements.push(measurement);
       outcomes.push({
         ...measurement,
@@ -133,7 +133,7 @@ async function contractSmoke(): Promise<void> {
       outcomes.push({
         caseId: testCase.id,
         model: provider.model,
-        thinking: false,
+        thinking: true,
         required: true,
         passed: false,
         code: classifyQwenVlSmokeFailure(error).code
@@ -158,7 +158,7 @@ async function contractSmoke(): Promise<void> {
       schemaVersion: "openvac.qwen-vl-preflight.v1",
       model: provider.model,
       protocol: provider.capabilities.protocol,
-      thinking: false,
+      thinking: true,
       currentQualityScore,
       passed,
       outcomes
@@ -230,38 +230,51 @@ async function benchmarkSmoke(): Promise<void> {
   const cases = await benchmarkCases();
   const measurements: QwenVisionBenchmarkMeasurement[] = [];
 
-  for (const model of [CURRENT_MODEL, BASELINE_MODEL] as const) {
-    const provider = new QwenVlProvider({ model, enableThinking: false });
-    for (const testCase of cases) {
-      measurements.push(await measure(provider, testCase, false));
-    }
-  }
-  const thinkingProvider = new QwenVlProvider({
+  const currentProvider = new QwenVlProvider({
     model: CURRENT_MODEL,
     enableThinking: true
+  });
+  for (const testCase of cases) {
+    measurements.push(await measure(currentProvider, testCase, true));
+  }
+  const baselineProvider = new QwenVlProvider({
+    model: BASELINE_MODEL,
+    enableThinking: false
+  });
+  for (const testCase of cases) {
+    measurements.push(await measure(baselineProvider, testCase, false));
+  }
+  const nonThinkingProvider = new QwenVlProvider({
+    model: CURRENT_MODEL,
+    enableThinking: false
   });
   for (const id of QWEN_VISION_COMPLEX_CASE_IDS) {
     const testCase = cases.find((item) => item.id === id);
     if (!testCase) throw new Error("Complex visual benchmark case is missing.");
-    measurements.push(await measure(thinkingProvider, testCase, true));
+    measurements.push(await measure(nonThinkingProvider, testCase, false));
   }
 
   const current = measurements.filter(
-    (item) => item.model === CURRENT_MODEL && !item.thinking
+    (item) => item.model === CURRENT_MODEL && item.thinking
   );
   const baseline = measurements.filter(
     (item) => item.model === BASELINE_MODEL && !item.thinking
   );
-  const thinking = measurements.filter(
-    (item) => item.model === CURRENT_MODEL && item.thinking
-  );
-  const complexNonThinking = current.filter((item) =>
+  const complexThinking = current.filter((item) =>
     QWEN_VISION_COMPLEX_CASE_IDS.includes(
       item.caseId as (typeof QWEN_VISION_COMPLEX_CASE_IDS)[number]
     )
   );
+  const complexNonThinking = measurements.filter(
+    (item) =>
+      item.model === CURRENT_MODEL &&
+      !item.thinking &&
+      QWEN_VISION_COMPLEX_CASE_IDS.includes(
+        item.caseId as (typeof QWEN_VISION_COMPLEX_CASE_IDS)[number]
+      )
+  );
   const complexThinkingQualityDelta =
-    average(thinking.map((item) => item.qualityScore)) -
+    average(complexThinking.map((item) => item.qualityScore)) -
     average(complexNonThinking.map((item) => item.qualityScore));
   const currentQualityScore = average(current.map((item) => item.qualityScore));
   if (
@@ -281,7 +294,7 @@ async function benchmarkSmoke(): Promise<void> {
     protocol: "openai-chat-completions",
     imageTransport: "base64-data-url",
     defaultModel: CURRENT_MODEL,
-    defaultThinking: false,
+    defaultThinking: true,
     priceVersion: "aliyun-standard-cn-beijing-2026-08-10",
     measurements,
     summary: {
@@ -308,8 +321,8 @@ async function benchmarkSmoke(): Promise<void> {
       complexThinkingQualityDelta,
       recommendation:
         complexThinkingQualityDelta >= 10
-          ? "review_thinking_for_complex_diagrams"
-          : "retain_non_thinking",
+          ? "retain_thinking"
+          : "review_reasoning_effort_for_cost",
       passed: true
     }
   });
@@ -324,7 +337,7 @@ async function benchmarkSmoke(): Promise<void> {
       caseCount: QWEN_VISION_BENCHMARK_CASE_IDS.length,
       model: CURRENT_MODEL,
       baselineModel: BASELINE_MODEL,
-      defaultThinking: false
+      defaultThinking: true
     })
   );
 }

@@ -439,17 +439,17 @@ function visionBenchmark(gitSha: string, imageDigest: string) {
     protocol: "openai-chat-completions",
     imageTransport: "base64-data-url",
     defaultModel: "qwen3.8-max",
-    defaultThinking: false,
+    defaultThinking: true,
     priceVersion: "aliyun-standard-cn-beijing-2026-08-10",
     measurements: [
       ...QWEN_VISION_BENCHMARK_CASE_IDS.map((caseId) =>
-        measurement(caseId, "qwen3.8-max", false)
+        measurement(caseId, "qwen3.8-max", true)
       ),
       ...QWEN_VISION_BENCHMARK_CASE_IDS.map((caseId) =>
         measurement(caseId, "qwen3-vl-plus", false)
       ),
-      measurement("pump_curve", "qwen3.8-max", true),
-      measurement("vacuum_schematic", "qwen3.8-max", true)
+      measurement("pump_curve", "qwen3.8-max", false),
+      measurement("vacuum_schematic", "qwen3.8-max", false)
     ],
     summary: {
       currentQualityScore: 100,
@@ -463,7 +463,7 @@ function visionBenchmark(gitSha: string, imageDigest: string) {
       currentEstimatedCostMicrosCny: 12_480,
       baselineEstimatedCostMicrosCny: 1_600,
       complexThinkingQualityDelta: 0,
-      recommendation: "retain_non_thinking",
+      recommendation: "retain_thinking",
       passed: true
     }
   };
