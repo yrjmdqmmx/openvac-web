@@ -150,6 +150,7 @@ export class AgentRunOrchestrator {
   >();
   private readonly seenProviderCallIds = new Set<string>();
   private readonly attemptedNonRepeatableToolNames = new Set<string>();
+  private readonly serverBlockedCallableToolNames = new Set<string>();
   private modelRequests = 0;
   private toolCalls = 0;
   private toolRounds = 0;
@@ -213,6 +214,8 @@ export class AgentRunOrchestrator {
     this.stage("analyzing", "正在分析问题风险与所需依据…");
     signal.throwIfAborted();
     await this.proactiveKnowledgeSearch(input.run, signal);
+    signal.throwIfAborted();
+    await this.proactiveAttachmentEvidence(input.run, signal);
     signal.throwIfAborted();
 
     const shouldSearchWeb = shouldUseWeb({
@@ -583,6 +586,92 @@ export class AgentRunOrchestrator {
         ? `知识检索完成，获得 ${result.evidenceIds.length} 条可用依据`
         : "知识检索未完成，将按无本地证据策略继续"
     );
+  }
+
+  private async proactiveAttachmentEvidence(
+    run: CreatedRun,
+    signal: AbortSignal
+  ): Promise<void> {
+    const attachmentIds = run.inputParts.flatMap((part) =>
+      part.type === "attachment" ? [part.attachmentId] : []
+    );
+    if (
+      attachmentIds.length === 0 ||
+      !requiresDocumentAttachmentEvidence(run.question)
+    ) {
+      return;
+    }
+
+    this.stage("retrieving", "正在检索当前消息授权的私有文档…");
+    for (const name of [
+      "search_attachment",
+      "open_attachment_excerpt",
+      "analyze_image"
+    ]) {
+      this.serverBlockedCallableToolNames.add(name);
+    }
+    for (let index = 0; index < attachmentIds.length; index += 1) {
+      if (this.toolCalls >= MAX_TOOL_CALLS) return;
+      const attachmentId = attachmentIds[index]!;
+      const search = await this.executeServerAttachmentTool(
+        run,
+        {
+          callId: `server_attachment_search_${run.runId}_${index + 1}`,
+          name: "search_attachment",
+          arguments: JSON.stringify({
+            attachmentId,
+            query: run.question
+          })
+        },
+        signal
+      );
+      if (!search.ok) continue;
+
+      const match = search.attachmentMatches?.[0];
+      if (!match) continue;
+      if (this.toolCalls >= MAX_TOOL_CALLS) return;
+      await this.executeServerAttachmentTool(
+        run,
+        {
+          callId: `server_attachment_open_${run.runId}_${index + 1}`,
+          name: "open_attachment_excerpt",
+          arguments: JSON.stringify({
+            attachmentId: match.attachmentId,
+            chunkId: match.chunkId
+          })
+        },
+        signal
+      );
+      return;
+    }
+  }
+
+  private async executeServerAttachmentTool(
+    run: CreatedRun,
+    call: { callId: string; name: string; arguments: string },
+    signal: AbortSignal
+  ): Promise<ToolExecutionResult> {
+    signal.throwIfAborted();
+    const publicTool = publicToolKind(call.name);
+    this.tool("started", publicTool, toolLabel(call.name, "started"));
+    const startedAt = Date.now();
+    const result = await this.tools.execute(call);
+    this.toolCalls += 1;
+    await this.recordTool(
+      run,
+      1,
+      call.callId,
+      call.name,
+      call.arguments,
+      result,
+      startedAt
+    );
+    this.tool(
+      result.ok ? "completed" : "failed",
+      publicTool,
+      toolLabel(call.name, result.ok ? "completed" : "failed")
+    );
+    return result;
   }
 
   private async proactiveWebSearch(
@@ -1061,7 +1150,10 @@ export class AgentRunOrchestrator {
       modelInput,
       question: input.run.question,
       allowTools,
-      blockedCallableToolNames: this.attemptedNonRepeatableToolNames
+      blockedCallableToolNames: new Set([
+        ...this.attemptedNonRepeatableToolNames,
+        ...this.serverBlockedCallableToolNames
+      ])
     });
     const request: ResponsesStreamRequest = {
       instructions: undefined,
@@ -1434,11 +1526,7 @@ function selectAttachmentToolChoice(
   modelInput: readonly ResponsesInputItem[],
   tools: readonly ResponsesTool[]
 ): ResponsesToolChoice | undefined {
-  const documentIntent =
-    /(?:手册|文档|报告|记录|\bpdf\b|\bdocument\b|\bmanual\b|附件.{0,8}(?:内容|文字|摘要|页|证据)|(?:内容|文字|摘要|页内|证据).{0,8}附件)/iu;
-  const visualIntent =
-    /(?:图片|图像|照片|截图|铭牌|\bimage\b|\bphoto\b|\bscreenshot\b|\bnameplate\b)/iu;
-  if (!documentIntent.test(question) || visualIntent.test(question)) {
+  if (!requiresDocumentAttachmentEvidence(question)) {
     return undefined;
   }
 
@@ -1461,6 +1549,15 @@ function selectAttachmentToolChoice(
     return { type: "function", name: "open_attachment_excerpt" };
   }
   return undefined;
+}
+
+export function requiresDocumentAttachmentEvidence(question: string): boolean {
+  const normalized = question.normalize("NFKC");
+  const documentIntent =
+    /(?:手册|文档|报告|记录|\bpdf\b|\bdocument\b|\bmanual\b|附件.{0,8}(?:内容|文字|摘要|页|证据)|(?:内容|文字|摘要|页内|证据).{0,8}附件)/iu;
+  const visualIntent =
+    /(?:图片|图像|照片|截图|铭牌|\bimage\b|\bphoto\b|\bscreenshot\b|\bnameplate\b)/iu;
+  return documentIntent.test(normalized) && !visualIntent.test(normalized);
 }
 
 export function selectAnswerTools(

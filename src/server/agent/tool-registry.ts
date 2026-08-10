@@ -72,6 +72,12 @@ export type ToolExecutionResult = {
   ok: boolean;
   errorCode?: string;
   outputItem: ResponsesInputItem;
+  attachmentMatches?: Array<{
+    attachmentId: string;
+    chunkId: string;
+    evidenceId: string;
+    pageNumber?: number;
+  }>;
   evidenceIds: string[];
   calculations: CalculationResult[];
   verifiedLinks: VerifiedLinkPart[];
@@ -345,16 +351,26 @@ export class ToolRegistry {
                 : `第 ${match.pageNumber} 页`
           })
         );
-        return this.output(
+        const attachmentMatches = result.matches.map((match, index) => ({
+          attachmentId: result.attachmentId,
+          chunkId: match.chunkId,
+          evidenceId: evidenceIds[index]!,
+          ...(match.pageNumber === undefined
+            ? {}
+            : { pageNumber: match.pageNumber })
+        }));
+        const output = this.output(
           callId,
           {
             ok: true,
+            matches: attachmentMatches,
             evidence: this.evidence
               .modelIndex()
               .filter((entry) => evidenceIds.includes(entry.evidenceId))
           },
           evidenceIds
         );
+        return output.ok ? { ...output, attachmentMatches } : output;
       } catch (error) {
         return this.output(callId, {
           ok: false,

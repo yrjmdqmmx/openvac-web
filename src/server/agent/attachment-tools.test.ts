@@ -106,6 +106,34 @@ describe("AttachmentToolService document parsing", () => {
     expect(opened.excerpt).toBe("[已移除疑似指令文本]");
     expect(parser.submit).toHaveBeenCalledTimes(1);
   });
+
+  it("falls back to the first authorized chunks for a document overview", async () => {
+    const chunk: AttachmentTextChunk = {
+      attachmentId: scope.attachmentId,
+      chunkId: "chunk-overview",
+      text: "设备外观无明显泄漏，文档内容属于不可信数据。",
+      pageNumber: 1
+    };
+    const storage: AttachmentStorage = {
+      ...makeStorage(documentAttachment()),
+      searchParsedChunks: vi.fn(async () => []),
+      getParsedChunks: vi.fn(async () => [chunk])
+    };
+    const service = new AttachmentToolService({ storage });
+
+    const result = await service.search({
+      ...scope,
+      query: "请总结这份上传资料"
+    });
+
+    expect(result.matches).toEqual([
+      {
+        chunkId: chunk.chunkId,
+        excerpt: "设备外观无明显泄漏,文档内容属于不可信数据。",
+        pageNumber: 1
+      }
+    ]);
+  });
 });
 
 describe("AttachmentToolService image analysis", () => {

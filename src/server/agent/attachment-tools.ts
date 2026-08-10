@@ -232,7 +232,7 @@ export class AttachmentToolService {
     const attachment = await this.loadAuthorized(input, "document");
     const chunks = await this.loadSearchChunks(attachment, query, input.signal);
     const terms = searchTerms(query);
-    const matches = chunks
+    let selected = chunks
       .map((chunk) => ({ chunk, score: scoreChunk(chunk.text, query, terms) }))
       .filter(({ score }) => score > 0)
       .sort(
@@ -241,13 +241,19 @@ export class AttachmentToolService {
           left.chunk.chunkId.localeCompare(right.chunk.chunkId)
       )
       .slice(0, 8)
-      .map(({ chunk }) => ({
-        chunkId: chunk.chunkId,
-        excerpt: sanitizeEvidenceExcerpt(chunk.text, 2_600),
-        ...(chunk.pageNumber === undefined
-          ? {}
-          : { pageNumber: chunk.pageNumber })
-      }));
+      .map(({ chunk }) => chunk);
+    if (selected.length === 0 && hasDocumentOverviewIntent(query)) {
+      selected = (
+        await this.loadDocumentChunks(attachment, input.signal)
+      ).slice(0, 8);
+    }
+    const matches = selected.map((chunk) => ({
+      chunkId: chunk.chunkId,
+      excerpt: sanitizeEvidenceExcerpt(chunk.text, 2_600),
+      ...(chunk.pageNumber === undefined
+        ? {}
+        : { pageNumber: chunk.pageNumber })
+    }));
     return { attachmentId: attachment.attachmentId, matches };
   }
 
@@ -524,6 +530,12 @@ export class AttachmentToolService {
     await this.storage.putParsedChunks(scope, chunks);
     return chunks;
   }
+}
+
+function hasDocumentOverviewIntent(query: string): boolean {
+  return /(?:总结|摘要|概述|概括|全文|文档内容|summari[sz]e|summary|overview)/iu.test(
+    query.normalize("NFKC")
+  );
 }
 
 async function analyzeVisionWithOneRetry(
