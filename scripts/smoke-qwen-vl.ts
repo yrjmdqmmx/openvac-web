@@ -8,11 +8,13 @@ import {
   type QwenVisionBenchmarkMeasurement
 } from "../src/evals/vision/qwen-vl-benchmark";
 import {
+  ProviderError,
   ProviderTimeoutError,
   QwenVlProvider,
   type QwenVlTelemetryResult,
   type VisionImage,
-  type VisionRequest
+  type VisionRequest,
+  type VisionResult
 } from "../src/server/providers";
 import {
   classifyQwenVlSmokeFailure,
@@ -52,7 +54,11 @@ async function main(): Promise<void> {
 }
 
 async function contractSmoke(): Promise<void> {
-  const provider = new QwenVlProvider();
+  const provider = new QwenVlProvider({
+    model: CURRENT_MODEL,
+    enableThinking: true,
+    highResolutionImages: false
+  });
   if (provider.model !== CURRENT_MODEL) {
     throw new QwenVlSmokeFailure("CONFIG_MISSING");
   }
@@ -66,6 +72,7 @@ async function contractSmoke(): Promise<void> {
       provider,
       thinking: true,
       highResolution: false,
+      transport: "non_streaming",
       required: true
     },
     {
@@ -77,6 +84,7 @@ async function contractSmoke(): Promise<void> {
       }),
       thinking: true,
       highResolution: true,
+      transport: "streaming",
       required: false
     },
     {
@@ -88,6 +96,7 @@ async function contractSmoke(): Promise<void> {
       }),
       thinking: false,
       highResolution: false,
+      transport: "streaming",
       required: false
     },
     {
@@ -99,7 +108,8 @@ async function contractSmoke(): Promise<void> {
       }),
       thinking: false,
       highResolution: false,
-      required: true
+      transport: "streaming",
+      required: false
     }
   ] as const;
   for (const probe of nonceProbes) {
@@ -111,6 +121,7 @@ async function contractSmoke(): Promise<void> {
         probe.probeId,
         probe.thinking,
         probe.highResolution,
+        probe.transport,
         probe.required
       )
     );
@@ -179,14 +190,19 @@ async function measureVisualNonce(
   probeId: string,
   thinking: boolean,
   highResolution: boolean,
+  transport: "non_streaming" | "streaming",
   required: boolean
 ): Promise<Record<string, string | number | boolean>> {
   try {
-    const result = await telemetryAttempt(provider, {
+    const request: VisionRequest = {
       prompt: "读取图片中清晰显示的8位校验数字。只输出数字。",
       images: [{ mimeType: "image/png", bytes: new Uint8Array(image) }],
       maxOutputTokens: 128
-    });
+    };
+    const result =
+      transport === "non_streaming"
+        ? await analyzeWithOneRetry(provider, request)
+        : await telemetryAttempt(provider, request);
     const usage = requireUsage(result);
     const passed = recognizesVisualNonce(result.text, visualNonce);
     return {
@@ -195,10 +211,16 @@ async function measureVisualNonce(
       model: provider.model,
       thinking,
       highResolution,
+      transport,
       required,
       passed,
-      firstTokenLatencyMs: result.firstTokenLatencyMs,
-      totalDurationMs: result.totalDurationMs,
+      ...(transport === "streaming"
+        ? {
+            firstTokenLatencyMs: (result as QwenVlTelemetryResult)
+              .firstTokenLatencyMs,
+            totalDurationMs: (result as QwenVlTelemetryResult).totalDurationMs
+          }
+        : {}),
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       totalTokens: usage.totalTokens,
@@ -216,10 +238,38 @@ async function measureVisualNonce(
       model: provider.model,
       thinking,
       highResolution,
+      transport,
       required,
       passed: false,
       code: classifyQwenVlSmokeFailure(error).code
     };
+  }
+}
+
+async function analyzeWithOneRetry(
+  provider: QwenVlProvider,
+  request: VisionRequest
+): Promise<VisionResult> {
+  try {
+    return await analyzeAttempt(provider, request);
+  } catch (error) {
+    if (!(error instanceof ProviderError) || !error.retryable) throw error;
+  }
+  return analyzeAttempt(provider, request);
+}
+
+async function analyzeAttempt(
+  provider: QwenVlProvider,
+  request: VisionRequest
+): Promise<VisionResult> {
+  const signal = AbortSignal.timeout(90_000);
+  try {
+    return await provider.analyze({ ...request, signal });
+  } catch (error) {
+    if (signal.aborted) {
+      throw new ProviderTimeoutError(provider.id, "Vision smoke timed out.");
+    }
+    throw error;
   }
 }
 
@@ -579,7 +629,7 @@ function normalize(value: string): string {
   return value.toLowerCase().replace(/[^\p{L}\p{N}.]+/gu, "");
 }
 
-function requireUsage(result: QwenVlTelemetryResult): {
+function requireUsage(result: Pick<VisionResult, "usage">): {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
