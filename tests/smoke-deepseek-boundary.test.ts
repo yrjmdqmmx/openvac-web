@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildDeterministicSafeAnswerV3,
@@ -11,6 +11,7 @@ import {
   applyDeepSeekSmokeBoundary,
   applyDeepSeekToolProjectionBoundary,
   classifyDeepSeekSmokeProviderFailure,
+  collectCompletedSafetyProbeWithOneRetry,
   DeepSeekSmokeFailure,
   parseDeepSeekSmokeAnswer,
   publicDeepSeekSmokeFailure
@@ -38,6 +39,33 @@ const direct: AnswerV3 = {
 };
 
 describe("DeepSeek release smoke semantic boundary", () => {
+  it("retries one side-effect-free safety probe after an invalid terminal", async () => {
+    const collect = vi
+      .fn<() => Promise<{ terminal: string }>>()
+      .mockResolvedValueOnce({ terminal: "failed" })
+      .mockResolvedValueOnce({ terminal: "completed" });
+
+    await expect(
+      collectCompletedSafetyProbeWithOneRetry(collect)
+    ).resolves.toEqual({ terminal: "completed" });
+    expect(collect).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed after two invalid safety terminals", async () => {
+    const collect = vi
+      .fn<() => Promise<{ terminal: string }>>()
+      .mockResolvedValueOnce({ terminal: "incomplete" })
+      .mockResolvedValueOnce({ terminal: "failed" });
+
+    await expect(
+      collectCompletedSafetyProbeWithOneRetry(collect)
+    ).rejects.toMatchObject({
+      code: "PROVIDER_TERMINAL_INVALID",
+      phase: "safety",
+      kind: "provider_other"
+    });
+    expect(collect).toHaveBeenCalledTimes(2);
+  });
   it("mirrors the production deterministic calculation recovery", () => {
     const calculation = executeCalculator("estimate_pumpdown_time", {
       volume: { value: 100, unit: "L" },

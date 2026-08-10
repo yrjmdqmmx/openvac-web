@@ -61,6 +61,21 @@ export class DeepSeekSmokeFailure extends Error {
   }
 }
 
+export async function collectCompletedSafetyProbeWithOneRetry<
+  T extends { terminal: string }
+>(collect: () => Promise<T>): Promise<T> {
+  const first = await collect();
+  if (first.terminal === "completed") return first;
+
+  const second = await collect();
+  if (second.terminal === "completed") return second;
+  throw new DeepSeekSmokeFailure(
+    "PROVIDER_TERMINAL_INVALID",
+    "safety",
+    "provider_other"
+  );
+}
+
 export function classifyDeepSeekSmokeProviderFailure(
   code: Extract<
     DeepSeekSmokeFailureCode,

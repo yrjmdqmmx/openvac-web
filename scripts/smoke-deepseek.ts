@@ -19,6 +19,7 @@ import {
   applyDeepSeekToolProjectionBoundary,
   applyDeepSeekSmokeBoundary,
   classifyDeepSeekSmokeProviderFailure,
+  collectCompletedSafetyProbeWithOneRetry,
   DeepSeekSmokeFailure,
   parseDeepSeekSmokeAnswer,
   publicDeepSeekSmokeFailure
@@ -40,7 +41,7 @@ async function main() {
 
   let safety;
   try {
-    safety = await collectProbe(provider, {
+    const request: ResponsesStreamRequest = {
       instructions: buildAgentV3InstructionsForRisk(risk.level),
       input: question,
       tools: new ToolRegistry(new EvidenceRegistry()).definitions,
@@ -53,8 +54,12 @@ async function main() {
         strict: true
       },
       user: userPartition
-    });
+    };
+    safety = await collectCompletedSafetyProbeWithOneRetry(() =>
+      collectProbe(provider, request)
+    );
   } catch (error) {
+    if (error instanceof DeepSeekSmokeFailure) throw error;
     throw classifyDeepSeekSmokeProviderFailure(
       "PROVIDER_REQUEST_FAILED",
       "safety",
@@ -62,9 +67,6 @@ async function main() {
     );
   }
 
-  if (safety.terminal !== "completed") {
-    throw new DeepSeekSmokeFailure("PROVIDER_TERMINAL_INVALID");
-  }
   let boundary;
   try {
     boundary = applyDeepSeekSmokeBoundary({
