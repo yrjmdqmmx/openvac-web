@@ -70,10 +70,8 @@ import { ToolRegistry, type ToolExecutionResult } from "./tool-registry";
 import {
   answerUsesOnlyProjectedCalculations,
   boundCalculationIdFromToolResult,
-  buildTrustedCalculationArtifactInput,
   buildTrustedCalculationFinalInput,
   calculationsForProjection,
-  trustedPumpdownArtifactEligibilityFailure,
   trustedPumpdownEligibilityFailure,
   trustedPumpdownProjectionFromToolTurn
 } from "./trusted-calculation-projection";
@@ -215,14 +213,11 @@ export class AgentRunOrchestrator {
       signal,
       ...this.adapters
     });
-    const hasCurrentTurnAttachment = input.run.inputParts.some(
-      (part) => part.type === "attachment"
-    );
     if (
-      !hasCurrentTurnAttachment &&
-      buildDeterministicAttachmentScopeAnswerV3(
+      shouldBlockArtifactCreation(
         input.run.question,
-        input.riskLevel
+        input.riskLevel,
+        input.run.inputParts
       )
     ) {
       this.serverBlockedCallableToolNames.add("create_artifact");
@@ -342,21 +337,11 @@ export class AgentRunOrchestrator {
         this.provider.capabilities.forcedFunctionResultTransport ===
           "fresh_trusted_projection" &&
         result.forcedFunctionName === "estimate_pumpdown_time";
-      const hasArtifactIntent = this.tools.definitions.some(
-        (tool) => tool.type === "function" && tool.name === "create_artifact"
-      );
-      const requiresTrustedArtifactProjection =
-        requiresTrustedProjection && hasArtifactIntent;
       assertAuthorizedFunctionCalls(result.calls, result.callableFunctionNames);
-      if (
-        result.calls.length === 0 &&
-        result.forcedFunctionName === "estimate_pumpdown_time" &&
-        this.provider.capabilities.forcedFunctionResultTransport ===
-          "fresh_trusted_projection"
-      ) {
+      if (result.calls.length === 0 && result.forcedFunctionName) {
         throw new AgentRuntimeError(
           "REQUIRED_TOOL_NOT_COMPLETED",
-          "模型未返回已强制要求的确定性计算调用。",
+          "模型未返回已强制要求的工具调用。",
           false
         );
       }
@@ -409,30 +394,18 @@ export class AgentRunOrchestrator {
         signal
       );
       const projectionEligibilityFailure = requiresTrustedProjection
-        ? requiresTrustedArtifactProjection
-          ? trustedPumpdownArtifactEligibilityFailure({
-              riskLevel: input.riskLevel,
-              webRequired:
-                input.webMode === "always" ||
-                requiresFreshWebEvidence(input.run.question),
-              inputPartTypes: input.run.inputParts.map((part) => part.type),
-              hasArtifactIntent,
-              toolRounds: this.toolRounds,
-              calculationCount: this.calculations.size,
-              calls: executionCalls
-            })
-          : trustedPumpdownEligibilityFailure({
-              riskLevel: input.riskLevel,
-              webRequired:
-                input.webMode === "always" ||
-                requiresFreshWebEvidence(input.run.question),
-              question: input.run.question,
-              inputPartTypes: input.run.inputParts.map((part) => part.type),
-              hasArtifactIntent,
-              toolRounds: this.toolRounds,
-              calculationCount: this.calculations.size,
-              calls: executionCalls
-            })
+        ? trustedPumpdownEligibilityFailure({
+            riskLevel: input.riskLevel,
+            webRequired:
+              input.webMode === "always" ||
+              requiresFreshWebEvidence(input.run.question),
+            question: input.run.question,
+            inputPartTypes: input.run.inputParts.map((part) => part.type),
+            hasArtifactIntent: false,
+            toolRounds: this.toolRounds,
+            calculationCount: this.calculations.size,
+            calls: executionCalls
+          })
         : undefined;
       const canUseTrustedProjection =
         requiresTrustedProjection && projectionEligibilityFailure === undefined;
@@ -467,16 +440,12 @@ export class AgentRunOrchestrator {
             false
           );
         }
-        currentInput = requiresTrustedArtifactProjection
-          ? buildTrustedCalculationArtifactInput(
-              originalContextInput,
-              projection
-            )
-          : buildTrustedCalculationFinalInput(originalContextInput, projection);
-        projectedCalculationIds = requiresTrustedArtifactProjection
-          ? undefined
-          : new Set([projection.calculationId]);
-        forceToolFreeAnswer = !requiresTrustedArtifactProjection;
+        currentInput = buildTrustedCalculationFinalInput(
+          originalContextInput,
+          projection
+        );
+        projectedCalculationIds = new Set([projection.calculationId]);
+        forceToolFreeAnswer = true;
         continue;
       }
       currentInput = [
@@ -1546,7 +1515,11 @@ export function selectAnswerToolChoice(
   const hasPumpdownCalculation = [...calculations].some(
     (calculation) => calculation.tool === "estimate_pumpdown_time"
   );
-  if (intent.test(question) && !hasPumpdownCalculation) {
+  if (
+    intent.test(question) &&
+    !hasPumpdownCalculation &&
+    !hasArtifactCalculationPrerequisite(question)
+  ) {
     const trustedArguments = extractTrustedPumpdownArguments(
       question,
       modelInput
@@ -1556,44 +1529,8 @@ export function selectAnswerToolChoice(
     }
   }
 
-  const sourceChoice = selectArtifactSourceToolChoice(
-    question,
-    modelInput,
-    tools
-  );
-  if (sourceChoice) return sourceChoice;
-
   const artifactChoice = selectArtifactToolChoice(question, modelInput, tools);
   return artifactChoice ?? "auto";
-}
-
-function selectArtifactSourceToolChoice(
-  question: string,
-  modelInput: readonly ResponsesInputItem[],
-  tools: readonly ResponsesTool[]
-): ResponsesToolChoice | undefined {
-  if (!hasExplicitArtifactIntent(question)) return undefined;
-  const available = new Set(
-    tools.flatMap((tool) => (tool.type === "function" ? [tool.name] : []))
-  );
-  const called = new Set(
-    modelInput.flatMap((item) =>
-      item.type === "function_call" ? [item.name] : []
-    )
-  );
-  if (available.has("read_verified_url") && !called.has("read_verified_url")) {
-    return { type: "function", name: "read_verified_url" };
-  }
-  const visualIntent =
-    /(?:图片|图像|照片|截图|铭牌|\bimage\b|\bphoto\b|\bscreenshot\b|\bnameplate\b)/iu;
-  if (
-    visualIntent.test(question) &&
-    available.has("analyze_image") &&
-    !called.has("analyze_image")
-  ) {
-    return { type: "function", name: "analyze_image" };
-  }
-  return undefined;
 }
 
 function selectArtifactToolChoice(
@@ -1601,7 +1538,22 @@ function selectArtifactToolChoice(
   modelInput: readonly ResponsesInputItem[],
   tools: readonly ResponsesTool[]
 ): ResponsesToolChoice | undefined {
-  if (!hasExplicitArtifactIntent(question)) return undefined;
+  if (
+    !hasExplicitArtifactIntent(question) ||
+    hasArtifactCalculationPrerequisite(question) ||
+    tools.some(
+      (tool) =>
+        tool.type === "function" &&
+        [
+          "read_verified_url",
+          "search_attachment",
+          "open_attachment_excerpt",
+          "analyze_image"
+        ].includes(tool.name)
+    )
+  ) {
+    return undefined;
+  }
   const available = tools.some(
     (tool) => tool.type === "function" && tool.name === "create_artifact"
   );
@@ -1650,6 +1602,30 @@ export function requiresDocumentAttachmentEvidence(question: string): boolean {
   const visualIntent =
     /(?:图片|图像|照片|截图|铭牌|\bimage\b|\bphoto\b|\bscreenshot\b|\bnameplate\b)/iu;
   return documentIntent.test(normalized) && !visualIntent.test(normalized);
+}
+
+const ARTIFACT_CALCULATION_PREREQUISITE =
+  /(?:计算|估算|求解|抽空时间|流导|漏率|气载|吞吐量|有效抽速|\bcalculate\b|\bestimate\b|\bconductance\b|\bthroughput\b|\bpump(?:\s|-)?down\b)/iu;
+
+function hasArtifactCalculationPrerequisite(question: string): boolean {
+  return (
+    hasExplicitArtifactIntent(question) &&
+    ARTIFACT_CALCULATION_PREREQUISITE.test(question.normalize("NFKC"))
+  );
+}
+
+export function shouldBlockArtifactCreation(
+  question: string,
+  riskLevel: RiskLevel,
+  inputParts: readonly InputMessagePart[]
+): boolean {
+  if (!hasExplicitArtifactIntent(question)) return false;
+  if (riskLevel === "high") return true;
+  if (inputParts.some((part) => part.type !== "text")) return true;
+  if (hasArtifactCalculationPrerequisite(question)) return true;
+  return Boolean(
+    buildDeterministicAttachmentScopeAnswerV3(question, riskLevel)
+  );
 }
 
 export function selectAnswerTools(
@@ -1798,19 +1774,16 @@ export function selectAnswerToolRoundLimit(
   const hasPumpdownCalculation = [...calculations].some(
     (calculation) => calculation.tool === "estimate_pumpdown_time"
   );
+  if (!hasPumpdownCalculation) return baseLimit;
   const hasExplicitArtifactTool = tools.some(
     (tool) => tool.type === "function" && tool.name === "create_artifact"
   );
-  const hasCurrentTurnLink = inputParts.some((part) => part.type === "link");
-  const hasCurrentTurnAttachment = inputParts.some(
-    (part) => part.type === "attachment"
+  const hasCurrentTurnResource = inputParts.some(
+    (part) => part.type === "link" || part.type === "attachment"
   );
-  const requiredRounds =
-    Number(hasPumpdownCalculation) +
-    Number(hasCurrentTurnLink) +
-    Number(hasCurrentTurnAttachment) +
-    Number(hasExplicitArtifactTool);
-  return Math.max(baseLimit, requiredRounds);
+  return (
+    baseLimit + (hasExplicitArtifactTool || hasCurrentTurnResource ? 1 : 0)
+  );
 }
 
 function previousPlainUserText(

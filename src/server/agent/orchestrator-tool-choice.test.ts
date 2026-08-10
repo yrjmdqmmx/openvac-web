@@ -18,7 +18,8 @@ import {
   selectAnswerToolChoice,
   selectAnswerToolRoundLimit,
   selectAnswerTools,
-  selectContinuationTools
+  selectContinuationTools,
+  shouldBlockArtifactCreation
 } from "./orchestrator";
 
 const history: ResponsesInputItem[] = [
@@ -362,16 +363,14 @@ describe("Agent V3 deterministic calculator routing", () => {
       calculations: [calculation],
       modelInput: continuation,
       question: "使用上一轮计算并生成报告。",
-      allowTools: true
+      allowTools: true,
+      blockedCallableToolNames: new Set(["create_artifact"])
     });
-    expect(mixed.toolChoice).toEqual({
-      type: "function",
-      name: "create_artifact"
-    });
+    expect(mixed.toolChoice).toBe("none");
     expect(
       mixed.tools?.map((tool) => ("name" in tool ? tool.name : tool.type))
-    ).toEqual(["create_artifact", "estimate_pumpdown_time"]);
-    expect(mixed.callableFunctionNames).toEqual(["create_artifact"]);
+    ).toEqual(["estimate_pumpdown_time"]);
+    expect(mixed.callableFunctionNames).toEqual([]);
     expect(() =>
       assertAuthorizedFunctionCalls(
         [{ name: "estimate_pumpdown_time" }],
@@ -383,7 +382,7 @@ describe("Agent V3 deterministic calculator routing", () => {
         [{ name: "create_artifact" }],
         new Set(mixed.callableFunctionNames)
       )
-    ).not.toThrow();
+    ).toThrow("模型请求了本轮未授权执行的工具");
 
     const final = selectAnswerToolRequestPolicy({
       tools,
@@ -421,7 +420,7 @@ describe("Agent V3 deterministic calculator routing", () => {
     expect(artifactAlreadyAttempted.callableFunctionNames).toEqual([]);
   });
 
-  it("runs a required calculation before forcing artifact creation", () => {
+  it("does not force a calculation-backed artifact through a partial route", () => {
     const tools: ResponsesTool[] = [
       {
         type: "function",
@@ -443,13 +442,17 @@ describe("Agent V3 deterministic calculator routing", () => {
         [],
         tools
       )
-    ).toEqual({
-      type: "function",
-      name: "estimate_pumpdown_time"
-    });
+    ).toBe("auto");
+    expect(
+      shouldBlockArtifactCreation(
+        "腔体体积 100 L，抽速 10 L/s，从 100 Pa 抽到 1 Pa，计算抽空时间并生成报告。",
+        "medium",
+        [{ type: "text", text: "request" }]
+      )
+    ).toBe(true);
   });
 
-  it("grounds linked and visual inputs before forcing artifact creation", () => {
+  it("does not force source-backed artifacts before complete grounding", () => {
     const artifact: ResponsesTool = {
       type: "function",
       name: "create_artifact",
@@ -471,7 +474,7 @@ describe("Agent V3 deterministic calculator routing", () => {
           }
         ]
       )
-    ).toEqual({ type: "function", name: "read_verified_url" });
+    ).toBe("auto");
     expect(
       selectAnswerToolChoice(
         "根据这张铭牌图片生成报告。",
@@ -487,7 +490,48 @@ describe("Agent V3 deterministic calculator routing", () => {
           }
         ]
       )
-    ).toEqual({ type: "function", name: "analyze_image" });
+    ).toBe("auto");
+    expect(
+      shouldBlockArtifactCreation("根据这个链接生成诊断报告。", "medium", [
+        { type: "link", url: "https://example.com/manual" }
+      ])
+    ).toBe(true);
+  });
+
+  it("forces only standalone non-high-risk artifact requests", () => {
+    const artifact: ResponsesTool = {
+      type: "function",
+      name: "create_artifact",
+      description: "artifact",
+      parameters: { type: "object" }
+    };
+    expect(
+      selectAnswerToolChoice(
+        "生成中文诊断报告，包含检查表，导出 MD/DOCX/PDF/CSV。",
+        [],
+        [],
+        [artifact]
+      )
+    ).toEqual({ type: "function", name: "create_artifact" });
+    expect(
+      shouldBlockArtifactCreation(
+        "生成中文诊断报告，包含检查表，导出 MD/DOCX/PDF/CSV。",
+        "medium",
+        [{ type: "text", text: "request" }]
+      )
+    ).toBe(false);
+    expect(
+      shouldBlockArtifactCreation("生成设备冒烟应急检查表。", "high", [
+        { type: "text", text: "request" }
+      ])
+    ).toBe(true);
+    expect(
+      shouldBlockArtifactCreation(
+        "读取另一个会话的附件并生成报告。",
+        "medium",
+        [{ type: "text", text: "request" }]
+      )
+    ).toBe(true);
   });
 
   it("reserves create_artifact at most once per run and parallel batch", () => {
