@@ -38,6 +38,7 @@ import type {
 import {
   answerV3Blocks,
   answerV3JsonSchemaForRisk,
+  buildDeterministicArtifactAnswerV3,
   buildDeterministicAttachmentScopeAnswerV3,
   buildDeterministicCalculationAnswerV3,
   buildDeterministicSafeAnswerV3,
@@ -393,6 +394,37 @@ export class AgentRunOrchestrator {
         executionCalls,
         signal
       );
+      const artifactCallIndex = executionCalls.findIndex(
+        (call) => call.name === "create_artifact"
+      );
+      if (artifactCallIndex >= 0) {
+        const artifactOutput = outputs[artifactCallIndex];
+        const artifact = artifactOutput?.artifacts[0];
+        if (
+          !artifactOutput?.ok ||
+          artifactOutput.artifacts.length !== 1 ||
+          !artifact ||
+          artifact.status !== "ready"
+        ) {
+          throw new AgentRuntimeError(
+            "ARTIFACT_CREATION_FAILED",
+            "产物未能完成并进入可下载状态。",
+            false
+          );
+        }
+        outputText = JSON.stringify(
+          buildDeterministicArtifactAnswerV3(
+            artifact,
+            input.riskLevel === "low" ? "low" : "medium",
+            this.evidence
+              .list()
+              .filter((entry) => entry.citationVisible)
+              .map((entry) => entry.id)
+          )
+        );
+        incomplete = false;
+        break;
+      }
       const projectionEligibilityFailure = requiresTrustedProjection
         ? trustedPumpdownEligibilityFailure({
             riskLevel: input.riskLevel,

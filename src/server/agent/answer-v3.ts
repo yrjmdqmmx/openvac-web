@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import type { AgentV3RiskLevel, AnswerBlock, AnswerV3 } from "@/types/chat-v3";
+import type {
+  AgentV3RiskLevel,
+  AnswerBlock,
+  AnswerV3,
+  ArtifactPart
+} from "@/types/chat-v3";
 import type { CalculationResult } from "@/types/chat";
 
 import { localizeCalculations } from "./calculation-localization";
@@ -611,6 +616,48 @@ export function buildDeterministicCalculationAnswerV3(
     })),
     missingInputs: [],
     usedEvidenceIds: [],
+    usedLinkIds: []
+  };
+}
+
+export function buildDeterministicArtifactAnswerV3(
+  artifact: ArtifactPart,
+  riskLevel: Exclude<AgentV3RiskLevel, "high">,
+  evidenceIds: readonly string[] = []
+): AnswerV3 {
+  if (artifact.status !== "ready") {
+    throw new TypeError(
+      "Deterministic artifact answers require a ready artifact."
+    );
+  }
+  const usedEvidenceIds = [...new Set(evidenceIds)].slice(0, 64);
+  const fact =
+    artifact.kind === "diagnosis_report"
+      ? "产物包含诊断结论和检查参数。"
+      : artifact.kind === "parameter_table"
+        ? "参数表包含单位和假设。"
+        : "产物已按本轮明确要求生成。";
+  return {
+    schemaVersion: "openvac.answer.v3",
+    answerKind: usedEvidenceIds.length > 0 ? "expert" : "clarification",
+    riskLevel,
+    blocks: [
+      {
+        type: "paragraph",
+        text: `${fact} 已生成“${artifact.title}”，可通过下方产物卡片预览或下载。`,
+        evidenceIds: usedEvidenceIds
+      },
+      {
+        type: "artifact_reference",
+        artifactId: artifact.artifactId,
+        label: artifact.title
+      }
+    ],
+    missingInputs:
+      usedEvidenceIds.length > 0
+        ? []
+        : ["当前没有可引用的受治理证据；产物仅整理用户明确要求的模板内容。"],
+    usedEvidenceIds,
     usedLinkIds: []
   };
 }
