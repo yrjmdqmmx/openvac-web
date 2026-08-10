@@ -9,6 +9,8 @@ import {
   type ParsedDocument
 } from "@/server/providers";
 
+import { extractLocalPdfText } from "./pdf-text";
+
 const POLL_INTERVAL_MS = 5_000;
 const RETRY_DELAY_MS = 30_000;
 const MAX_CHUNK_CHARACTERS = 8_000;
@@ -94,6 +96,7 @@ export interface ChatStorageWorkerOptions {
   maxParserPolls?: number;
   maxParserAgeMs?: number;
   leaseHeartbeatMs?: number;
+  pdfTextExtractor?: (bytes: Uint8Array) => Promise<ParsedDocument | null>;
 }
 
 export class StaleChatStorageLeaseError extends Error {
@@ -114,6 +117,9 @@ export class ChatStorageWorker {
   private readonly maxParserPolls: number;
   private readonly maxParserAgeMs: number;
   private readonly leaseHeartbeatMs: number;
+  private readonly pdfTextExtractor: (
+    bytes: Uint8Array
+  ) => Promise<ParsedDocument | null>;
 
   constructor(options: ChatStorageWorkerOptions) {
     this.repository = options.repository;
@@ -141,6 +147,7 @@ export class ChatStorageWorker {
       options.leaseHeartbeatMs ?? DEFAULT_LEASE_HEARTBEAT_MS,
       "leaseHeartbeatMs"
     );
+    this.pdfTextExtractor = options.pdfTextExtractor ?? extractLocalPdfText;
   }
 
   async runOnce(): Promise<"idle" | "deferred" | "completed" | "failed"> {
@@ -179,6 +186,20 @@ export class ChatStorageWorker {
         return "completed";
       }
       if (!job.parserJobId) {
+        if (job.mimeType === "application/pdf") {
+          const parsed = await this.withAttachmentLease(job, async () => {
+            const bytes = await this.objectStorage.getPrivate(job.objectKey);
+            return this.pdfTextExtractor(bytes);
+          });
+          if (parsed) {
+            await this.repository.saveChunksAndComplete(
+              job,
+              chunksForParsedDocument(parsed),
+              "local-pdf-text"
+            );
+            return "completed";
+          }
+        }
         const submitted = await this.withAttachmentLease(job, async () => {
           // Completion has already verified the immutable object's size,
           // digest, MIME signature, and ownership. The parser accepts this
