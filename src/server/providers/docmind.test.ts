@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { assertAllowedDocumentUrl, normalizeDocMindStatus } from "./docmind";
+import {
+  assertAllowedDocumentUrl,
+  assertTrustedPrivateOssUrl,
+  normalizeDocMindStatus
+} from "./docmind";
 
 describe("DocMind input boundaries", () => {
   const allowedHosts = new Set([
@@ -24,6 +28,23 @@ describe("DocMind input boundaries", () => {
       expect(() => assertAllowedDocumentUrl(value, allowedHosts)).toThrow(
         /allowlist/u
       );
+    }
+  });
+
+  it("accepts only signed public Alibaba OSS URLs from private storage", () => {
+    expect(() =>
+      assertTrustedPrivateOssUrl(
+        "https://openvac-private.oss-cn-hangzhou.aliyuncs.com/chat/manual.pdf?x-oss-signature-version=OSS4-HMAC-SHA256&x-oss-credential=redacted&x-oss-date=20260811T001700Z&x-oss-expires=900&x-oss-signature=redacted"
+      )
+    ).not.toThrow();
+
+    for (const value of [
+      "https://openvac-private.oss-cn-hangzhou.aliyuncs.com/chat/manual.pdf",
+      "https://openvac-private.oss-cn-hangzhou-internal.aliyuncs.com/chat/manual.pdf?x-oss-signature=redacted",
+      "https://oss.attacker.example/chat/manual.pdf?x-oss-signature=redacted",
+      "http://openvac-private.oss-cn-hangzhou.aliyuncs.com/chat/manual.pdf?x-oss-signature=redacted"
+    ]) {
+      expect(() => assertTrustedPrivateOssUrl(value)).toThrow();
     }
   });
 

@@ -181,12 +181,16 @@ export class ChatStorageWorker {
       if (!job.parserJobId) {
         const submitted = await this.withAttachmentLease(job, async () => {
           // Completion has already verified the immutable object's size,
-          // digest, MIME signature, and ownership. Submit those bounded bytes
-          // directly so private chat parsing does not depend on a second OSS
-          // hostname allowlist or expose a signed download URL to the parser.
-          const bytes = await this.objectStorage.getPrivate(job.objectKey);
+          // digest, MIME signature, and ownership. The parser accepts this
+          // server-minted URL only through its narrow OSS V4 trust boundary;
+          // arbitrary URL ingestion still requires the configured allowlist.
+          const url = await this.objectStorage.createPrivateDownloadUrl(
+            job.objectKey,
+            15 * 60
+          );
           return this.parser.submit({
-            bytes: new Uint8Array(bytes),
+            url,
+            urlTrust: "private-oss-v4",
             filename: job.filename,
             outputFormats: ["markdown", "visualLayoutInfo"],
             llmEnhancement: true

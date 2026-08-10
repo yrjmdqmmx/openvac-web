@@ -109,7 +109,16 @@ export class AlibabaDocMindParser implements DocumentParser {
       );
     }
     if (request.url) {
-      assertAllowedDocumentUrl(request.url, this.allowedDocumentHosts);
+      if (request.urlTrust === "private-oss-v4") {
+        assertTrustedPrivateOssUrl(request.url);
+      } else {
+        assertAllowedDocumentUrl(request.url, this.allowedDocumentHosts);
+      }
+    } else if (request.urlTrust) {
+      throw new ProviderResponseError(
+        PROVIDER_ID,
+        "DocMind URL trust requires a document URL."
+      );
     }
     const filename = resolveFilename(request);
 
@@ -422,6 +431,50 @@ export function assertAllowedDocumentUrl(
   value: string,
   allowedHosts: ReadonlySet<string>
 ): void {
+  const url = parseSafeHttpsDocumentUrl(value);
+  const hostname = normalizeDomain(url.hostname);
+  if (!hostname || !allowedHosts.has(hostname)) {
+    throw new ProviderResponseError(
+      PROVIDER_ID,
+      "DocMind document URL is outside the configured HTTPS host allowlist."
+    );
+  }
+}
+
+export function assertTrustedPrivateOssUrl(value: string): void {
+  const url = parseSafeHttpsDocumentUrl(value);
+  const hostname = normalizeDomain(url.hostname);
+  const isAlibabaOss =
+    /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.oss-[a-z0-9-]+\.aliyuncs\.com$/u.test(
+      hostname
+    ) && !hostname.includes("-internal.");
+  const queryKeys = new Set(
+    [...url.searchParams.keys()].map((key) => key.toLowerCase())
+  );
+  const expires = Number(url.searchParams.get("x-oss-expires"));
+  const hasV4Signature = [
+    "x-oss-credential",
+    "x-oss-date",
+    "x-oss-expires",
+    "x-oss-signature",
+    "x-oss-signature-version"
+  ].every((key) => queryKeys.has(key));
+  if (
+    !isAlibabaOss ||
+    !hasV4Signature ||
+    url.searchParams.get("x-oss-signature-version") !== "OSS4-HMAC-SHA256" ||
+    !Number.isInteger(expires) ||
+    expires < 1 ||
+    expires > 15 * 60
+  ) {
+    throw new ProviderResponseError(
+      PROVIDER_ID,
+      "DocMind private object URL is not a signed Alibaba OSS HTTPS URL."
+    );
+  }
+}
+
+function parseSafeHttpsDocumentUrl(value: string): URL {
   let url: URL;
   try {
     url = new URL(value);
@@ -432,20 +485,19 @@ export function assertAllowedDocumentUrl(
       { cause }
     );
   }
-  const hostname = normalizeDomain(url.hostname);
   if (
     url.protocol !== "https:" ||
     url.username ||
     url.password ||
     (url.port && url.port !== "443") ||
-    !hostname ||
-    !allowedHosts.has(hostname)
+    !normalizeDomain(url.hostname)
   ) {
     throw new ProviderResponseError(
       PROVIDER_ID,
       "DocMind document URL is outside the configured HTTPS host allowlist."
     );
   }
+  return url;
 }
 
 function extractLayoutText(layout: Record<string, unknown>): string {

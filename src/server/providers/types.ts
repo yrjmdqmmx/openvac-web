@@ -235,6 +235,12 @@ export interface EmbeddingProvider {
 
 export interface DocumentParseRequest {
   url?: string;
+  /**
+   * Set only when the URL was minted by the server's private object-storage
+   * provider. DocMind still validates the HTTPS URL, Alibaba OSS hostname,
+   * and V4 signature before accepting this trust boundary.
+   */
+  urlTrust?: "private-oss-v4";
   bytes?: Uint8Array;
   filename?: string;
   outputFormats?: Array<"markdown" | "visualLayoutInfo">;
