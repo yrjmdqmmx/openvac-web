@@ -400,7 +400,7 @@ function validateVisionBenchmark(value, commitSha, imageDigest) {
     report.protocol !== "openai-chat-completions" ||
     report.imageTransport !== "base64-data-url" ||
     report.defaultModel !== "qwen3.8-max" ||
-    report.defaultThinking !== false ||
+    report.defaultThinking !== true ||
     report.priceVersion !== "aliyun-standard-cn-beijing-2026-08-10" ||
     !Array.isArray(report.measurements) ||
     report.measurements.length !== 18
@@ -409,9 +409,12 @@ function validateVisionBenchmark(value, commitSha, imageDigest) {
   }
   validTimestamp(report.generatedAt, "Qwen visual benchmark generatedAt");
   const measurements = report.measurements.map((value) => record(value));
-  for (const model of ["qwen3.8-max", "qwen3-vl-plus"]) {
+  for (const [model, thinking] of [
+    ["qwen3.8-max", true],
+    ["qwen3-vl-plus", false]
+  ]) {
     const modelCases = measurements.filter(
-      (item) => item.model === model && item.thinking === false
+      (item) => item.model === model && item.thinking === thinking
     );
     const ids = modelCases.map((item) => item.caseId).sort();
     if (
@@ -420,6 +423,17 @@ function validateVisionBenchmark(value, commitSha, imageDigest) {
     ) {
       fail(`Qwen visual benchmark ${model} case set is incomplete`);
     }
+  }
+  const nonThinkingComparisonIds = measurements
+    .filter((item) => item.model === "qwen3.8-max" && item.thinking === false)
+    .map((item) => item.caseId)
+    .sort();
+  if (
+    nonThinkingComparisonIds.length !== 2 ||
+    nonThinkingComparisonIds[0] !== "pump_curve" ||
+    nonThinkingComparisonIds[1] !== "vacuum_schematic"
+  ) {
+    fail("Qwen visual benchmark non-thinking comparison set is invalid");
   }
   for (const item of measurements) {
     if (
@@ -456,7 +470,7 @@ function validateVisionBenchmark(value, commitSha, imageDigest) {
     !Number.isFinite(summary.currentEstimatedCostMicrosCny) ||
     !Number.isFinite(summary.baselineEstimatedCostMicrosCny) ||
     !Number.isFinite(summary.complexThinkingQualityDelta) ||
-    !["retain_non_thinking", "review_thinking_for_complex_diagrams"].includes(
+    !["retain_thinking", "review_reasoning_effort_for_cost"].includes(
       summary.recommendation
     )
   ) {

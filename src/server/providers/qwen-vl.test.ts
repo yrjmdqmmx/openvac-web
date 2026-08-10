@@ -74,7 +74,7 @@ describe("QwenVlProvider", () => {
     expect(sentBody).toMatchObject({
       model: "qwen3.8-max",
       max_completion_tokens: 2048,
-      reasoning_effort: "none",
+      reasoning_effort: "xhigh",
       preserve_thinking: false,
       vl_high_resolution_images: false,
       stream: false
@@ -209,7 +209,7 @@ describe("QwenVlProvider", () => {
     );
     expect(sentBody).toMatchObject({
       model: "qwen3.8-max",
-      reasoning_effort: "none",
+      reasoning_effort: "xhigh",
       preserve_thinking: false,
       stream: true,
       stream_options: { include_usage: true }
@@ -217,12 +217,12 @@ describe("QwenVlProvider", () => {
     expect(sentBody).not.toHaveProperty("enable_thinking");
   });
 
-  it("uses the documented qwen3.8 reasoning effort for audited thinking comparisons", async () => {
+  it("keeps non-thinking available only for audited comparisons", async () => {
     let sentBody: Record<string, unknown> = {};
     const provider = new QwenVlProvider({
       apiKey: "test-key",
       workspaceId: WORKSPACE_ID,
-      enableThinking: true,
+      enableThinking: false,
       fetch: vi.fn(async (_input, init) => {
         sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
         return Response.json({ choices: [{ message: { content: "ok" } }] });
@@ -235,7 +235,7 @@ describe("QwenVlProvider", () => {
     });
     expect(sentBody).toMatchObject({
       model: "qwen3.8-max",
-      reasoning_effort: "xhigh",
+      reasoning_effort: "none",
       preserve_thinking: false
     });
     expect(sentBody).not.toHaveProperty("enable_thinking");
@@ -247,6 +247,7 @@ describe("QwenVlProvider", () => {
       apiKey: "test-key",
       workspaceId: WORKSPACE_ID,
       model: "qwen3-vl-plus",
+      enableThinking: false,
       fetch: vi.fn(async (_input, init) => {
         sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
         return Response.json({ choices: [{ message: { content: "ok" } }] });

@@ -40,10 +40,12 @@ describe("Agent deployment contract", () => {
       expect(example, `${key} is missing from .env.example`).toMatch(
         new RegExp(`^${key}=`, "mu")
       );
-      expect(
-        compose,
-        `${key} is not passed to application containers`
-      ).toContain(`  ${key}: \${${key}:-`);
+      if (key !== "QWEN_VL_ENABLE_THINKING") {
+        expect(
+          compose,
+          `${key} is not passed to application containers`
+        ).toContain(`  ${key}: \${${key}:-`);
+      }
     }
 
     expect(example).toContain("AGENT_AUTO_TIMEOUT_MS=120000");
@@ -56,10 +58,8 @@ describe("Agent deployment contract", () => {
     );
     expect(example).toContain("QWEN_VL_MODEL=qwen3.8-max");
     expect(compose).toContain("QWEN_VL_MODEL: ${QWEN_VL_MODEL:-qwen3.8-max}");
-    expect(example).toContain("QWEN_VL_ENABLE_THINKING=false");
-    expect(compose).toContain(
-      "QWEN_VL_ENABLE_THINKING: ${QWEN_VL_ENABLE_THINKING:-false}"
-    );
+    expect(example).toContain("QWEN_VL_ENABLE_THINKING=true");
+    expect(compose).toContain('QWEN_VL_ENABLE_THINKING: "true"');
     expect(example).toContain("QWEN_VL_BASE_URL=");
     expect(example).toContain("QWEN_VL_ALLOWED_HOSTS=");
     expect(compose).toContain("QWEN_VL_BASE_URL: ${QWEN_VL_BASE_URL:-}");

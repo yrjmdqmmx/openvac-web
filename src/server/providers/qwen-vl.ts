@@ -112,7 +112,7 @@ export class QwenVlProvider implements VisionProvider {
     this.fetchFn = options.fetch ?? fetch;
     this.enableThinking =
       options.enableThinking ??
-      booleanEnvironment("QWEN_VL_ENABLE_THINKING", false);
+      booleanEnvironment("QWEN_VL_ENABLE_THINKING", true);
     this.highResolutionImages =
       options.highResolutionImages ??
       booleanEnvironment("QWEN_VL_HIGH_RESOLUTION_IMAGES", false);

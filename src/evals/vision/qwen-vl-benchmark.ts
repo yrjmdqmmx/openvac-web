@@ -47,7 +47,7 @@ export const qwenVisionBenchmarkSchema = z
     protocol: z.literal("openai-chat-completions"),
     imageTransport: z.literal("base64-data-url"),
     defaultModel: z.literal("qwen3.8-max"),
-    defaultThinking: z.literal(false),
+    defaultThinking: z.literal(true),
     priceVersion: z.literal("aliyun-standard-cn-beijing-2026-08-10"),
     measurements: z
       .array(qwenVisionBenchmarkMeasurementSchema)
@@ -66,8 +66,8 @@ export const qwenVisionBenchmarkSchema = z
         baselineEstimatedCostMicrosCny: z.number().int().nonnegative(),
         complexThinkingQualityDelta: z.number().int().min(-100).max(100),
         recommendation: z.enum([
-          "retain_non_thinking",
-          "review_thinking_for_complex_diagrams"
+          "retain_thinking",
+          "review_reasoning_effort_for_cost"
         ]),
         passed: z.literal(true)
       })
@@ -76,34 +76,46 @@ export const qwenVisionBenchmarkSchema = z
   .strict()
   .superRefine((report, context) => {
     const expected = new Set(QWEN_VISION_BENCHMARK_CASE_IDS);
-    for (const model of ["qwen3.8-max", "qwen3-vl-plus"] as const) {
-      const ids = report.measurements
-        .filter((item) => item.model === model && item.thinking === false)
-        .map((item) => item.caseId);
-      if (ids.length !== expected.size || new Set(ids).size !== expected.size) {
-        context.addIssue({
-          code: "custom",
-          message: `${model} must contain every non-thinking visual case exactly once.`
-        });
-      }
-      if (ids.some((id) => !expected.has(id))) {
-        context.addIssue({
-          code: "custom",
-          message: `${model} case set is invalid.`
-        });
-      }
-    }
-    const thinkingIds = report.measurements
+    const currentIds = report.measurements
       .filter((item) => item.model === "qwen3.8-max" && item.thinking)
+      .map((item) => item.caseId);
+    if (
+      currentIds.length !== expected.size ||
+      new Set(currentIds).size !== expected.size ||
+      currentIds.some((id) => !expected.has(id))
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "qwen3.8-max must contain every thinking visual case exactly once."
+      });
+    }
+    const baselineIds = report.measurements
+      .filter((item) => item.model === "qwen3-vl-plus" && !item.thinking)
+      .map((item) => item.caseId);
+    if (
+      baselineIds.length !== expected.size ||
+      new Set(baselineIds).size !== expected.size ||
+      baselineIds.some((id) => !expected.has(id))
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "qwen3-vl-plus must contain every non-thinking visual case exactly once."
+      });
+    }
+    const nonThinkingIds = report.measurements
+      .filter((item) => item.model === "qwen3.8-max" && !item.thinking)
       .map((item) => item.caseId)
       .sort();
     if (
-      JSON.stringify(thinkingIds) !==
+      JSON.stringify(nonThinkingIds) !==
       JSON.stringify([...QWEN_VISION_COMPLEX_CASE_IDS].sort())
     ) {
       context.addIssue({
         code: "custom",
-        message: "Thinking comparison must contain the exact complex case set."
+        message:
+          "Non-thinking comparison must contain the exact complex case set."
       });
     }
   });

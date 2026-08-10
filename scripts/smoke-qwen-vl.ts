@@ -13,7 +13,8 @@ import {
   QwenVlProvider,
   type QwenVlTelemetryResult,
   type VisionImage,
-  type VisionRequest
+  type VisionRequest,
+  type VisionResult
 } from "../src/server/providers";
 import {
   classifyQwenVlSmokeFailure,
@@ -53,7 +54,11 @@ async function main(): Promise<void> {
 }
 
 async function contractSmoke(): Promise<void> {
-  const provider = new QwenVlProvider();
+  const provider = new QwenVlProvider({
+    model: CURRENT_MODEL,
+    enableThinking: true,
+    highResolutionImages: false
+  });
   if (provider.model !== CURRENT_MODEL) {
     throw new QwenVlSmokeFailure("CONFIG_MISSING");
   }
@@ -61,33 +66,86 @@ async function contractSmoke(): Promise<void> {
   const measurements: QwenVisionBenchmarkMeasurement[] = [];
   const visualNonce = String(randomInt(10_000_000, 100_000_000));
   const image = await renderVisualNonce(visualNonce);
-  const result = await analyzeWithOneRetry(provider, {
-    prompt: "读取图片中清晰显示的8位校验数字。只输出数字。",
-    images: [{ mimeType: "image/png", bytes: new Uint8Array(image) }],
-    maxOutputTokens: 128
-  });
-  const noncePassed = recognizesVisualNonce(result.text, visualNonce);
-  outcomes.push({
-    caseId: "visual_nonce",
-    model: provider.model,
-    thinking: false,
-    passed: noncePassed,
-    ...(!noncePassed ? { code: "RESPONSE_INVALID" } : {})
-  });
+  const nonceProbes = [
+    {
+      probeId: "current_thinking_default",
+      provider,
+      thinking: true,
+      highResolution: false,
+      transport: "non_streaming",
+      required: true
+    },
+    {
+      probeId: "current_thinking_high_resolution",
+      provider: new QwenVlProvider({
+        model: CURRENT_MODEL,
+        enableThinking: true,
+        highResolutionImages: true
+      }),
+      thinking: true,
+      highResolution: true,
+      transport: "streaming",
+      required: false
+    },
+    {
+      probeId: "current_non_thinking_default",
+      provider: new QwenVlProvider({
+        model: CURRENT_MODEL,
+        enableThinking: false,
+        highResolutionImages: false
+      }),
+      thinking: false,
+      highResolution: false,
+      transport: "streaming",
+      required: false
+    },
+    {
+      probeId: "baseline_non_thinking_default",
+      provider: new QwenVlProvider({
+        model: BASELINE_MODEL,
+        enableThinking: false,
+        highResolutionImages: false
+      }),
+      thinking: false,
+      highResolution: false,
+      transport: "streaming",
+      required: false
+    }
+  ] as const;
+  for (const probe of nonceProbes) {
+    outcomes.push(
+      await measureVisualNonce(
+        probe.provider,
+        image,
+        visualNonce,
+        probe.probeId,
+        probe.thinking,
+        probe.highResolution,
+        probe.transport,
+        probe.required
+      )
+    );
+  }
+  const noncePassed = outcomes.some(
+    (outcome) =>
+      outcome.probeId === "current_thinking_default" && outcome.passed
+  );
 
   for (const testCase of await benchmarkCases()) {
     try {
-      const measurement = await measure(provider, testCase, false);
+      const measurement = await measure(provider, testCase, true);
       measurements.push(measurement);
       outcomes.push({
         ...measurement,
+        required: true,
         passed: measurement.qualityScore >= 75
       });
     } catch (error) {
       outcomes.push({
         caseId: testCase.id,
         model: provider.model,
-        thinking: false,
+        thinking: true,
+        required: true,
         passed: false,
         code: classifyQwenVlSmokeFailure(error).code
       });
@@ -102,14 +160,16 @@ async function contractSmoke(): Promise<void> {
       : 0;
   const passed =
     noncePassed &&
-    outcomes.every((outcome) => outcome.passed) &&
+    outcomes
+      .filter((outcome) => outcome.required)
+      .every((outcome) => outcome.passed) &&
     currentQualityScore >= 85;
   console.log(
     JSON.stringify({
       schemaVersion: "openvac.qwen-vl-preflight.v1",
       model: provider.model,
       protocol: provider.capabilities.protocol,
-      thinking: false,
+      thinking: true,
       currentQualityScore,
       passed,
       outcomes
@@ -123,6 +183,96 @@ async function contractSmoke(): Promise<void> {
   }
 }
 
+async function measureVisualNonce(
+  provider: QwenVlProvider,
+  image: Buffer,
+  visualNonce: string,
+  probeId: string,
+  thinking: boolean,
+  highResolution: boolean,
+  transport: "non_streaming" | "streaming",
+  required: boolean
+): Promise<Record<string, string | number | boolean>> {
+  try {
+    const request: VisionRequest = {
+      prompt: "读取图片中清晰显示的8位校验数字。只输出数字。",
+      images: [{ mimeType: "image/png", bytes: new Uint8Array(image) }],
+      maxOutputTokens: 128
+    };
+    const result =
+      transport === "non_streaming"
+        ? await analyzeWithOneRetry(provider, request)
+        : await telemetryAttempt(provider, request);
+    const usage = requireUsage(result);
+    const passed = recognizesVisualNonce(result.text, visualNonce);
+    return {
+      caseId: "visual_nonce",
+      probeId,
+      model: provider.model,
+      thinking,
+      highResolution,
+      transport,
+      required,
+      passed,
+      ...(transport === "streaming"
+        ? {
+            firstTokenLatencyMs: (result as QwenVlTelemetryResult)
+              .firstTokenLatencyMs,
+            totalDurationMs: (result as QwenVlTelemetryResult).totalDurationMs
+          }
+        : {}),
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      totalTokens: usage.totalTokens,
+      estimatedCostMicrosCny: estimatedCostMicrosCny(
+        provider.model,
+        usage.inputTokens,
+        usage.outputTokens
+      ),
+      ...(!passed ? { code: "RESPONSE_INVALID" } : {})
+    };
+  } catch (error) {
+    return {
+      caseId: "visual_nonce",
+      probeId,
+      model: provider.model,
+      thinking,
+      highResolution,
+      transport,
+      required,
+      passed: false,
+      code: classifyQwenVlSmokeFailure(error).code
+    };
+  }
+}
+
+async function analyzeWithOneRetry(
+  provider: QwenVlProvider,
+  request: VisionRequest
+): Promise<VisionResult> {
+  try {
+    return await analyzeAttempt(provider, request);
+  } catch (error) {
+    if (!(error instanceof ProviderError) || !error.retryable) throw error;
+  }
+  return analyzeAttempt(provider, request);
+}
+
+async function analyzeAttempt(
+  provider: QwenVlProvider,
+  request: VisionRequest
+): Promise<VisionResult> {
+  const signal = AbortSignal.timeout(90_000);
+  try {
+    return await provider.analyze({ ...request, signal });
+  } catch (error) {
+    if (signal.aborted) {
+      throw new ProviderTimeoutError(provider.id, "Vision smoke timed out.");
+    }
+    throw error;
+  }
+}
+
 async function benchmarkSmoke(): Promise<void> {
   const outputPath = required("QWEN_VL_BENCHMARK_OUTPUT");
   const gitSha = required("AGENT_V3_SMOKE_GIT_SHA");
@@ -130,38 +280,51 @@ async function benchmarkSmoke(): Promise<void> {
   const cases = await benchmarkCases();
   const measurements: QwenVisionBenchmarkMeasurement[] = [];
 
-  for (const model of [CURRENT_MODEL, BASELINE_MODEL] as const) {
-    const provider = new QwenVlProvider({ model, enableThinking: false });
-    for (const testCase of cases) {
-      measurements.push(await measure(provider, testCase, false));
-    }
-  }
-  const thinkingProvider = new QwenVlProvider({
+  const currentProvider = new QwenVlProvider({
     model: CURRENT_MODEL,
     enableThinking: true
+  });
+  for (const testCase of cases) {
+    measurements.push(await measure(currentProvider, testCase, true));
+  }
+  const baselineProvider = new QwenVlProvider({
+    model: BASELINE_MODEL,
+    enableThinking: false
+  });
+  for (const testCase of cases) {
+    measurements.push(await measure(baselineProvider, testCase, false));
+  }
+  const nonThinkingProvider = new QwenVlProvider({
+    model: CURRENT_MODEL,
+    enableThinking: false
   });
   for (const id of QWEN_VISION_COMPLEX_CASE_IDS) {
     const testCase = cases.find((item) => item.id === id);
     if (!testCase) throw new Error("Complex visual benchmark case is missing.");
-    measurements.push(await measure(thinkingProvider, testCase, true));
+    measurements.push(await measure(nonThinkingProvider, testCase, false));
   }
 
   const current = measurements.filter(
-    (item) => item.model === CURRENT_MODEL && !item.thinking
+    (item) => item.model === CURRENT_MODEL && item.thinking
   );
   const baseline = measurements.filter(
     (item) => item.model === BASELINE_MODEL && !item.thinking
   );
-  const thinking = measurements.filter(
-    (item) => item.model === CURRENT_MODEL && item.thinking
-  );
-  const complexNonThinking = current.filter((item) =>
+  const complexThinking = current.filter((item) =>
     QWEN_VISION_COMPLEX_CASE_IDS.includes(
       item.caseId as (typeof QWEN_VISION_COMPLEX_CASE_IDS)[number]
     )
   );
+  const complexNonThinking = measurements.filter(
+    (item) =>
+      item.model === CURRENT_MODEL &&
+      !item.thinking &&
+      QWEN_VISION_COMPLEX_CASE_IDS.includes(
+        item.caseId as (typeof QWEN_VISION_COMPLEX_CASE_IDS)[number]
+      )
+  );
   const complexThinkingQualityDelta =
-    average(thinking.map((item) => item.qualityScore)) -
+    average(complexThinking.map((item) => item.qualityScore)) -
     average(complexNonThinking.map((item) => item.qualityScore));
   const currentQualityScore = average(current.map((item) => item.qualityScore));
   if (
@@ -181,7 +344,7 @@ async function benchmarkSmoke(): Promise<void> {
     protocol: "openai-chat-completions",
     imageTransport: "base64-data-url",
     defaultModel: CURRENT_MODEL,
-    defaultThinking: false,
+    defaultThinking: true,
     priceVersion: "aliyun-standard-cn-beijing-2026-08-10",
     measurements,
     summary: {
@@ -208,8 +371,8 @@ async function benchmarkSmoke(): Promise<void> {
       complexThinkingQualityDelta,
       recommendation:
         complexThinkingQualityDelta >= 10
-          ? "review_thinking_for_complex_diagrams"
-          : "retain_non_thinking",
+          ? "retain_thinking"
+          : "review_reasoning_effort_for_cost",
       passed: true
     }
   });
@@ -224,7 +387,7 @@ async function benchmarkSmoke(): Promise<void> {
       caseCount: QWEN_VISION_BENCHMARK_CASE_IDS.length,
       model: CURRENT_MODEL,
       baselineModel: BASELINE_MODEL,
-      defaultThinking: false
+      defaultThinking: true
     })
   );
 }
@@ -419,33 +582,6 @@ function table(): string {
     .join("")}`;
 }
 
-async function analyzeWithOneRetry(
-  provider: QwenVlProvider,
-  request: VisionRequest
-) {
-  try {
-    return await analyzeAttempt(provider, request);
-  } catch (error) {
-    if (!(error instanceof ProviderError) || !error.retryable) throw error;
-  }
-  return analyzeAttempt(provider, request);
-}
-
-async function analyzeAttempt(
-  provider: QwenVlProvider,
-  request: VisionRequest
-) {
-  const signal = AbortSignal.timeout(90_000);
-  try {
-    return await provider.analyze({ ...request, signal });
-  } catch (error) {
-    if (signal.aborted) {
-      throw new ProviderTimeoutError(provider.id, "Vision smoke timed out.");
-    }
-    throw error;
-  }
-}
-
 async function telemetryAttempt(
   provider: QwenVlProvider,
   request: VisionRequest
@@ -493,7 +629,7 @@ function normalize(value: string): string {
   return value.toLowerCase().replace(/[^\p{L}\p{N}.]+/gu, "");
 }
 
-function requireUsage(result: QwenVlTelemetryResult): {
+function requireUsage(result: Pick<VisionResult, "usage">): {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
