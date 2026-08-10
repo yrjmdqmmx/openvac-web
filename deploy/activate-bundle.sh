@@ -103,6 +103,16 @@ activation_child_pid=""
 activation_heartbeat_pid=""
 activation_child_starting=false
 activation_signal_pending=false
+activation_heartbeat_interval=30
+if [ "$activation_is_test" = true ] &&
+  [ -n "${OPENVAC_ACTIVATION_TEST_HEARTBEAT_INTERVAL:-}" ]; then
+  case "$OPENVAC_ACTIVATION_TEST_HEARTBEAT_INTERVAL" in
+    *[!0-9]*|"") fail "test heartbeat interval must be a positive integer" ;;
+  esac
+  [ "$OPENVAC_ACTIVATION_TEST_HEARTBEAT_INTERVAL" -ge 1 ] ||
+    fail "test heartbeat interval must be a positive integer"
+  activation_heartbeat_interval="$OPENVAC_ACTIVATION_TEST_HEARTBEAT_INTERVAL"
+fi
 stop_activation_heartbeat() {
   if [ -n "$activation_heartbeat_pid" ]; then
     kill -TERM "$activation_heartbeat_pid" >/dev/null 2>&1 || true
@@ -167,7 +177,7 @@ recover_stale_staging_activation() {
     *[!0-9:]*) return 1 ;;
   esac
   lock_age_seconds=$((now_epoch - lock_mtime))
-  [ "$lock_age_seconds" -ge 1800 ] || return 1
+  [ "$lock_age_seconds" -ge 3600 ] || return 1
 
   current_uid="$(id -u)" || return 1
   case "$current_uid" in
@@ -223,7 +233,7 @@ recover_stale_staging_activation() {
     *[!0-9:]*) return 1 ;;
   esac
   confirmed_age_seconds=$((confirmed_now - confirmed_mtime))
-  [ "$confirmed_age_seconds" -ge 1800 ] || return 1
+  [ "$confirmed_age_seconds" -ge 3600 ] || return 1
 
   if [ -n "$stale_child_pid" ]; then
     [ "$wrapper_process_count" -eq 1 ] || return 1
@@ -344,6 +354,7 @@ fi
 if [ "$activation_is_test" != true ] ||
   [ "${OPENVAC_ACTIVATION_TEST_DISABLE_HEARTBEAT:-}" != true ]; then
   (
+    exec </dev/null >/dev/null 2>&1
     heartbeat_sleep_pid=""
     stop_heartbeat_sleep() {
       if [ -n "$heartbeat_sleep_pid" ]; then
@@ -354,8 +365,11 @@ if [ "$activation_is_test" != true ] ||
     }
     trap stop_heartbeat_sleep HUP INT TERM
     while kill -0 "$activation_child_pid" >/dev/null 2>&1; do
+      heartbeat_activation_id=""
+      IFS= read -r heartbeat_activation_id <"$activation_lock_owner_file" || exit 0
+      [ "$heartbeat_activation_id" = "$activation_id" ] || exit 0
       touch "$activation_lock_owner_file" || exit 0
-      sleep 30 &
+      sleep "$activation_heartbeat_interval" &
       heartbeat_sleep_pid="$!"
       wait "$heartbeat_sleep_pid" || exit 0
       heartbeat_sleep_pid=""
