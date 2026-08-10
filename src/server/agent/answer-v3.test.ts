@@ -5,6 +5,7 @@ import type { AnswerV3 } from "@/types/chat-v3";
 import {
   ANSWER_V3_JSON_SCHEMA,
   answerV3JsonSchemaForRisk,
+  buildDeterministicArtifactAnswerV3,
   buildDeterministicAttachmentScopeAnswerV3,
   buildDeterministicCalculationAnswerV3,
   buildDeterministicSafeAnswerV3,
@@ -95,6 +96,44 @@ describe("Answer V3", () => {
     expect(renderAnswerV3(answer, new Map([["E2", 3]]))).toBe(
       "## 结论\n\n关键结论。 [3]\n\n制造商资料\n\n检查表"
     );
+  });
+
+  it("builds a server-owned final answer for a ready artifact", () => {
+    const answer = buildDeterministicArtifactAnswerV3(
+      {
+        type: "artifact",
+        artifactId: "00000000-0000-4000-8000-000000000001",
+        kind: "diagnosis_report",
+        title: "真空系统诊断报告",
+        formats: ["md", "docx", "pdf", "csv"],
+        status: "ready"
+      },
+      "medium",
+      ["E1"]
+    );
+    expect(
+      validateAnswerV3({
+        value: answer,
+        riskLevel: "medium",
+        question: "生成中文诊断报告。",
+        knownEvidenceIds: ["E1"],
+        knownArtifactIds: ["00000000-0000-4000-8000-000000000001"]
+      }).valid
+    ).toBe(true);
+    expect(renderAnswerV3(answer)).toContain("产物包含诊断结论和检查参数");
+    expect(() =>
+      buildDeterministicArtifactAnswerV3(
+        {
+          type: "artifact",
+          artifactId: "00000000-0000-4000-8000-000000000001",
+          kind: "diagnosis_report",
+          title: "失败产物",
+          formats: ["pdf"],
+          status: "failed"
+        },
+        "medium"
+      )
+    ).toThrow("ready artifact");
   });
 
   it("accepts a simple low-risk direct answer and rejects direct complex answers", () => {
