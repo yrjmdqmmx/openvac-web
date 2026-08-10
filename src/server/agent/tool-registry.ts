@@ -593,7 +593,7 @@ function attachmentDefinitions(): ResponsesFunctionTool[] {
     {
       type: "function",
       name: "search_attachment",
-      description: "在本轮私有文档附件的 DocMind 分块中搜索相关内容。",
+      description: "在本轮私有文档附件的解析分块中搜索相关内容。",
       parameters: {
         type: "object",
         additionalProperties: false,
