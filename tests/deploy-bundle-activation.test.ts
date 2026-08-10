@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync
 } from "node:fs";
@@ -218,6 +219,20 @@ async function waitForPath(path: string, timeoutMs = 5000): Promise<void> {
   while (!existsSync(path)) {
     if (Date.now() >= deadline) {
       throw new Error(`Timed out waiting for ${path}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+async function waitForMtimeAfter(
+  path: string,
+  previousMtimeMs: number,
+  timeoutMs = 5000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (statSync(path).mtimeMs <= previousMtimeMs) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for ${path} mtime to advance`);
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -590,7 +605,7 @@ describe("deployment bundle activation", () => {
       mkdirSync(lockDirectory, { mode: 0o700 });
       const ownerFile = join(lockDirectory, "owner");
       write(ownerFile, `${"8".repeat(40)}-${"9".repeat(32)}\n`);
-      const expiredAt = new Date(Date.now() - 31 * 60 * 1000);
+      const expiredAt = new Date(Date.now() - 61 * 60 * 1000);
       utimesSync(ownerFile, expiredAt, expiredAt);
       const bundle = createBundle(root);
 
@@ -629,6 +644,49 @@ describe("deployment bundle activation", () => {
     );
   });
 
+  it("keeps a live activation lease fresh and blocks a concurrent activation", async () => {
+    const root = temporaryRoot();
+    const deployRoot = join(root, "host");
+    mkdirSync(deployRoot);
+    write(join(deployRoot, ".env"), "HOST_SECRET=preserved\n");
+    const blockingBundle = createBundle(root, {
+      blockDeployment: true,
+      bundleName: "heartbeat-blocking-bundle"
+    });
+    const competingBundle = createBundle(root, {
+      bundleName: "heartbeat-competing-bundle"
+    });
+    const blocked = spawnActivation(
+      deployRoot,
+      blockingBundle,
+      "4".repeat(40),
+      { OPENVAC_ACTIVATION_TEST_HEARTBEAT_INTERVAL: "1" }
+    );
+
+    try {
+      await waitForPath(join(deployRoot, "deploy-child-ready"));
+      const ownerFile = join(deployRoot, ".activation-lock", "owner");
+      const expiredAt = new Date(Date.now() - 61 * 60 * 1000);
+      utimesSync(ownerFile, expiredAt, expiredAt);
+      const expiredMtimeMs = statSync(ownerFile).mtimeMs;
+      await waitForMtimeAfter(ownerFile, expiredMtimeMs);
+
+      const competing = runActivation(
+        deployRoot,
+        competingBundle,
+        "5".repeat(40)
+      );
+      expect(competing.status).toBe(64);
+      expect(competing.stderr).toContain("activation is already in progress");
+      expect(blocked.exitCode).toBeNull();
+    } finally {
+      if (blocked.exitCode === null) {
+        blocked.kill("SIGTERM");
+        await waitForChild(blocked);
+      }
+    }
+  }, 10_000);
+
   it.skipIf(process.platform !== "linux")(
     "terminates only the exact expired staging activation child before reacquiring its lock",
     async () => {
@@ -655,7 +713,7 @@ describe("deployment bundle activation", () => {
       try {
         await waitForPath(join(deployRoot, "deploy-child-ready"));
         const ownerFile = join(deployRoot, ".activation-lock", "owner");
-        const expiredAt = new Date(Date.now() - 31 * 60 * 1000);
+        const expiredAt = new Date(Date.now() - 61 * 60 * 1000);
         utimesSync(ownerFile, expiredAt, expiredAt);
 
         const recovered = runActivation(
