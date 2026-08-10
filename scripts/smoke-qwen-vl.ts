@@ -1,5 +1,6 @@
 import { randomInt } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 
 import {
   QWEN_VISION_BENCHMARK_CASE_IDS,
@@ -449,46 +450,37 @@ async function benchmarkCases(): Promise<BenchmarkCase[]> {
     mimeType: "image/png",
     bytes: new Uint8Array(await renderVisualFixture(body))
   });
+  const fixedImage = async (file: string): Promise<VisionImage> => ({
+    mimeType: "image/png",
+    bytes: new Uint8Array(
+      await readFile(
+        resolve(process.cwd(), "scripts", "fixtures", "qwen-vl-fixed", file)
+      )
+    )
+  });
   return [
     {
       id: "device_identification",
       prompt: jsonPrompt(["device", "inlet"]),
-      images: [
-        await image(
-          panel("DEVICE IDENTIFICATION", [
-            "TURBOMOLECULAR PUMP",
-            "INLET: DN100 ISO-K"
-          ])
-        )
-      ],
+      images: [await fixedImage("device-identification.png")],
       expected: { device: "turbomolecular pump", inlet: "dn100" }
     },
     {
       id: "nameplate_ocr",
       prompt: jsonPrompt(["model", "serial", "speed_l_s"]),
-      images: [
-        await image(
-          panel("VACUUM PUMP NAMEPLATE", [
-            "MODEL: OVP-160",
-            "S/N: OV20260810",
-            "SPEED: 160 L/s"
-          ])
-        )
-      ],
+      images: [await fixedImage("nameplate-ocr.png")],
       expected: { model: "ovp-160", serial: "ov20260810", speed_l_s: 160 }
     },
     {
       id: "gauge_reading",
       prompt: jsonPrompt(["reading", "unit"]),
-      images: [
-        await image(panel("VACUUM GAUGE", ["PRESSURE", "2.50 E-3", "Pa"]))
-      ],
+      images: [await fixedImage("gauge-reading.png")],
       expected: { reading: 0.0025, unit: "pa" }
     },
     {
       id: "pump_curve",
       prompt: jsonPrompt(["pressure_pa", "speed_l_s", "trend"]),
-      images: [await image(pumpCurve())],
+      images: [await fixedImage("pump-curve.png")],
       expected: { pressure_pa: 100, speed_l_s: 120, trend: "decreases" }
     },
     {
@@ -543,10 +535,6 @@ function panel(title: string, lines: string[], color = "#f8fafc"): string {
         `<text x="90" y="${205 + index * 78}" font-family="Arial" font-size="46" font-weight="600">${line}</text>`
     )
     .join("")}`;
-}
-
-function pumpCurve(): string {
-  return `<rect width="960" height="540" fill="#fff"/><text x="70" y="55" font-family="Arial" font-size="32" font-weight="700">PUMPING SPEED CURVE</text><line x1="100" y1="450" x2="880" y2="450" stroke="#111" stroke-width="4"/><line x1="100" y1="450" x2="100" y2="90" stroke="#111" stroke-width="4"/><text x="710" y="505" font-family="Arial" font-size="28">Pressure (Pa)</text><text x="15" y="105" font-family="Arial" font-size="24">Speed (L/s)</text><polyline points="150,130 350,160 550,230 780,360" fill="none" stroke="#2563eb" stroke-width="8"/><circle cx="550" cy="230" r="13" fill="#dc2626"/><text x="575" y="220" font-family="Arial" font-size="30" font-weight="700">100 Pa = 120 L/s</text><text x="150" y="485" font-family="Arial" font-size="24">1</text><text x="535" y="485" font-family="Arial" font-size="24">100</text>`;
 }
 
 function schematic(): string {

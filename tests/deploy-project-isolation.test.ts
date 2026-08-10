@@ -12,6 +12,7 @@ describe("web-only deployment and R0 rollback compatibility", () => {
   const dockerfile = source("Dockerfile");
   const dockerignore = source(".dockerignore");
   const ci = source(".github/workflows/ci.yml");
+  const qwenSmoke = source("scripts/smoke-qwen-vl.ts");
 
   it("maps production and staging to distinct explicit Compose projects", () => {
     expect(release).toContain("compose_project=openvac-production");
@@ -160,6 +161,23 @@ describe("web-only deployment and R0 rollback compatibility", () => {
       "!public/semacad/semacad-liquid-metal-poster.avif"
     );
     expect(ci).toContain("--target semacad-context-check");
+  });
+
+  it("installs a discoverable font for deterministic visual fixtures", () => {
+    expect(dockerfile).toContain("apk add --no-cache font-dejavu");
+    expect(dockerfile).toContain("fc-cache -f >/dev/null");
+    expect(dockerignore).toContain("!scripts/fixtures/qwen-vl-fixed/*.png");
+    expect(dockerfile).toContain(
+      "COPY --from=builder --chown=nextjs:nodejs /app/scripts ./scripts"
+    );
+    for (const file of [
+      "device-identification.png",
+      "nameplate-ocr.png",
+      "gauge-reading.png",
+      "pump-curve.png"
+    ]) {
+      expect(qwenSmoke).toContain(`fixedImage("${file}")`);
+    }
   });
 
   it("ships a checksum-verified, secret-free deployment bundle", () => {

@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "openvac.qwen-vl-fixed-fixtures.v1",
+  "baseGenerator": "openai-image-gen",
+  "exactOverlay": "sharp-svg",
+  "assets": [
+    {
+      "id": "device_identification",
+      "file": "device-identification.png",
+      "sourceFile": "device-identification-base.png",
+      "sourceSha256": "1756a516f3729a34cedcc73dae16265b4d2eb762b32c62b63eeb73724d2159bb",
+      "width": 1040,
+      "height": 540,
+      "sha256": "b20de898a01dc7d59ece76346dc2ddbbea57ba2a679761b0b79257211763d53c",
+      "expected": {
+        "device": "turbomolecular pump",
+        "inlet": "dn100"
+      }
+    },
+    {
+      "id": "nameplate_ocr",
+      "file": "nameplate-ocr.png",
+      "sourceFile": "nameplate-base.png",
+      "sourceSha256": "1d6efa2ad6238a668092663f8e7614ad12258801aa03d6f595485c7f6f888fd2",
+      "width": 1040,
+      "height": 540,
+      "sha256": "f71d14ac0b8ac54823e1b558a7dcf7392a0764278874b90e9abd7d3233381327",
+      "expected": {
+        "model": "ovp-160",
+        "serial": "ov20260810",
+        "speed_l_s": 160
+      }
+    },
+    {
+      "id": "gauge_reading",
+      "file": "gauge-reading.png",
+      "sourceFile": "gauge-base.png",
+      "sourceSha256": "15f3dba31b47bf3153b0f1a9d1b8bffd9790b99c4b5fe8965db86dcc7326446d",
+      "width": 1040,
+      "height": 540,
+      "sha256": "53ce2c6ebcaf464b965692783c20c30250997e46081f7936fa9bd42756dc3835",
+      "expected": {
+        "reading": 0.0025,
+        "unit": "pa"
+      }
+    },
+    {
+      "id": "pump_curve",
+      "file": "pump-curve.png",
+      "sourceFile": "pump-curve-base.png",
+      "sourceSha256": "77cd74c891615331b05ccce9eeae3c468ff63d0aa5b40aafd6b2a6017ed71818",
+      "width": 1040,
+      "height": 540,
+      "sha256": "6f04cbeba9775791be608cb359565627f5d01a25efb4e88cc538c16f677097b3",
+      "expected": {
+        "pressure_pa": 100,
+        "speed_l_s": 120,
+        "trend": "decreases"
+      }
+    }
+  ]
+}
