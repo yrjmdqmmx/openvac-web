@@ -65,3 +65,12 @@ export function publicQwenVlSmokeFailure(
       error instanceof QwenVlSmokeFailure ? error.code : "UNEXPECTED_FAILURE"
   };
 }
+
+export function recognizesPascalUnit(value: string): boolean {
+  const compact = value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  return (
+    compact.includes("pa") ||
+    compact.includes("pascal") ||
+    compact.includes("帕")
+  );
+}

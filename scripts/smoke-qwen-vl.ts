@@ -18,7 +18,9 @@ import {
 } from "../src/server/providers";
 import {
   classifyQwenVlSmokeFailure,
-  publicQwenVlSmokeFailure
+  publicQwenVlSmokeFailure,
+  QwenVlSmokeFailure,
+  recognizesPascalUnit
 } from "./smoke-qwen-vl-boundary";
 
 type BenchmarkCase = {
@@ -53,9 +55,7 @@ async function main(): Promise<void> {
 async function contractSmoke(): Promise<void> {
   const provider = new QwenVlProvider();
   if (provider.model !== CURRENT_MODEL) {
-    throw new Error(
-      "Qwen-VL configured model does not match the release contract."
-    );
+    throw new QwenVlSmokeFailure("CONFIG_MISSING");
   }
   const image = await renderSvg(
     '<rect width="640" height="320" fill="#f8fafc"/><text x="170" y="190" font-family="Arial" font-size="96" font-weight="700">Pa</text>'
@@ -65,10 +65,8 @@ async function contractSmoke(): Promise<void> {
     images: [{ mimeType: "image/png", bytes: new Uint8Array(image) }],
     maxOutputTokens: 128
   });
-  if (!normalize(result.text).includes("pa")) {
-    throw new Error(
-      "Vision contract smoke did not recognize the expected unit."
-    );
+  if (!recognizesPascalUnit(result.text)) {
+    throw new QwenVlSmokeFailure("RESPONSE_INVALID");
   }
   console.log(
     JSON.stringify({
@@ -126,9 +124,7 @@ async function benchmarkSmoke(): Promise<void> {
     current.some((item) => item.qualityScore < 75) ||
     currentQualityScore < 85
   ) {
-    throw new Error(
-      "Qwen3.8 visual benchmark did not meet quality thresholds."
-    );
+    throw new QwenVlSmokeFailure("RESPONSE_INVALID");
   }
 
   const report = qwenVisionBenchmarkSchema.parse({
@@ -440,9 +436,14 @@ function parseModelObject(text: string): Record<string, unknown> {
     .trim()
     .replace(/^```(?:json)?\s*/iu, "")
     .replace(/\s*```$/u, "");
-  const parsed: unknown = JSON.parse(normalized);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(normalized);
+  } catch {
+    throw new QwenVlSmokeFailure("RESPONSE_INVALID");
+  }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Vision benchmark response was not a JSON object.");
+    throw new QwenVlSmokeFailure("RESPONSE_INVALID");
   }
   return parsed as Record<string, unknown>;
 }
@@ -478,7 +479,7 @@ function requireUsage(result: QwenVlTelemetryResult): {
     !Number.isSafeInteger(totalTokens) ||
     totalTokens !== inputTokens + outputTokens
   ) {
-    throw new Error("Vision benchmark response omitted valid token usage.");
+    throw new QwenVlSmokeFailure("RESPONSE_INVALID");
   }
   return { inputTokens, outputTokens, totalTokens };
 }
@@ -523,7 +524,7 @@ function sum(values: number[]): number {
 
 function required(name: string): string {
   const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} is required.`);
+  if (!value) throw new QwenVlSmokeFailure("CONFIG_MISSING");
   return value;
 }
 
