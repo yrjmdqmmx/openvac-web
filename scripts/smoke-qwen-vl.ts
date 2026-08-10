@@ -8,7 +8,6 @@ import {
   type QwenVisionBenchmarkMeasurement
 } from "../src/evals/vision/qwen-vl-benchmark";
 import {
-  ProviderError,
   ProviderTimeoutError,
   QwenVlProvider,
   type QwenVlTelemetryResult,
@@ -61,19 +60,65 @@ async function contractSmoke(): Promise<void> {
   const measurements: QwenVisionBenchmarkMeasurement[] = [];
   const visualNonce = String(randomInt(10_000_000, 100_000_000));
   const image = await renderVisualNonce(visualNonce);
-  const result = await analyzeWithOneRetry(provider, {
-    prompt: "读取图片中清晰显示的8位校验数字。只输出数字。",
-    images: [{ mimeType: "image/png", bytes: new Uint8Array(image) }],
-    maxOutputTokens: 128
-  });
-  const noncePassed = recognizesVisualNonce(result.text, visualNonce);
-  outcomes.push({
-    caseId: "visual_nonce",
-    model: provider.model,
-    thinking: false,
-    passed: noncePassed,
-    ...(!noncePassed ? { code: "RESPONSE_INVALID" } : {})
-  });
+  const nonceProbes = [
+    {
+      probeId: "current_non_thinking_default",
+      provider,
+      thinking: false,
+      highResolution: false,
+      required: true
+    },
+    {
+      probeId: "current_non_thinking_high_resolution",
+      provider: new QwenVlProvider({
+        model: CURRENT_MODEL,
+        enableThinking: false,
+        highResolutionImages: true
+      }),
+      thinking: false,
+      highResolution: true,
+      required: false
+    },
+    {
+      probeId: "current_thinking_default_resolution",
+      provider: new QwenVlProvider({
+        model: CURRENT_MODEL,
+        enableThinking: true,
+        highResolutionImages: false
+      }),
+      thinking: true,
+      highResolution: false,
+      required: true
+    },
+    {
+      probeId: "baseline_non_thinking_default",
+      provider: new QwenVlProvider({
+        model: BASELINE_MODEL,
+        enableThinking: false,
+        highResolutionImages: false
+      }),
+      thinking: false,
+      highResolution: false,
+      required: true
+    }
+  ] as const;
+  for (const probe of nonceProbes) {
+    outcomes.push(
+      await measureVisualNonce(
+        probe.provider,
+        image,
+        visualNonce,
+        probe.probeId,
+        probe.thinking,
+        probe.highResolution,
+        probe.required
+      )
+    );
+  }
+  const noncePassed = outcomes.some(
+    (outcome) =>
+      outcome.probeId === "current_non_thinking_default" && outcome.passed
+  );
 
   for (const testCase of await benchmarkCases()) {
     try {
@@ -81,6 +126,7 @@ async function contractSmoke(): Promise<void> {
       measurements.push(measurement);
       outcomes.push({
         ...measurement,
+        required: true,
         passed: measurement.qualityScore >= 75
       });
     } catch (error) {
@@ -88,6 +134,7 @@ async function contractSmoke(): Promise<void> {
         caseId: testCase.id,
         model: provider.model,
         thinking: false,
+        required: true,
         passed: false,
         code: classifyQwenVlSmokeFailure(error).code
       });
@@ -102,7 +149,9 @@ async function contractSmoke(): Promise<void> {
       : 0;
   const passed =
     noncePassed &&
-    outcomes.every((outcome) => outcome.passed) &&
+    outcomes
+      .filter((outcome) => outcome.required)
+      .every((outcome) => outcome.passed) &&
     currentQualityScore >= 85;
   console.log(
     JSON.stringify({
@@ -120,6 +169,57 @@ async function contractSmoke(): Promise<void> {
       "RESPONSE_INVALID",
       noncePassed ? "VISUAL_PREFLIGHT_FAILED" : "VISUAL_NONCE_MISMATCH"
     );
+  }
+}
+
+async function measureVisualNonce(
+  provider: QwenVlProvider,
+  image: Buffer,
+  visualNonce: string,
+  probeId: string,
+  thinking: boolean,
+  highResolution: boolean,
+  required: boolean
+): Promise<Record<string, string | number | boolean>> {
+  try {
+    const result = await telemetryAttempt(provider, {
+      prompt: "读取图片中清晰显示的8位校验数字。只输出数字。",
+      images: [{ mimeType: "image/png", bytes: new Uint8Array(image) }],
+      maxOutputTokens: 128
+    });
+    const usage = requireUsage(result);
+    const passed = recognizesVisualNonce(result.text, visualNonce);
+    return {
+      caseId: "visual_nonce",
+      probeId,
+      model: provider.model,
+      thinking,
+      highResolution,
+      required,
+      passed,
+      firstTokenLatencyMs: result.firstTokenLatencyMs,
+      totalDurationMs: result.totalDurationMs,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      totalTokens: usage.totalTokens,
+      estimatedCostMicrosCny: estimatedCostMicrosCny(
+        provider.model,
+        usage.inputTokens,
+        usage.outputTokens
+      ),
+      ...(!passed ? { code: "RESPONSE_INVALID" } : {})
+    };
+  } catch (error) {
+    return {
+      caseId: "visual_nonce",
+      probeId,
+      model: provider.model,
+      thinking,
+      highResolution,
+      required,
+      passed: false,
+      code: classifyQwenVlSmokeFailure(error).code
+    };
   }
 }
 
@@ -417,33 +517,6 @@ function table(): string {
         .join("")
     )
     .join("")}`;
-}
-
-async function analyzeWithOneRetry(
-  provider: QwenVlProvider,
-  request: VisionRequest
-) {
-  try {
-    return await analyzeAttempt(provider, request);
-  } catch (error) {
-    if (!(error instanceof ProviderError) || !error.retryable) throw error;
-  }
-  return analyzeAttempt(provider, request);
-}
-
-async function analyzeAttempt(
-  provider: QwenVlProvider,
-  request: VisionRequest
-) {
-  const signal = AbortSignal.timeout(90_000);
-  try {
-    return await provider.analyze({ ...request, signal });
-  } catch (error) {
-    if (signal.aborted) {
-      throw new ProviderTimeoutError(provider.id, "Vision smoke timed out.");
-    }
-    throw error;
-  }
 }
 
 async function telemetryAttempt(
