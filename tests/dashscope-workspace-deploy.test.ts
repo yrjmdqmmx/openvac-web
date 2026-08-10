@@ -111,4 +111,28 @@ describe("DashScope workspace deployment", () => {
       rollback.indexOf("run_legacy_compose")
     );
   });
+
+  it("injects the workspace only into the preflight environment before persistence", () => {
+    const deploy = readFileSync("deploy/deploy.sh", "utf8");
+    const qwenSmoke = deploy.indexOf("pnpm smoke:qwen-vl");
+    const journal = deploy.indexOf("if ! begin_transaction_journal", qwenSmoke);
+    const apply = deploy.indexOf("if ! apply_runtime_env", journal);
+    expect(qwenSmoke).toBeGreaterThan(-1);
+    expect(journal).toBeGreaterThan(qwenSmoke);
+    expect(apply).toBeGreaterThan(journal);
+
+    const preflight = deploy.slice(
+      deploy.lastIndexOf('echo "Verifying the configured Qwen-VL contract"'),
+      journal
+    );
+    expect(preflight).toContain(
+      'DASHSCOPE_WORKSPACE_ID="$desired_dashscope_workspace_id"'
+    );
+    expect(preflight).toContain(
+      "release_compose run --rm --no-deps -e DASHSCOPE_WORKSPACE_ID"
+    );
+    expect(preflight).not.toContain(
+      '-e DASHSCOPE_WORKSPACE_ID="$desired_dashscope_workspace_id"'
+    );
+  });
 });
