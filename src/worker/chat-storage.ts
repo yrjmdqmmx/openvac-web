@@ -180,12 +180,13 @@ export class ChatStorageWorker {
       }
       if (!job.parserJobId) {
         const submitted = await this.withAttachmentLease(job, async () => {
-          const url = await this.objectStorage.createPrivateDownloadUrl(
-            job.objectKey,
-            15 * 60
-          );
+          // Completion has already verified the immutable object's size,
+          // digest, MIME signature, and ownership. Submit those bounded bytes
+          // directly so private chat parsing does not depend on a second OSS
+          // hostname allowlist or expose a signed download URL to the parser.
+          const bytes = await this.objectStorage.getPrivate(job.objectKey);
           return this.parser.submit({
-            url,
+            bytes: new Uint8Array(bytes),
             filename: job.filename,
             outputFormats: ["markdown", "visualLayoutInfo"],
             llmEnhancement: true
