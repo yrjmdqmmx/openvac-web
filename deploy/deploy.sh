@@ -187,6 +187,25 @@ if [ -n "$desired_knowledge_review_token_hash" ]; then
     exit 64
   }
 fi
+desired_dashscope_workspace_id="${DASHSCOPE_WORKSPACE_ID:-}"
+unset DASHSCOPE_WORKSPACE_ID
+if [ -n "$desired_dashscope_workspace_id" ]; then
+  case "$desired_dashscope_workspace_id" in
+    *[!A-Za-z0-9_-]*)
+      echo "DashScope workspace identifier is invalid" >&2
+      exit 64
+      ;;
+  esac
+  [ "${#desired_dashscope_workspace_id}" -le 128 ] || {
+    echo "DashScope workspace identifier is invalid" >&2
+    exit 64
+  }
+  [ -f "$script_dir/configure-dashscope-workspace-id.sh" ] &&
+    [ ! -L "$script_dir/configure-dashscope-workspace-id.sh" ] || {
+    echo "release bundle is missing the DashScope workspace configurator" >&2
+    exit 64
+  }
+fi
 [ -f "$compose_file" ] && [ ! -L "$compose_file" ] || {
   echo "Compose file must be a regular file, not a symlink" >&2
   exit 64
@@ -431,7 +450,8 @@ env_backup_file=""
 env_mutated=false
 
 backup_runtime_env() {
-  [ -n "$desired_knowledge_review_token_hash" ] || return 0
+  [ -n "$desired_knowledge_review_token_hash" ] ||
+    [ -n "$desired_dashscope_workspace_id" ] || return 0
   [ -z "$env_backup_file" ] || return 0
   env_backup_file="$deploy_dir/.env.rollback-$activation_id"
   if [ -e "$env_backup_file" ] || [ -L "$env_backup_file" ]; then
@@ -449,15 +469,25 @@ backup_runtime_env() {
 }
 
 apply_runtime_env() {
-  [ -n "$desired_knowledge_review_token_hash" ] || return 0
+  [ -n "$desired_knowledge_review_token_hash" ] ||
+    [ -n "$desired_dashscope_workspace_id" ] || return 0
   backup_runtime_env || return 1
   # From this point onward every exit path must restore from the backup,
   # including failures before or during the atomic configurator rename.
   env_mutated=true
-  if ! printf '%s\n' "$desired_knowledge_review_token_hash" |
-    OPENVAC_CONFIG_ROOT="$(dirname "$deploy_dir")" \
-      sh "$script_dir/configure-knowledge-review-token-hash.sh" "$deployment_target"; then
-    return 1
+  if [ -n "$desired_knowledge_review_token_hash" ]; then
+    if ! printf '%s\n' "$desired_knowledge_review_token_hash" |
+      OPENVAC_CONFIG_ROOT="$(dirname "$deploy_dir")" \
+        sh "$script_dir/configure-knowledge-review-token-hash.sh" "$deployment_target"; then
+      return 1
+    fi
+  fi
+  if [ -n "$desired_dashscope_workspace_id" ]; then
+    if ! printf '%s\n' "$desired_dashscope_workspace_id" |
+      OPENVAC_CONFIG_ROOT="$(dirname "$deploy_dir")" \
+        sh "$script_dir/configure-dashscope-workspace-id.sh" "$deployment_target"; then
+      return 1
+    fi
   fi
   durable_sync "$deploy_dir/.env" || return 1
   durable_sync "$deploy_dir" || return 1

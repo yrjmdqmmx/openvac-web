@@ -641,6 +641,7 @@ jobs:
           ECS_USER: ${{ secrets.ECS_USER }}
           WEB_IMAGE_DIGEST: ${{ needs.image.outputs.web_digest }}
           KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256: ${{ secrets.KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256 }}
+          DASHSCOPE_WORKSPACE_ID: ${{ secrets.DASHSCOPE_WORKSPACE_ID }}
         run: |
           set -Eeuo pipefail
           case "$TARGET" in
@@ -713,16 +714,24 @@ jobs:
           token_hash_file="$RUNNER_TEMP/openvac-knowledge-review-token-hash"
           (umask 077 && printf '%s\n' "$token_hash" >"$token_hash_file")
           unset token_hash
+          workspace_id="$DASHSCOPE_WORKSPACE_ID"
+          case "$workspace_id" in ""|*[!A-Za-z0-9_-]*) exit 64 ;; esac
+          test "${#workspace_id}" -le 128
+          workspace_id_file="$RUNNER_TEMP/openvac-dashscope-workspace-id"
+          (umask 077 && printf '%s\n' "$workspace_id" >"$workspace_id_file")
+          unset workspace_id DASHSCOPE_WORKSPACE_ID
           cleanup() {
             ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base"               "case '$remote_stage' in /tmp/openvac-deploy.*) rm -rf -- '$remote_stage' ;; esac"               >/dev/null 2>&1 || true
-            rm -f -- "$token_hash_file"
+            rm -f -- "$token_hash_file" "$workspace_id_file"
           }
           trap cleanup EXIT HUP INT TERM
           scp -i "$HOME/.ssh/openvac" -o BatchMode=yes             "$archive" "$archive_checksum" "$bundle_archive" "$bundle_checksum"             "$ssh_base:$remote_stage/"
           scp -i "$HOME/.ssh/openvac" -o BatchMode=yes \
             "$token_hash_file" "$ssh_base:$remote_stage/knowledge-review-token-hash"
+          scp -i "$HOME/.ssh/openvac" -o BatchMode=yes \
+            "$workspace_id_file" "$ssh_base:$remote_stage/dashscope-workspace-id"
           ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base" \
-            "chmod 600 '$remote_stage/knowledge-review-token-hash'"
+            "chmod 600 '$remote_stage/knowledge-review-token-hash' '$remote_stage/dashscope-workspace-id'"
 
           loaded_web_id="$(
             ssh -i "$HOME/.ssh/openvac" -o BatchMode=yes "$ssh_base"               sh -s -- "$remote_stage" "$RELEASE_SHA" "$image_repository:archive-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$WEB_IMAGE_DIGEST" <<'REMOTE_PREPARE'
@@ -783,7 +792,15 @@ jobs:
           rm -f -- "$token_hash_file"
           case "$token_hash" in ""|*[!0-9a-f]*) exit 64 ;; esac
           [ "${#token_hash}" -eq 64 ] || exit 64
+          workspace_id_file="$remote_stage/dashscope-workspace-id"
+          [ -f "$workspace_id_file" ] && [ ! -L "$workspace_id_file" ] || exit 64
+          [ "$(stat -c '%a' "$workspace_id_file")" = 600 ] || exit 64
+          IFS= read -r workspace_id <"$workspace_id_file"
+          rm -f -- "$workspace_id_file"
+          case "$workspace_id" in ""|*[!A-Za-z0-9_-]*) exit 64 ;; esac
+          [ "${#workspace_id}" -le 128 ] || exit 64
           KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256="$token_hash" \
+            DASHSCOPE_WORKSPACE_ID="$workspace_id" \
             OPENVAC_WEB_PRELOADED_ID="$loaded_web_id" \
             OPENVAC_R1_ROLLBACK_REHEARSAL=true \
             sh "$remote_stage/bundle/deploy/activate-bundle.sh" \
