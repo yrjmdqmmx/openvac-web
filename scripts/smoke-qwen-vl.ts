@@ -170,6 +170,7 @@ async function contractSmoke(): Promise<void> {
       model: provider.model,
       protocol: provider.capabilities.protocol,
       thinking: true,
+      thinkingBudgetTokens: provider.thinkingBudgetTokens,
       currentQualityScore,
       passed,
       outcomes
@@ -262,7 +263,7 @@ async function analyzeAttempt(
   provider: QwenVlProvider,
   request: VisionRequest
 ): Promise<VisionResult> {
-  const signal = AbortSignal.timeout(90_000);
+  const signal = AbortSignal.timeout(150_000);
   try {
     return await provider.analyze({ ...request, signal });
   } catch (error) {
@@ -345,6 +346,7 @@ async function benchmarkSmoke(): Promise<void> {
     imageTransport: "base64-data-url",
     defaultModel: CURRENT_MODEL,
     defaultThinking: true,
+    thinkingBudgetTokens: currentProvider.thinkingBudgetTokens,
     priceVersion: "aliyun-standard-cn-beijing-2026-08-10",
     measurements,
     summary: {
@@ -387,7 +389,8 @@ async function benchmarkSmoke(): Promise<void> {
       caseCount: QWEN_VISION_BENCHMARK_CASE_IDS.length,
       model: CURRENT_MODEL,
       baselineModel: BASELINE_MODEL,
-      defaultThinking: true
+      defaultThinking: true,
+      thinkingBudgetTokens: currentProvider.thinkingBudgetTokens
     })
   );
 }
@@ -586,7 +589,7 @@ async function telemetryAttempt(
   provider: QwenVlProvider,
   request: VisionRequest
 ): Promise<QwenVlTelemetryResult> {
-  const signal = AbortSignal.timeout(90_000);
+  const signal = AbortSignal.timeout(150_000);
   try {
     return await provider.analyzeWithTelemetry({ ...request, signal });
   } catch (error) {

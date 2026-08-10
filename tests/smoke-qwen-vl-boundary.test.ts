@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   ConfigurationError,
   ProviderResponseError,
-  ProviderTimeoutError
+  ProviderTimeoutError,
+  QwenVlOutputTruncatedError
 } from "../src/server/providers";
 import {
   classifyQwenVlSmokeFailure,
@@ -21,6 +22,7 @@ describe("Qwen-VL smoke public boundary", () => {
       }),
       "AUTH_FAILED"
     ],
+    [new QwenVlOutputTruncatedError(), "OUTPUT_TRUNCATED"],
     [
       new ProviderResponseError("qwen-vl", "private quota body", {
         status: 402

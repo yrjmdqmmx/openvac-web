@@ -401,6 +401,7 @@ function validateVisionBenchmark(value, commitSha, imageDigest) {
     report.imageTransport !== "base64-data-url" ||
     report.defaultModel !== "qwen3.8-max" ||
     report.defaultThinking !== true ||
+    report.thinkingBudgetTokens !== 16_384 ||
     report.priceVersion !== "aliyun-standard-cn-beijing-2026-08-10" ||
     !Array.isArray(report.measurements) ||
     report.measurements.length !== 18

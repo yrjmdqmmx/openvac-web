@@ -24,8 +24,9 @@ const DEFAULT_MODEL = "qwen3.8-max";
 const LEGACY_GLOBAL_BASE_URL =
   "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const LEGACY_GLOBAL_HOST = "dashscope.aliyuncs.com";
-const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 150_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 2048;
+const DEFAULT_THINKING_BUDGET_TOKENS = 16_384;
 const DEFAULT_MAX_IMAGES = 4;
 const DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -48,6 +49,7 @@ export interface QwenVlProviderOptions {
   workspaceId?: string;
   model?: string;
   enableThinking?: boolean;
+  thinkingBudgetTokens?: number;
   highResolutionImages?: boolean;
   defaultMaxOutputTokens?: number;
   requestTimeoutMs?: number;
@@ -64,6 +66,13 @@ export interface QwenVlTelemetryResult extends VisionResult {
   totalDurationMs: number;
 }
 
+export class QwenVlOutputTruncatedError extends ProviderResponseError {
+  constructor() {
+    super(PROVIDER_ID, "Qwen-VL output reached its configured token limit.");
+    this.name = "QwenVlOutputTruncatedError";
+  }
+}
+
 export class QwenVlProvider implements VisionProvider {
   readonly id = PROVIDER_ID;
   readonly model: string;
@@ -77,6 +86,7 @@ export class QwenVlProvider implements VisionProvider {
   private readonly requestTimeoutMs: number;
   private readonly fetchFn: typeof fetch;
   private readonly enableThinking: boolean;
+  readonly thinkingBudgetTokens: number;
   private readonly highResolutionImages: boolean;
 
   constructor(options: QwenVlProviderOptions = {}) {
@@ -113,6 +123,13 @@ export class QwenVlProvider implements VisionProvider {
     this.enableThinking =
       options.enableThinking ??
       booleanEnvironment("QWEN_VL_ENABLE_THINKING", true);
+    this.thinkingBudgetTokens = positiveInteger(
+      options.thinkingBudgetTokens ??
+        Number(
+          process.env.QWEN_VL_THINKING_BUDGET ?? DEFAULT_THINKING_BUDGET_TOKENS
+        ),
+      "thinkingBudgetTokens"
+    );
     this.highResolutionImages =
       options.highResolutionImages ??
       booleanEnvironment("QWEN_VL_HIGH_RESOLUTION_IMAGES", false);
@@ -184,8 +201,12 @@ export class QwenVlProvider implements VisionProvider {
         this.capabilities.maxResponseBytes
       );
       const choices = Array.isArray(body.choices) ? body.choices : [];
-      const message = asRecord(asRecord(choices[0]).message);
+      const choice = asRecord(choices[0]);
+      const message = asRecord(choice.message);
       const text = extractText(message.content);
+      if (pickString(choice, ["finish_reason"]) === "length") {
+        throw new QwenVlOutputTruncatedError();
+      }
       if (!text) {
         throw new ProviderResponseError(
           PROVIDER_ID,
@@ -297,6 +318,9 @@ export class QwenVlProvider implements VisionProvider {
         }
       }
 
+      if (finishReason === "length") {
+        throw new QwenVlOutputTruncatedError();
+      }
       if (!text.trim() || !finishReason || firstTokenLatencyMs === undefined) {
         throw new ProviderResponseError(
           PROVIDER_ID,
@@ -354,12 +378,22 @@ export class QwenVlProvider implements VisionProvider {
       ],
       ...(this.model === "qwen3-vl-plus"
         ? { max_tokens: maxOutputTokens }
-        : { max_completion_tokens: maxOutputTokens }),
+        : {
+            max_completion_tokens: this.enableThinking
+              ? positiveInteger(
+                  this.thinkingBudgetTokens + maxOutputTokens,
+                  "maxCompletionTokens"
+                )
+              : maxOutputTokens
+          }),
       ...(isQwen38Max
-        ? {
-            reasoning_effort: this.enableThinking ? "xhigh" : "none",
-            preserve_thinking: false
-          }
+        ? this.enableThinking
+          ? {
+              enable_thinking: true,
+              thinking_budget: this.thinkingBudgetTokens,
+              preserve_thinking: false
+            }
+          : { enable_thinking: false, preserve_thinking: false }
         : { enable_thinking: this.enableThinking }),
       vl_high_resolution_images: this.highResolutionImages,
       stream,
