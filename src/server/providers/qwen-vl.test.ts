@@ -74,12 +74,13 @@ describe("QwenVlProvider", () => {
     expect(sentBody).toMatchObject({
       model: "qwen3.8-max",
       max_completion_tokens: 2048,
-      enable_thinking: false,
+      reasoning_effort: "none",
       preserve_thinking: false,
       vl_high_resolution_images: false,
       stream: false
     });
     expect(sentBody).not.toHaveProperty("max_tokens");
+    expect(sentBody).not.toHaveProperty("enable_thinking");
   });
 
   it("validates the API key only when an analysis starts", async () => {
@@ -208,11 +209,36 @@ describe("QwenVlProvider", () => {
     );
     expect(sentBody).toMatchObject({
       model: "qwen3.8-max",
-      enable_thinking: false,
+      reasoning_effort: "none",
       preserve_thinking: false,
       stream: true,
       stream_options: { include_usage: true }
     });
+    expect(sentBody).not.toHaveProperty("enable_thinking");
+  });
+
+  it("uses the documented qwen3.8 reasoning effort for audited thinking comparisons", async () => {
+    let sentBody: Record<string, unknown> = {};
+    const provider = new QwenVlProvider({
+      apiKey: "test-key",
+      workspaceId: WORKSPACE_ID,
+      enableThinking: true,
+      fetch: vi.fn(async (_input, init) => {
+        sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return Response.json({ choices: [{ message: { content: "ok" } }] });
+      })
+    });
+
+    await provider.analyze({
+      prompt: "complex diagram",
+      images: [{ mimeType: "image/png", bytes: Uint8Array.of(1) }]
+    });
+    expect(sentBody).toMatchObject({
+      model: "qwen3.8-max",
+      reasoning_effort: "xhigh",
+      preserve_thinking: false
+    });
+    expect(sentBody).not.toHaveProperty("enable_thinking");
   });
 
   it("keeps the legacy token parameter only for the comparison baseline", async () => {
@@ -238,6 +264,7 @@ describe("QwenVlProvider", () => {
     });
     expect(sentBody).not.toHaveProperty("max_completion_tokens");
     expect(sentBody).not.toHaveProperty("preserve_thinking");
+    expect(sentBody).not.toHaveProperty("reasoning_effort");
   });
 
   it("requires HTTPS on the exact Beijing workspace host", async () => {
