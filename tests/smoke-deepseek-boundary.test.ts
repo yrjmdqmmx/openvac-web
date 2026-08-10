@@ -15,7 +15,8 @@ import {
   collectCompletedSafetyProbeWithOneRetry,
   DeepSeekSmokeFailure,
   parseDeepSeekSmokeAnswer,
-  publicDeepSeekSmokeFailure
+  publicDeepSeekSmokeFailure,
+  shouldRetryDeepSeekToolArguments
 } from "../scripts/smoke-deepseek-boundary";
 import {
   ProviderError,
@@ -40,6 +41,17 @@ const direct: AnswerV3 = {
 };
 
 describe("DeepSeek release smoke semantic boundary", () => {
+  it.each([
+    ["INVALID_TOOL_ARGUMENTS_JSON", true],
+    ["INVALID_TOOL_ARGUMENTS", true],
+    ["CALCULATION_INPUT_INVALID", true],
+    ["TOOL_TIMEOUT", false],
+    ["TOOL_EXECUTION_FAILED", false],
+    [undefined, false]
+  ])("limits tool retries to argument failures: %s", (code, expected) => {
+    expect(shouldRetryDeepSeekToolArguments(code)).toBe(expected);
+  });
+
   it("retries one side-effect-free safety probe after an invalid terminal", async () => {
     const collect = vi
       .fn<() => Promise<{ terminal: string }>>()
