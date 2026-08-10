@@ -11,6 +11,7 @@ import {
   assertAuthorizedFunctionCalls,
   extractTrustedPumpdownArguments,
   reserveNonRepeatableToolCalls,
+  requiresDocumentAttachmentEvidence,
   safeModelInvocationErrorMessage,
   safeProviderTerminalErrorCode,
   selectAnswerToolRequestPolicy,
@@ -189,6 +190,57 @@ describe("Agent V3 deterministic calculator routing", () => {
         tools
       )
     ).toBe("auto");
+  });
+
+  it("recognizes document intent but excludes explicitly visual questions", () => {
+    expect(
+      requiresDocumentAttachmentEvidence(
+        "根据上传手册回答维护间隔，并精确绑定页内证据。"
+      )
+    ).toBe(true);
+    expect(
+      requiresDocumentAttachmentEvidence("从上传的手册截图中读取型号。")
+    ).toBe(false);
+  });
+
+  it("does not ask the provider to repeat server-completed attachment tools", () => {
+    const tools: ResponsesTool[] = [
+      {
+        type: "function",
+        name: "search_attachment",
+        description: "search",
+        parameters: { type: "object" }
+      },
+      {
+        type: "function",
+        name: "open_attachment_excerpt",
+        description: "open",
+        parameters: { type: "object" }
+      },
+      {
+        type: "function",
+        name: "analyze_image",
+        description: "vision",
+        parameters: { type: "object" }
+      }
+    ];
+
+    const policy = selectAnswerToolRequestPolicy({
+      tools,
+      calculations: [],
+      modelInput: [],
+      question: "根据上传手册回答维护间隔。",
+      allowTools: true,
+      blockedCallableToolNames: new Set([
+        "search_attachment",
+        "open_attachment_excerpt",
+        "analyze_image"
+      ])
+    });
+
+    expect(policy.toolChoice).toBe("none");
+    expect(policy.callableFunctionNames).toEqual([]);
+    expect(policy.tools).toBeUndefined();
   });
 
   it("removes only the completed calculator while preserving other tools", () => {

@@ -4,11 +4,13 @@ const toolRegistryMocks = vi.hoisted(() => ({
   collectLocalEvidence: vi.fn()
 }));
 
-vi.mock("@/server/chat/evidence", () => ({
+vi.mock("@/server/chat/evidence", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/server/chat/evidence")>()),
   collectLocalEvidence: toolRegistryMocks.collectLocalEvidence
 }));
 
 import type { ArtifactStorage } from "./artifact-tools";
+import type { AttachmentStorage } from "./attachment-tools";
 import { EvidenceRegistry } from "./evidence-registry";
 import { ToolRegistry } from "./tool-registry";
 
@@ -120,12 +122,61 @@ describe("ToolRegistry V3 exposure", () => {
 
     expect(forwardedSignal.aborted).toBe(true);
   });
+
+  it("returns bounded chunk references for deterministic attachment opening", async () => {
+    const storage: AttachmentStorage = {
+      getAuthorizedAttachment: vi.fn(async (requested) => ({
+        ...requested,
+        kind: "document" as const,
+        filename: "manual.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 128,
+        status: "ready" as const
+      })),
+      getParsedChunks: vi.fn(async () => [
+        {
+          attachmentId,
+          chunkId: "manual-page-1",
+          text: "维护间隔取决于工况。",
+          pageNumber: 1
+        }
+      ]),
+      putParsedChunks: vi.fn(async () => undefined)
+    };
+    const scoped = registry(
+      "根据上传手册回答维护间隔。",
+      undefined,
+      undefined,
+      storage
+    );
+
+    const result = await scoped.execute({
+      callId: "call-attachment-search",
+      name: "search_attachment",
+      arguments: JSON.stringify({ attachmentId, query: "维护间隔" })
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.attachmentMatches).toEqual([
+      {
+        attachmentId,
+        chunkId: "manual-page-1",
+        evidenceId: "E1",
+        pageNumber: 1
+      }
+    ]);
+    expect(result.outputItem).toMatchObject({
+      type: "function_call_output",
+      output: expect.stringContaining("manual-page-1")
+    });
+  });
 });
 
 function registry(
   question: string,
   artifactStorage?: ArtifactStorage,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  attachmentStorage?: AttachmentStorage
 ) {
   return new ToolRegistry(new EvidenceRegistry(), {
     userId,
@@ -141,6 +192,7 @@ function registry(
       { type: "attachment", attachmentId }
     ],
     artifactStorage,
+    attachmentStorage,
     signal
   });
 }
