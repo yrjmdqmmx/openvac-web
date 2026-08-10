@@ -1,14 +1,15 @@
 import { ProviderError, ProviderResponseError } from "./errors";
+import { parseSseJson } from "./deepseek";
 import {
   asRecord,
   createProviderDeadline,
-  normalizeTrustedHttpsBaseUrl,
   optionalString,
   parseCommaSeparated,
   pickNumber,
   pickString,
   readJsonResponse,
-  requireString
+  requireString,
+  resolveBailianBeijingCompatibleEndpoint
 } from "./runtime";
 import type {
   ModelUsage,
@@ -19,8 +20,10 @@ import type {
 } from "./types";
 
 const PROVIDER_ID = "qwen-vl";
-const DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-const DEFAULT_MODEL = "qwen3-vl-plus";
+const DEFAULT_MODEL = "qwen3.8-max";
+const LEGACY_GLOBAL_BASE_URL =
+  "https://dashscope.aliyuncs.com/compatible-mode/v1";
+const LEGACY_GLOBAL_HOST = "dashscope.aliyuncs.com";
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 2048;
 const DEFAULT_MAX_IMAGES = 4;
@@ -42,7 +45,10 @@ export const QWEN_VL_CAPABILITIES = {
 export interface QwenVlProviderOptions {
   apiKey?: string;
   baseUrl?: string;
+  workspaceId?: string;
   model?: string;
+  enableThinking?: boolean;
+  highResolutionImages?: boolean;
   defaultMaxOutputTokens?: number;
   requestTimeoutMs?: number;
   maxImages?: number;
@@ -53,33 +59,45 @@ export interface QwenVlProviderOptions {
   allowedHosts?: string[];
 }
 
+export interface QwenVlTelemetryResult extends VisionResult {
+  firstTokenLatencyMs: number;
+  totalDurationMs: number;
+}
+
 export class QwenVlProvider implements VisionProvider {
   readonly id = PROVIDER_ID;
   readonly model: string;
   readonly capabilities: VisionCapabilities;
 
   private readonly apiKey?: string;
-  private readonly baseUrl: string;
+  private readonly configuredBaseUrl?: string;
+  private readonly workspaceId?: string;
+  private readonly allowedHosts: readonly string[];
   private readonly defaultMaxOutputTokens: number;
   private readonly requestTimeoutMs: number;
   private readonly fetchFn: typeof fetch;
+  private readonly enableThinking: boolean;
+  private readonly highResolutionImages: boolean;
 
   constructor(options: QwenVlProviderOptions = {}) {
     this.apiKey =
-      options.apiKey ??
-      process.env.QWEN_VL_API_KEY ??
-      process.env.DASHSCOPE_API_KEY;
-    this.baseUrl = normalizeTrustedHttpsBaseUrl(
-      PROVIDER_ID,
-      options.baseUrl ?? process.env.QWEN_VL_BASE_URL ?? DEFAULT_BASE_URL,
-      options.allowedHosts ??
-        parseCommaSeparated(
-          process.env.QWEN_VL_ALLOWED_HOSTS ?? "dashscope.aliyuncs.com"
-        )
-    );
-    this.model =
-      optionalString(options.model ?? process.env.QWEN_VL_MODEL) ??
-      DEFAULT_MODEL;
+      optionalString(options.apiKey) ??
+      optionalString(process.env.QWEN_VL_API_KEY) ??
+      optionalString(process.env.DASHSCOPE_API_KEY);
+    const configuredBaseUrl = optionalString(process.env.QWEN_VL_BASE_URL);
+    const configuredAllowedHosts = parseCommaSeparated(
+      process.env.QWEN_VL_ALLOWED_HOSTS
+    ).filter((host) => host !== LEGACY_GLOBAL_HOST);
+    this.configuredBaseUrl =
+      optionalString(options.baseUrl) ??
+      (configuredBaseUrl?.replace(/\/+$/u, "") === LEGACY_GLOBAL_BASE_URL
+        ? undefined
+        : configuredBaseUrl);
+    this.workspaceId =
+      optionalString(options.workspaceId) ??
+      optionalString(process.env.DASHSCOPE_WORKSPACE_ID);
+    this.allowedHosts = options.allowedHosts ?? configuredAllowedHosts;
+    this.model = optionalString(options.model) ?? configuredQwenVlModel();
     this.defaultMaxOutputTokens = positiveInteger(
       options.defaultMaxOutputTokens ??
         Number(
@@ -92,6 +110,12 @@ export class QwenVlProvider implements VisionProvider {
       "requestTimeoutMs"
     );
     this.fetchFn = options.fetch ?? fetch;
+    this.enableThinking =
+      options.enableThinking ??
+      booleanEnvironment("QWEN_VL_ENABLE_THINKING", false);
+    this.highResolutionImages =
+      options.highResolutionImages ??
+      booleanEnvironment("QWEN_VL_HIGH_RESOLUTION_IMAGES", false);
 
     const maxImages = positiveInteger(
       options.maxImages ?? DEFAULT_MAX_IMAGES,
@@ -140,43 +164,20 @@ export class QwenVlProvider implements VisionProvider {
     );
 
     try {
-      const response = await this.fetchFn(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages: [
-            ...(request.systemPrompt?.trim()
-              ? [
-                  {
-                    role: "system",
-                    content: request.systemPrompt.trim()
-                  }
-                ]
-              : []),
-            {
-              role: "user",
-              content: [
-                { type: "text", text: prompt },
-                ...request.images.map((image) => ({
-                  type: "image_url",
-                  image_url: {
-                    url: `data:${image.mimeType};base64,${Buffer.from(
-                      image.bytes
-                    ).toString("base64")}`
-                  }
-                }))
-              ]
-            }
-          ],
-          max_tokens: maxOutputTokens,
-          stream: false
-        }),
-        signal: deadline.signal
-      });
+      const response = await this.fetchFn(
+        `${this.resolveBaseUrl()}/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(
+            this.requestBody(request, prompt, maxOutputTokens, false)
+          ),
+          signal: deadline.signal
+        }
+      );
       const body = await readJsonResponse(
         PROVIDER_ID,
         response,
@@ -212,6 +213,165 @@ export class QwenVlProvider implements VisionProvider {
     } finally {
       deadline.dispose();
     }
+  }
+
+  /** Audited streaming path used by the staging visual benchmark only. */
+  async analyzeWithTelemetry(
+    request: VisionRequest
+  ): Promise<QwenVlTelemetryResult> {
+    const apiKey = requireString(
+      PROVIDER_ID,
+      "QWEN_VL_API_KEY or DASHSCOPE_API_KEY",
+      this.apiKey
+    );
+    const prompt = request.prompt.trim();
+    if (!prompt) throw new TypeError("Vision prompt must not be empty.");
+    assertImages(request, this.capabilities);
+    const maxOutputTokens = positiveInteger(
+      request.maxOutputTokens ?? this.defaultMaxOutputTokens,
+      "maxOutputTokens"
+    );
+    const deadline = createProviderDeadline(
+      PROVIDER_ID,
+      this.requestTimeoutMs,
+      request.signal
+    );
+    const startedAt = performance.now();
+
+    try {
+      const response = await this.fetchFn(
+        `${this.resolveBaseUrl()}/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(
+            this.requestBody(request, prompt, maxOutputTokens, true)
+          ),
+          signal: deadline.signal
+        }
+      );
+      if (!response.ok) {
+        await readJsonResponse(
+          PROVIDER_ID,
+          response,
+          this.capabilities.maxResponseBytes
+        );
+      }
+      if (!response.body) {
+        throw new ProviderResponseError(
+          PROVIDER_ID,
+          "Qwen-VL returned an empty streaming response.",
+          { retryable: true }
+        );
+      }
+
+      let text = "";
+      let firstTokenLatencyMs: number | undefined;
+      let finishReason: string | undefined;
+      let usage: ModelUsage | undefined;
+      for await (const event of parseSseJson(response.body, {
+        maxEventBytes: 256 * 1024,
+        maxStreamBytes: this.capabilities.maxResponseBytes
+      })) {
+        const record = asRecord(event);
+        const usageRecord = asRecord(record.usage);
+        if (Object.keys(usageRecord).length > 0) {
+          usage = parseUsage(usageRecord);
+        }
+        const choices = Array.isArray(record.choices) ? record.choices : [];
+        for (const rawChoice of choices) {
+          const choice = asRecord(rawChoice);
+          const delta = asRecord(choice.delta);
+          const fragment = extractText(delta.content);
+          if (fragment) {
+            firstTokenLatencyMs ??= Math.max(
+              0,
+              Math.round(performance.now() - startedAt)
+            );
+            text += fragment;
+          }
+          finishReason = pickString(choice, ["finish_reason"]) ?? finishReason;
+        }
+      }
+
+      if (!text.trim() || !finishReason || firstTokenLatencyMs === undefined) {
+        throw new ProviderResponseError(
+          PROVIDER_ID,
+          "Qwen-VL streaming response was incomplete.",
+          { retryable: true }
+        );
+      }
+      return {
+        text: text.trim(),
+        usage,
+        firstTokenLatencyMs,
+        totalDurationMs: Math.max(0, Math.round(performance.now() - startedAt))
+      };
+    } catch (cause) {
+      if (deadline.didTimeout()) throw deadline.timeoutError;
+      if (cause instanceof ProviderError || request.signal?.aborted)
+        throw cause;
+      throw new ProviderResponseError(
+        PROVIDER_ID,
+        "Qwen-VL streaming transport failed before a provider response was available.",
+        { retryable: true, cause }
+      );
+    } finally {
+      deadline.dispose();
+    }
+  }
+
+  private requestBody(
+    request: VisionRequest,
+    prompt: string,
+    maxOutputTokens: number,
+    stream: boolean
+  ): Record<string, unknown> {
+    return {
+      model: this.model,
+      messages: [
+        ...(request.systemPrompt?.trim()
+          ? [{ role: "system", content: request.systemPrompt.trim() }]
+          : []),
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            ...request.images.map((image) => ({
+              type: "image_url",
+              image_url: {
+                url: `data:${image.mimeType};base64,${Buffer.from(
+                  image.bytes
+                ).toString("base64")}`
+              }
+            }))
+          ]
+        }
+      ],
+      ...(this.model === "qwen3-vl-plus"
+        ? { max_tokens: maxOutputTokens }
+        : { max_completion_tokens: maxOutputTokens }),
+      enable_thinking: this.enableThinking,
+      ...(this.model === "qwen3.8-max" ? { preserve_thinking: false } : {}),
+      vl_high_resolution_images: this.highResolutionImages,
+      stream,
+      ...(stream ? { stream_options: { include_usage: true } } : {})
+    };
+  }
+
+  private resolveBaseUrl(): string {
+    return resolveBailianBeijingCompatibleEndpoint(PROVIDER_ID, {
+      baseUrl: this.configuredBaseUrl,
+      workspaceId: requireString(
+        PROVIDER_ID,
+        "DASHSCOPE_WORKSPACE_ID",
+        this.workspaceId
+      ),
+      allowedHosts: this.allowedHosts
+    }).baseUrl;
   }
 }
 
@@ -293,7 +453,22 @@ function positiveInteger(value: number, label: string): number {
   return value;
 }
 
+function booleanEnvironment(name: string, fallback: boolean): boolean {
+  const value = optionalString(process.env[name]);
+  if (!value) return fallback;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new TypeError(`${name} must be true or false.`);
+}
+
 let singleton: QwenVlProvider | undefined;
+
+export function configuredQwenVlModel(): string {
+  const configured = optionalString(process.env.QWEN_VL_MODEL);
+  return !configured || configured === "qwen3-vl-plus"
+    ? DEFAULT_MODEL
+    : configured;
+}
 
 export function getVisionProvider(): VisionProvider {
   singleton ??= new QwenVlProvider();

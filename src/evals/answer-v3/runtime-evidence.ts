@@ -11,6 +11,8 @@ import {
 import { webLinkBindingDigest } from "@/server/agent/web-link-binding";
 import type { AnswerBlock, AnswerV3 } from "@/types/chat-v3";
 
+import { qwenVisionBenchmarkSchema } from "../vision/qwen-vl-benchmark";
+
 import { ANSWER_V3_CASE_VERSION, ANSWER_V3_EVAL_CASES } from "./cases";
 import type { AnswerV3CandidateOutput, AnswerV3EvalCase } from "./types";
 
@@ -153,6 +155,7 @@ export const runtimeEvidenceSchema = z
           })
       })
       .strict(),
+    visionBenchmark: qwenVisionBenchmarkSchema,
     cases: z.array(runtimeCaseEvidenceSchema).min(1).max(100)
   })
   .strict();
@@ -283,6 +286,11 @@ function validateRuntimeCase(
   if (/fixture|mock|stub/iu.test(item.model)) {
     throw new Error(
       `Runtime case ${item.caseId} contains a fixture model marker.`
+    );
+  }
+  if (testCase.category === "visual" && item.model !== "qwen3.8-max") {
+    throw new Error(
+      `Runtime case ${item.caseId} did not use the accepted visual model.`
     );
   }
   if (

@@ -23,7 +23,9 @@ export {
 export {
   QWEN_VL_CAPABILITIES,
   QwenVlProvider,
-  getVisionProvider
+  configuredQwenVlModel,
+  getVisionProvider,
+  type QwenVlTelemetryResult
 } from "./qwen-vl";
 export {
   createDeepSeekUserPartition,

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ConfigurationError,
@@ -8,11 +8,18 @@ import {
 import { routeCapabilities } from "./index";
 import { QwenVlProvider } from "./qwen-vl";
 
+const WORKSPACE_ID = "workspace-test";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("QwenVlProvider", () => {
   it("sends bounded JPEG/PNG data URLs and returns only text and usage", async () => {
     let sentBody: Record<string, unknown> = {};
     const provider = new QwenVlProvider({
       apiKey: "test-key",
+      workspaceId: WORKSPACE_ID,
       fetch: vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
         sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
         return Response.json({
@@ -65,14 +72,24 @@ describe("QwenVlProvider", () => {
       image_url: { url: "data:image/png;base64,iVA=" }
     });
     expect(sentBody).toMatchObject({
-      model: "qwen3-vl-plus",
-      max_tokens: 2048,
+      model: "qwen3.8-max",
+      max_completion_tokens: 2048,
+      enable_thinking: false,
+      preserve_thinking: false,
+      vl_high_resolution_images: false,
       stream: false
     });
+    expect(sentBody).not.toHaveProperty("max_tokens");
   });
 
   it("validates the API key only when an analysis starts", async () => {
-    const provider = new QwenVlProvider({ apiKey: "", fetch: vi.fn() });
+    vi.stubEnv("QWEN_VL_API_KEY", "");
+    vi.stubEnv("DASHSCOPE_API_KEY", "");
+    const provider = new QwenVlProvider({
+      apiKey: "",
+      workspaceId: WORKSPACE_ID,
+      fetch: vi.fn()
+    });
 
     await expect(
       provider.analyze({
@@ -82,26 +99,172 @@ describe("QwenVlProvider", () => {
     ).rejects.toBeInstanceOf(ConfigurationError);
   });
 
-  it("requires HTTPS on an explicitly trusted host", () => {
-    expect(
-      () =>
-        new QwenVlProvider({
-          apiKey: "test-key",
-          baseUrl: "http://dashscope.aliyuncs.com/compatible-mode/v1"
+  it("treats an empty QWEN key as absent and falls back to DASHSCOPE_API_KEY", async () => {
+    vi.stubEnv("QWEN_VL_API_KEY", "");
+    vi.stubEnv("DASHSCOPE_API_KEY", "fallback-key");
+    let authorization = "";
+    const provider = new QwenVlProvider({
+      workspaceId: WORKSPACE_ID,
+      fetch: vi.fn(async (_input, init) => {
+        authorization = new Headers(init?.headers).get("authorization") ?? "";
+        return Response.json({
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+        });
+      })
+    });
+
+    await provider.analyze({
+      prompt: "analyze",
+      images: [{ mimeType: "image/png", bytes: Uint8Array.of(1) }]
+    });
+    expect(authorization).toBe("Bearer fallback-key");
+  });
+
+  it("derives the Beijing workspace endpoint and never needs the global host", async () => {
+    let requestedUrl = "";
+    const provider = new QwenVlProvider({
+      apiKey: "test-key",
+      workspaceId: WORKSPACE_ID,
+      fetch: vi.fn(async (input) => {
+        requestedUrl = String(input);
+        return Response.json({ choices: [{ message: { content: "ok" } }] });
+      })
+    });
+
+    await provider.analyze({
+      prompt: "analyze",
+      images: [{ mimeType: "image/png", bytes: Uint8Array.of(1) }]
+    });
+    expect(requestedUrl).toBe(
+      "https://workspace-test.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions"
+    );
+    expect(requestedUrl).not.toContain("dashscope.aliyuncs.com");
+  });
+
+  it("migrates legacy global endpoint environment values without a server edit", async () => {
+    vi.stubEnv("DASHSCOPE_WORKSPACE_ID", WORKSPACE_ID);
+    vi.stubEnv(
+      "QWEN_VL_BASE_URL",
+      "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    );
+    vi.stubEnv("QWEN_VL_ALLOWED_HOSTS", "dashscope.aliyuncs.com");
+    vi.stubEnv("QWEN_VL_MODEL", "qwen3-vl-plus");
+    let requestedUrl = "";
+    const provider = new QwenVlProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async (input) => {
+        requestedUrl = String(input);
+        return Response.json({ choices: [{ message: { content: "ok" } }] });
+      })
+    });
+
+    await provider.analyze({
+      prompt: "analyze",
+      images: [{ mimeType: "image/png", bytes: Uint8Array.of(1) }]
+    });
+    expect(requestedUrl).toContain(
+      "workspace-test.cn-beijing.maas.aliyuncs.com"
+    );
+    expect(requestedUrl).not.toContain("dashscope.aliyuncs.com");
+    expect(provider.model).toBe("qwen3.8-max");
+  });
+
+  it("streams audited latency and usage without exposing reasoning", async () => {
+    let sentBody: Record<string, unknown> = {};
+    const provider = new QwenVlProvider({
+      apiKey: "test-key",
+      workspaceId: WORKSPACE_ID,
+      fetch: vi.fn(async (_input, init) => {
+        sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(
+          [
+            'data: {"choices":[{"delta":{"content":"观察"}}]}',
+            "",
+            'data: {"choices":[{"delta":{"content":"结论"},"finish_reason":"stop"}]}',
+            "",
+            'data: {"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}',
+            "",
+            "data: [DONE]",
+            ""
+          ].join("\n"),
+          { headers: { "content-type": "text/event-stream" } }
+        );
+      })
+    });
+
+    const result = await provider.analyzeWithTelemetry({
+      prompt: "识别",
+      images: [{ mimeType: "image/png", bytes: Uint8Array.of(1) }]
+    });
+
+    expect(result).toMatchObject({
+      text: "观察结论",
+      usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18 }
+    });
+    expect(result.firstTokenLatencyMs).toBeGreaterThanOrEqual(0);
+    expect(result.totalDurationMs).toBeGreaterThanOrEqual(
+      result.firstTokenLatencyMs
+    );
+    expect(sentBody).toMatchObject({
+      model: "qwen3.8-max",
+      enable_thinking: false,
+      preserve_thinking: false,
+      stream: true,
+      stream_options: { include_usage: true }
+    });
+  });
+
+  it("keeps the legacy token parameter only for the comparison baseline", async () => {
+    let sentBody: Record<string, unknown> = {};
+    const provider = new QwenVlProvider({
+      apiKey: "test-key",
+      workspaceId: WORKSPACE_ID,
+      model: "qwen3-vl-plus",
+      fetch: vi.fn(async (_input, init) => {
+        sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return Response.json({ choices: [{ message: { content: "ok" } }] });
+      })
+    });
+
+    await provider.analyze({
+      prompt: "baseline",
+      images: [{ mimeType: "image/png", bytes: Uint8Array.of(1) }]
+    });
+    expect(sentBody).toMatchObject({
+      model: "qwen3-vl-plus",
+      max_tokens: 2048,
+      enable_thinking: false
+    });
+    expect(sentBody).not.toHaveProperty("max_completion_tokens");
+    expect(sentBody).not.toHaveProperty("preserve_thinking");
+  });
+
+  it("requires HTTPS on the exact Beijing workspace host", async () => {
+    for (const baseUrl of [
+      "http://workspace-test.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "https://untrusted.example/compatible-mode/v1"
+    ]) {
+      const provider = new QwenVlProvider({
+        apiKey: "test-key",
+        workspaceId: WORKSPACE_ID,
+        baseUrl,
+        allowedHosts: ["workspace-test.cn-beijing.maas.aliyuncs.com"],
+        fetch: vi.fn()
+      });
+      await expect(
+        provider.analyze({
+          prompt: "analyze",
+          images: [{ mimeType: "image/png", bytes: Uint8Array.of(1) }]
         })
-    ).toThrow(ConfigurationError);
-    expect(
-      () =>
-        new QwenVlProvider({
-          apiKey: "test-key",
-          baseUrl: "https://untrusted.example/compatible-mode/v1"
-        })
-    ).toThrow(ConfigurationError);
+      ).rejects.toBeInstanceOf(ConfigurationError);
+    }
   });
 
   it("rejects unsupported media types and oversized image input", async () => {
     const provider = new QwenVlProvider({
       apiKey: "test-key",
+      workspaceId: WORKSPACE_ID,
       maxImageBytes: 2,
       maxTotalImageBytes: 3,
       fetch: vi.fn()
@@ -140,6 +303,7 @@ describe("QwenVlProvider", () => {
   it("bounds the provider response body", async () => {
     const provider = new QwenVlProvider({
       apiKey: "test-key",
+      workspaceId: WORKSPACE_ID,
       maxResponseBytes: 32,
       fetch: vi.fn(
         async () =>
@@ -164,6 +328,7 @@ describe("QwenVlProvider", () => {
   it("normalizes an unclassified transport failure as retryable without exposing it", async () => {
     const provider = new QwenVlProvider({
       apiKey: "test-key",
+      workspaceId: WORKSPACE_ID,
       fetch: vi.fn(async () => {
         throw new TypeError("private network detail request-id=secret");
       })
@@ -191,6 +356,7 @@ describe("QwenVlProvider", () => {
     const timeout = new ProviderTimeoutError("qwen-vl", "fixed timeout");
     const provider = new QwenVlProvider({
       apiKey: "test-key",
+      workspaceId: WORKSPACE_ID,
       fetch: vi.fn(async () => {
         throw timeout;
       })
@@ -207,6 +373,7 @@ describe("QwenVlProvider", () => {
 
 describe("routeCapabilities", () => {
   it("always keeps DeepSeek reasoning and routes media capabilities", () => {
+    vi.stubEnv("DASHSCOPE_WORKSPACE_ID", WORKSPACE_ID);
     const textOnly = routeCapabilities({
       hasImages: false,
       hasDocuments: false

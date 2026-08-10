@@ -840,10 +840,18 @@ jobs:
           }
           trap cleanup_acceptance EXIT HUP INT TERM
           docker exec "$web_container" rm -rf -- "$container_dir"
+          docker exec "$web_container" mkdir -p -- "$container_dir"
+          docker exec \
+            -e QWEN_VL_SMOKE_MODE=benchmark \
+            -e "QWEN_VL_BENCHMARK_OUTPUT=$container_dir/qwen-vision-benchmark.json" \
+            -e "AGENT_V3_SMOKE_GIT_SHA=$release_id" \
+            -e "AGENT_V3_SMOKE_IMAGE_DIGEST=$image_digest" \
+            "$web_container" pnpm smoke:qwen-vl
           docker exec \
             -e "AGENT_V3_SMOKE_GIT_SHA=$release_id" \
             -e "AGENT_V3_SMOKE_IMAGE_DIGEST=$image_digest" \
             -e "AGENT_V3_SMOKE_OUTPUT_DIR=$container_dir" \
+            -e "QWEN_VL_BENCHMARK_EVIDENCE=$container_dir/qwen-vision-benchmark.json" \
             "$web_container" pnpm smoke:agent:v3:staging
           runtime_checksum="$(
             docker exec "$web_container" sha256sum \
