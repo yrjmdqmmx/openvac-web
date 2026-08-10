@@ -93,17 +93,21 @@ describe("Qwen-VL smoke public boundary", () => {
     });
   });
 
-  it.each(["73194625", "校验数字：73194625", "7319 4625"])(
-    "accepts an exact visual nonce with harmless formatting: %s",
-    (value) => {
-      expect(recognizesVisualNonce(value, "73194625")).toBe(true);
-    }
-  );
+  it.each([
+    "73194625",
+    "校验数字：73194625",
+    "图片中的8位校验数字是：73194625",
+    "7319 4625"
+  ])("accepts an exact visual nonce with harmless formatting: %s", (value) => {
+    expect(recognizesVisualNonce(value, "73194625")).toBe(true);
+  });
 
   it.each([
     "7319462",
     "731946250",
     "73194626",
+    "73194625，另一个数字是12345678",
+    "73194625，重复为73194625",
     "无法读取 73194625",
     "未清晰识别到 73194625"
   ])(
