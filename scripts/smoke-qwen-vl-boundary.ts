@@ -79,7 +79,10 @@ export function publicQwenVlSmokeFailure(
 }
 
 export function recognizesPascalUnit(value: string): boolean {
-  const compact = value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const normalized = value
+    .toLowerCase()
+    .replace(/大写|小写|英文字母|字母|字符|和|与|及/gu, "");
+  const compact = normalized.replace(/[^\p{L}\p{N}]+/gu, "");
   return (
     compact.includes("pa") ||
     compact.includes("pascal") ||

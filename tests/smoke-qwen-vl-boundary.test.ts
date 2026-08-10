@@ -93,14 +93,19 @@ describe("Qwen-VL smoke public boundary", () => {
     });
   });
 
-  it.each(["Pa", "单位为 Pa（帕斯卡）", "帕", "帕斯卡", "pascal"])(
-    "accepts an equivalent Pascal-unit recognition: %s",
-    (value) => {
-      expect(recognizesPascalUnit(value)).toBe(true);
-    }
-  );
+  it.each([
+    "Pa",
+    "单位为 Pa（帕斯卡）",
+    "帕",
+    "帕斯卡",
+    "pascal",
+    "图中显示的是大写字母 P 和小写字母 a",
+    "单位由字母 P 与 a 组成"
+  ])("accepts an equivalent Pascal-unit recognition: %s", (value) => {
+    expect(recognizesPascalUnit(value)).toBe(true);
+  });
 
-  it.each(["bar", "mbar", "Torr", "无法识别"])(
+  it.each(["bar", "mbar", "Torr", "无法识别", "字母 P 和 B"])(
     "rejects a different or missing pressure unit: %s",
     (value) => {
       expect(recognizesPascalUnit(value)).toBe(false);
