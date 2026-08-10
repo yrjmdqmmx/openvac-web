@@ -58,10 +58,10 @@ async function contractSmoke(): Promise<void> {
     throw new QwenVlSmokeFailure("CONFIG_MISSING");
   }
   const image = await renderSvg(
-    '<rect width="640" height="320" fill="#f8fafc"/><text x="170" y="190" font-family="Arial" font-size="96" font-weight="700">Pa</text>'
+    '<rect width="640" height="320" fill="#f8fafc"/><text x="80" y="105" font-family="Arial" font-size="42" font-weight="700">VACUUM GAUGE</text><text x="80" y="210" font-family="Arial" font-size="58" font-weight="700">PRESSURE 2.50E-3 Pa</text>'
   );
   const result = await analyzeWithOneRetry(provider, {
-    prompt: "识别图片中清晰可见的真空压力单位。只需简短回答。",
+    prompt: "读取图片中仪表显示的真空压力单位。只需简短回答。",
     images: [{ mimeType: "image/png", bytes: new Uint8Array(image) }],
     maxOutputTokens: 128
   });
