@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 
 import sharp from "sharp";
@@ -20,7 +21,7 @@ import {
   classifyQwenVlSmokeFailure,
   publicQwenVlSmokeFailure,
   QwenVlSmokeFailure,
-  recognizesPascalUnit
+  recognizesVisualNonce
 } from "./smoke-qwen-vl-boundary";
 
 type BenchmarkCase = {
@@ -57,16 +58,17 @@ async function contractSmoke(): Promise<void> {
   if (provider.model !== CURRENT_MODEL) {
     throw new QwenVlSmokeFailure("CONFIG_MISSING");
   }
+  const visualNonce = String(randomInt(10_000_000, 100_000_000));
   const image = await renderSvg(
-    '<rect width="640" height="320" fill="#f8fafc"/><text x="80" y="105" font-family="Arial" font-size="42" font-weight="700">VACUUM GAUGE</text><text x="80" y="210" font-family="Arial" font-size="58" font-weight="700">PRESSURE 2.50E-3 Pa</text>'
+    `<rect width="640" height="320" fill="#f8fafc"/><text x="100" y="105" font-family="Arial" font-size="42" font-weight="700">VISION CHECK</text><text x="100" y="220" font-family="Arial" font-size="82" font-weight="700">${visualNonce}</text>`
   );
   const result = await analyzeWithOneRetry(provider, {
-    prompt: "读取图片中仪表显示的真空压力单位。只需简短回答。",
+    prompt: "读取图片中清晰显示的8位校验数字。只输出数字。",
     images: [{ mimeType: "image/png", bytes: new Uint8Array(image) }],
     maxOutputTokens: 128
   });
-  if (!recognizesPascalUnit(result.text)) {
-    throw new QwenVlSmokeFailure("RESPONSE_INVALID", "UNIT_NOT_RECOGNIZED");
+  if (!recognizesVisualNonce(result.text, visualNonce)) {
+    throw new QwenVlSmokeFailure("RESPONSE_INVALID", "VISUAL_NONCE_MISMATCH");
   }
   console.log(
     JSON.stringify({
