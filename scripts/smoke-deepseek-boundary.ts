@@ -47,6 +47,8 @@ export type DeepSeekSmokeFailureKind =
   | "timeout"
   | "request_contract"
   | "stream_contract"
+  | "tool_arguments"
+  | "calculation_input"
   | "provider_other"
   | "unexpected";
 
@@ -135,6 +137,21 @@ export function publicDeepSeekSmokeFailure(
     if (error.kind) result.kind = error.kind;
   }
   return result;
+}
+
+export function classifyDeepSeekToolExecutionFailure(
+  errorCode: string | undefined
+): DeepSeekSmokeFailure {
+  const kind: DeepSeekSmokeFailureKind =
+    errorCode === "INVALID_TOOL_ARGUMENTS_JSON" ||
+    errorCode === "INVALID_TOOL_ARGUMENTS"
+      ? "tool_arguments"
+      : errorCode === "CALCULATION_INPUT_INVALID"
+        ? "calculation_input"
+        : errorCode === "TOOL_TIMEOUT"
+          ? "timeout"
+          : "request_contract";
+  return new DeepSeekSmokeFailure("TOOL_EXECUTION_FAILED", "tool_first", kind);
 }
 
 export function applyDeepSeekSmokeBoundary(input: {

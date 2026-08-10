@@ -19,6 +19,7 @@ import {
   applyDeepSeekToolProjectionBoundary,
   applyDeepSeekSmokeBoundary,
   classifyDeepSeekSmokeProviderFailure,
+  classifyDeepSeekToolExecutionFailure,
   collectCompletedSafetyProbeWithOneRetry,
   DeepSeekSmokeFailure,
   parseDeepSeekSmokeAnswer,
@@ -181,7 +182,7 @@ async function runToolContinuationProbe(
     arguments: call.arguments
   });
   if (!execution.ok) {
-    throw new DeepSeekSmokeFailure("TOOL_EXECUTION_FAILED");
+    throw classifyDeepSeekToolExecutionFailure(execution.errorCode);
   }
   const projection = trustedPumpdownProjectionFromToolTurn({
     calls: first.calls,
