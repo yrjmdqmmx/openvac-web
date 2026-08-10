@@ -35,7 +35,15 @@ export type StoredArtifact = {
   title: string;
   formats: ArtifactFormat[];
   status: ArtifactStatus;
+  failureCode?: ArtifactGenerationFailureCode;
 };
+
+export type ArtifactGenerationFailureCode =
+  | "ARTIFACT_RENDER_FAILED"
+  | "ARTIFACT_PERSIST_FAILED"
+  | "ARTIFACT_FINALIZE_FAILED"
+  | "ARTIFACT_CLEANUP_FAILED"
+  | "ARTIFACT_RUN_ABORTED";
 
 export interface ArtifactStorage {
   create(input: ArtifactStorageCreateInput): Promise<StoredArtifact>;
@@ -60,7 +68,9 @@ export type ArtifactToolErrorCode =
   | "ARTIFACT_INTENT_REQUIRED"
   | "INVALID_ARTIFACT_SPEC"
   | "ARTIFACT_SCOPE_MISMATCH"
-  | "ARTIFACT_STORAGE_UNCONFIGURED";
+  | "ARTIFACT_STORAGE_UNCONFIGURED"
+  | "ARTIFACT_GENERATION_FAILED"
+  | ArtifactGenerationFailureCode;
 
 export class ArtifactToolError extends Error {
   constructor(
@@ -154,6 +164,12 @@ export class ArtifactToolService {
       throw new ArtifactToolError(
         "ARTIFACT_SCOPE_MISMATCH",
         "Stored artifact scope or metadata could not be verified."
+      );
+    }
+    if (stored.status !== "ready") {
+      throw new ArtifactToolError(
+        stored.failureCode ?? "ARTIFACT_GENERATION_FAILED",
+        "Artifact generation did not reach a downloadable state."
       );
     }
     return {

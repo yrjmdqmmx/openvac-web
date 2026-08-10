@@ -407,7 +407,7 @@ export class AgentRunOrchestrator {
           artifact.status !== "ready"
         ) {
           throw new AgentRuntimeError(
-            "ARTIFACT_CREATION_FAILED",
+            safeArtifactFailureCode(artifactOutput?.errorCode),
             "产物未能完成并进入可下载状态。",
             false
           );
@@ -1999,6 +1999,26 @@ export function safeProviderTerminalErrorCode(value: unknown): string {
     default:
       return "PROVIDER_RESPONSE_FAILED";
   }
+}
+
+const SAFE_ARTIFACT_FAILURE_CODES = new Set([
+  "ARTIFACT_RENDER_FAILED",
+  "ARTIFACT_PERSIST_FAILED",
+  "ARTIFACT_FINALIZE_FAILED",
+  "ARTIFACT_CLEANUP_FAILED",
+  "ARTIFACT_RUN_ABORTED",
+  "ARTIFACT_GENERATION_FAILED",
+  "ARTIFACT_INTENT_REQUIRED",
+  "INVALID_ARTIFACT_SPEC",
+  "ARTIFACT_SCOPE_MISMATCH",
+  "ARTIFACT_STORAGE_UNCONFIGURED",
+  "INVALID_TOOL_ARGUMENTS"
+]);
+
+export function safeArtifactFailureCode(value: unknown): string {
+  return typeof value === "string" && SAFE_ARTIFACT_FAILURE_CODES.has(value)
+    ? value
+    : "ARTIFACT_CREATION_FAILED";
 }
 
 export class AgentRuntimeError extends Error {

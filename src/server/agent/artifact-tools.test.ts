@@ -88,7 +88,7 @@ describe("ArtifactToolService", () => {
       kind: "diagnosis_report",
       title: "真空系统诊断",
       formats: ["pdf"],
-      status: "generating"
+      status: "ready"
     });
     expect(JSON.stringify(result)).not.toMatch(/url|secret/iu);
   });
@@ -109,6 +109,27 @@ describe("ArtifactToolService", () => {
         spec: makeSpec()
       })
     ).rejects.toMatchObject({ code: "ARTIFACT_SCOPE_MISMATCH" });
+  });
+
+  it("returns an allowlisted generation stage instead of failed metadata", async () => {
+    const service = new ArtifactToolService(
+      makeStorage({
+        status: "failed",
+        failureCode: "ARTIFACT_PERSIST_FAILED"
+      })
+    );
+
+    await expect(
+      service.create({
+        userId: "user-a",
+        conversationId: "conversation-a",
+        turnId,
+        runId,
+        assistantMessageId,
+        question: "请生成一份诊断报告",
+        spec: makeSpec()
+      })
+    ).rejects.toMatchObject({ code: "ARTIFACT_PERSIST_FAILED" });
   });
 
   it("rejects raw URLs and internal runtime fields in artifact content", async () => {
@@ -175,7 +196,7 @@ function makeStorage(
       kind: "diagnosis_report" as const,
       title: "真空系统诊断",
       formats: ["pdf" as const],
-      status: "generating" as const,
+      status: "ready" as const,
       ...overrides
     }))
   };

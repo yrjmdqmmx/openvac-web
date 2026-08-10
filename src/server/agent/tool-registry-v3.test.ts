@@ -63,7 +63,7 @@ describe("ToolRegistry V3 exposure", () => {
         kind: input.spec.kind,
         title: input.spec.title,
         formats: input.spec.formats,
-        status: "generating" as const,
+        status: "ready" as const,
         signedUrl: "https://private.example/signed?Signature=secret"
       }))
     };
@@ -92,7 +92,7 @@ describe("ToolRegistry V3 exposure", () => {
         kind: "diagnosis_report",
         title: "真空系统诊断",
         formats: ["pdf"],
-        status: "generating"
+        status: "ready"
       }
     ]);
     expect(JSON.stringify(result)).not.toMatch(/signed|signature|secret/iu);
