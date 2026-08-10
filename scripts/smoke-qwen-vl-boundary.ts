@@ -16,8 +16,13 @@ export type QwenVlSmokeFailureCode =
   | "RESPONSE_INVALID"
   | "UNEXPECTED_FAILURE";
 
+export type QwenVlSmokeFailureDetail = "UNIT_NOT_RECOGNIZED";
+
 export class QwenVlSmokeFailure extends Error {
-  constructor(readonly code: QwenVlSmokeFailureCode) {
+  constructor(
+    readonly code: QwenVlSmokeFailureCode,
+    readonly detail?: QwenVlSmokeFailureDetail
+  ) {
     super(code);
     this.name = "QwenVlSmokeFailure";
   }
@@ -62,11 +67,15 @@ export function classifyQwenVlSmokeFailure(error: unknown): QwenVlSmokeFailure {
 export function publicQwenVlSmokeFailure(
   error: unknown
 ): Record<string, string> {
-  return {
+  const result: Record<string, string> = {
     schemaVersion: "openvac.qwen-vl-smoke-failure.v1",
     code:
       error instanceof QwenVlSmokeFailure ? error.code : "UNEXPECTED_FAILURE"
   };
+  if (error instanceof QwenVlSmokeFailure && error.detail) {
+    result.detail = error.detail;
+  }
+  return result;
 }
 
 export function recognizesPascalUnit(value: string): boolean {

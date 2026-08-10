@@ -340,7 +340,6 @@ export class QwenVlProvider implements VisionProvider {
         {
           role: "user",
           content: [
-            { type: "text", text: prompt },
             ...request.images.map((image) => ({
               type: "image_url",
               image_url: {
@@ -348,7 +347,8 @@ export class QwenVlProvider implements VisionProvider {
                   image.bytes
                 ).toString("base64")}`
               }
-            }))
+            })),
+            { type: "text", text: prompt }
           ]
         }
       ],

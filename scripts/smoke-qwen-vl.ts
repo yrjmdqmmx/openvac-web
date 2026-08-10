@@ -66,7 +66,7 @@ async function contractSmoke(): Promise<void> {
     maxOutputTokens: 128
   });
   if (!recognizesPascalUnit(result.text)) {
-    throw new QwenVlSmokeFailure("RESPONSE_INVALID");
+    throw new QwenVlSmokeFailure("RESPONSE_INVALID", "UNIT_NOT_RECOGNIZED");
   }
   console.log(
     JSON.stringify({

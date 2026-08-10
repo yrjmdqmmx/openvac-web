@@ -81,6 +81,18 @@ describe("Qwen-VL smoke public boundary", () => {
     }
   );
 
+  it("exposes only the fixed semantic detail, never provider text", () => {
+    const failure = new QwenVlSmokeFailure(
+      "RESPONSE_INVALID",
+      "UNIT_NOT_RECOGNIZED"
+    );
+    expect(publicQwenVlSmokeFailure(failure)).toEqual({
+      schemaVersion: "openvac.qwen-vl-smoke-failure.v1",
+      code: "RESPONSE_INVALID",
+      detail: "UNIT_NOT_RECOGNIZED"
+    });
+  });
+
   it.each(["Pa", "单位为 Pa（帕斯卡）", "帕", "帕斯卡", "pascal"])(
     "accepts an equivalent Pascal-unit recognition: %s",
     (value) => {

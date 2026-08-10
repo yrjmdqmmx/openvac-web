@@ -62,15 +62,15 @@ describe("QwenVlProvider", () => {
 
     const messages = sentBody.messages as Array<Record<string, unknown>>;
     const content = messages[0]?.content as Array<Record<string, unknown>>;
-    expect(content[0]).toEqual({ type: "text", text: "识别真空仪表" });
-    expect(content[1]).toEqual({
+    expect(content[0]).toEqual({
       type: "image_url",
       image_url: { url: "data:image/jpeg;base64,/9g=" }
     });
-    expect(content[2]).toEqual({
+    expect(content[1]).toEqual({
       type: "image_url",
       image_url: { url: "data:image/png;base64,iVA=" }
     });
+    expect(content[2]).toEqual({ type: "text", text: "识别真空仪表" });
     expect(sentBody).toMatchObject({
       model: "qwen3.8-max",
       max_completion_tokens: 2048,
