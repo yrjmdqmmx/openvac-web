@@ -440,6 +440,7 @@ function visionBenchmark(gitSha: string, imageDigest: string) {
     imageTransport: "base64-data-url",
     defaultModel: "qwen3.8-max",
     defaultThinking: true,
+    thinkingBudgetTokens: 8192,
     priceVersion: "aliyun-standard-cn-beijing-2026-08-10",
     measurements: [
       ...QWEN_VISION_BENCHMARK_CASE_IDS.map((caseId) =>

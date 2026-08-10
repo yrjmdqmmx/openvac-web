@@ -25,7 +25,7 @@ const MAX_SEARCH_CANDIDATE_CHUNKS = 64;
 const MAX_QUERY_CHARACTERS = 2_000;
 const MAX_IMAGE_PROMPT_CHARACTERS = 2_000;
 const MAX_VISION_OUTPUT_CHARACTERS = 6_000;
-const DEFAULT_VISION_ATTEMPT_TIMEOUT_MS = 55_000;
+const DEFAULT_VISION_ATTEMPT_TIMEOUT_MS = 105_000;
 const DOCUMENT_MIME_TYPES = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

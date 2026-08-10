@@ -23,6 +23,7 @@ export {
 export {
   QWEN_VL_CAPABILITIES,
   QwenVlProvider,
+  QwenVlOutputTruncatedError,
   configuredQwenVlModel,
   getVisionProvider,
   type QwenVlTelemetryResult

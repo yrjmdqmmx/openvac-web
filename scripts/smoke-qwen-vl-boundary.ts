@@ -2,7 +2,8 @@ import {
   ConfigurationError,
   ProviderError,
   ProviderResponseError,
-  ProviderTimeoutError
+  ProviderTimeoutError,
+  QwenVlOutputTruncatedError
 } from "../src/server/providers";
 
 export type QwenVlSmokeFailureCode =
@@ -13,6 +14,7 @@ export type QwenVlSmokeFailureCode =
   | "REQUEST_INVALID"
   | "PROVIDER_UNAVAILABLE"
   | "TIMEOUT"
+  | "OUTPUT_TRUNCATED"
   | "RESPONSE_INVALID"
   | "UNEXPECTED_FAILURE";
 
@@ -39,6 +41,9 @@ export function classifyQwenVlSmokeFailure(error: unknown): QwenVlSmokeFailure {
   if (error instanceof ProviderTimeoutError) {
     return new QwenVlSmokeFailure("TIMEOUT");
   }
+  if (error instanceof QwenVlOutputTruncatedError) {
+    return new QwenVlSmokeFailure("OUTPUT_TRUNCATED");
+  }
   if (error instanceof ProviderError) {
     if (error.status === 401 || error.status === 403) {
       return new QwenVlSmokeFailure("AUTH_FAILED");
@@ -54,7 +59,7 @@ export function classifyQwenVlSmokeFailure(error: unknown): QwenVlSmokeFailure {
     }
     if (
       (error.status !== undefined && error.status >= 500) ||
-      error.retryable
+      (!(error instanceof ProviderResponseError) && error.retryable)
     ) {
       return new QwenVlSmokeFailure("PROVIDER_UNAVAILABLE");
     }

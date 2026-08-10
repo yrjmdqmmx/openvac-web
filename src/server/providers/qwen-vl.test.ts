@@ -6,7 +6,7 @@ import {
   ProviderTimeoutError
 } from "./errors";
 import { routeCapabilities } from "./index";
-import { QwenVlProvider } from "./qwen-vl";
+import { QwenVlOutputTruncatedError, QwenVlProvider } from "./qwen-vl";
 
 const WORKSPACE_ID = "workspace-test";
 
@@ -73,14 +73,15 @@ describe("QwenVlProvider", () => {
     expect(content[2]).toEqual({ type: "text", text: "识别真空仪表" });
     expect(sentBody).toMatchObject({
       model: "qwen3.8-max",
-      max_completion_tokens: 2048,
-      reasoning_effort: "xhigh",
+      max_completion_tokens: 10_240,
+      enable_thinking: true,
+      thinking_budget: 8192,
       preserve_thinking: false,
       vl_high_resolution_images: false,
       stream: false
     });
     expect(sentBody).not.toHaveProperty("max_tokens");
-    expect(sentBody).not.toHaveProperty("enable_thinking");
+    expect(sentBody).not.toHaveProperty("reasoning_effort");
   });
 
   it("validates the API key only when an analysis starts", async () => {
@@ -209,12 +210,14 @@ describe("QwenVlProvider", () => {
     );
     expect(sentBody).toMatchObject({
       model: "qwen3.8-max",
-      reasoning_effort: "xhigh",
+      max_completion_tokens: 10_240,
+      enable_thinking: true,
+      thinking_budget: 8192,
       preserve_thinking: false,
       stream: true,
       stream_options: { include_usage: true }
     });
-    expect(sentBody).not.toHaveProperty("enable_thinking");
+    expect(sentBody).not.toHaveProperty("reasoning_effort");
   });
 
   it("keeps non-thinking available only for audited comparisons", async () => {
@@ -235,11 +238,47 @@ describe("QwenVlProvider", () => {
     });
     expect(sentBody).toMatchObject({
       model: "qwen3.8-max",
-      reasoning_effort: "none",
+      max_completion_tokens: 2048,
+      enable_thinking: false,
       preserve_thinking: false
     });
-    expect(sentBody).not.toHaveProperty("enable_thinking");
+    expect(sentBody).not.toHaveProperty("reasoning_effort");
+    expect(sentBody).not.toHaveProperty("thinking_budget");
   });
+
+  it.each([false, true])(
+    "rejects a %s streaming response that exhausts the total output budget",
+    async (stream) => {
+      const provider = new QwenVlProvider({
+        apiKey: "test-key",
+        workspaceId: WORKSPACE_ID,
+        fetch: vi.fn(async () =>
+          stream
+            ? new Response(
+                'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n',
+                { headers: { "content-type": "text/event-stream" } }
+              )
+            : Response.json({
+                choices: [
+                  {
+                    message: { reasoning_content: "private" },
+                    finish_reason: "length"
+                  }
+                ]
+              })
+        )
+      });
+      const request = {
+        prompt: "analyze",
+        images: [{ mimeType: "image/png" as const, bytes: Uint8Array.of(1) }]
+      };
+      await expect(
+        stream
+          ? provider.analyzeWithTelemetry(request)
+          : provider.analyze(request)
+      ).rejects.toBeInstanceOf(QwenVlOutputTruncatedError);
+    }
+  );
 
   it("keeps the legacy token parameter only for the comparison baseline", async () => {
     let sentBody: Record<string, unknown> = {};

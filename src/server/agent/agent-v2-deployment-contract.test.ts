@@ -25,6 +25,7 @@ const requiredAgentEnvironment = [
   "QWEN_VL_MODEL",
   "QWEN_VL_MAX_OUTPUT_TOKENS",
   "QWEN_VL_ENABLE_THINKING",
+  "QWEN_VL_THINKING_BUDGET",
   "QWEN_VL_HIGH_RESOLUTION_IMAGES"
 ] as const;
 
@@ -40,7 +41,10 @@ describe("Agent deployment contract", () => {
       expect(example, `${key} is missing from .env.example`).toMatch(
         new RegExp(`^${key}=`, "mu")
       );
-      if (key !== "QWEN_VL_ENABLE_THINKING") {
+      if (
+        key !== "QWEN_VL_ENABLE_THINKING" &&
+        key !== "QWEN_VL_THINKING_BUDGET"
+      ) {
         expect(
           compose,
           `${key} is not passed to application containers`
@@ -60,6 +64,8 @@ describe("Agent deployment contract", () => {
     expect(compose).toContain("QWEN_VL_MODEL: ${QWEN_VL_MODEL:-qwen3.8-max}");
     expect(example).toContain("QWEN_VL_ENABLE_THINKING=true");
     expect(compose).toContain('QWEN_VL_ENABLE_THINKING: "true"');
+    expect(example).toContain("QWEN_VL_THINKING_BUDGET=8192");
+    expect(compose).toContain('QWEN_VL_THINKING_BUDGET: "8192"');
     expect(example).toContain("QWEN_VL_BASE_URL=");
     expect(example).toContain("QWEN_VL_ALLOWED_HOSTS=");
     expect(compose).toContain("QWEN_VL_BASE_URL: ${QWEN_VL_BASE_URL:-}");
