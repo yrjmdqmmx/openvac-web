@@ -81,6 +81,260 @@ describe("Answer V3 runtime-evidence adapter", () => {
         ]
       })
     ).toBe(false);
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        sections: [
+          {
+            heading: "适用工况",
+            paragraphs: ["介质为洁净干燥空气，其他条件待用户确认。"]
+          }
+        ],
+        tables: [
+          {
+            columns: ["参数", "值", "单位"],
+            rows: [["入口压力", "10", "Pa"]]
+          }
+        ]
+      })
+    ).toBe(true);
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        sections: [{ heading: "适用工况", paragraphs: ["稳态运行"] }],
+        tables: [
+          {
+            columns: ["参数", "值", "单位"],
+            rows: [["入口压力", "10", "待确认"]]
+          }
+        ]
+      })
+    ).toBe(false);
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        tables: [
+          {
+            columns: ["参数", "值", "单位", "假设"],
+            rows: [["入口压力", "10", "Pa", "L/s"]]
+          }
+        ]
+      })
+    ).toBe(false);
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        tables: [
+          {
+            columns: ["参数", "值", "单位", "假设"],
+            rows: [["入口压力", "10", "Pa", "待用户确认"]]
+          }
+        ]
+      })
+    ).toBe(true);
+    for (const nonUnit of [
+      "estimated",
+      "none",
+      "foo",
+      "not confirmed",
+      "N/A (not provided)",
+      "to be confirmed at a later date"
+    ]) {
+      expect(
+        parameterTableIncludesUnitsAndAssumptions({
+          ...spec,
+          tables: [
+            {
+              columns: ["参数", "值", "单位", "假设"],
+              rows: [["功率", "10", nonUnit, "待用户确认"]]
+            }
+          ]
+        })
+      ).toBe(false);
+    }
+    for (const unit of [
+      "kW",
+      "kg",
+      "mmHg",
+      "K",
+      "micron",
+      "cmH2O",
+      "sccm",
+      "min",
+      "L/min",
+      "m³/min"
+    ]) {
+      expect(
+        parameterTableIncludesUnitsAndAssumptions({
+          ...spec,
+          tables: [
+            {
+              columns: ["参数", "值", "单位", "假设"],
+              rows: [["额定参数", "10", unit, "待用户确认"]]
+            }
+          ]
+        })
+      ).toBe(true);
+    }
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        tables: [
+          {
+            columns: ["参数", "值", "单位"],
+            rows: [["额定功率", "10", "kW"]]
+          }
+        ]
+      })
+    ).toBe(false);
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        tables: [
+          {
+            columns: ["参数", "值", "单位"],
+            rows: [
+              ["额定功率", "10", "kW"],
+              ["假设", "稳态运行", "-"]
+            ]
+          }
+        ]
+      })
+    ).toBe(true);
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        tables: [
+          {
+            columns: ["参数", "值", "单位", "假设"],
+            rows: [["入口压力", "10", "Pa", "-"]]
+          }
+        ]
+      })
+    ).toBe(false);
+    for (const ordinaryParameter of [
+      "工况压力",
+      "条件温度",
+      "assumptionRate"
+    ]) {
+      expect(
+        parameterTableIncludesUnitsAndAssumptions({
+          ...spec,
+          tables: [
+            {
+              columns: ["参数", "值", "单位"],
+              rows: [[ordinaryParameter, "10", "Pa"]]
+            }
+          ]
+        })
+      ).toBe(false);
+    }
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        tables: [
+          {
+            columns: ["参数", "值", "单位", "assumptionRate"],
+            rows: [["入口压力", "10", "Pa", "10 Pa"]]
+          }
+        ]
+      })
+    ).toBe(false);
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        sections: [{ heading: "assumptionRate", paragraphs: ["10 Pa"] }],
+        tables: [
+          {
+            columns: ["参数", "值", "单位"],
+            rows: [["入口压力", "10", "Pa"]]
+          }
+        ]
+      })
+    ).toBe(false);
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        tables: [
+          {
+            columns: ["参数", "值", "单位"],
+            rows: [["condition note: 10 Pa", "10", "Pa"]]
+          }
+        ]
+      })
+    ).toBe(true);
+    for (const operatingCondition of [
+      "10 Pa",
+      "20 °C",
+      "50%",
+      "1e-3 Pa",
+      "2.5E-2 mbar"
+    ]) {
+      expect(
+        parameterTableIncludesUnitsAndAssumptions({
+          ...spec,
+          tables: [
+            {
+              columns: ["参数", "值", "单位", "工况"],
+              rows: [["入口压力", "10", "Pa", operatingCondition]]
+            }
+          ]
+        })
+      ).toBe(true);
+    }
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        tables: [
+          {
+            columns: ["参数", "值", "单位", "工况"],
+            rows: [["入口压力", "10", "Pa", "10 foo"]]
+          }
+        ]
+      })
+    ).toBe(false);
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        sections: [{ heading: "operating conditions", paragraphs: ["10 foo"] }],
+        tables: [
+          {
+            columns: ["参数", "值", "单位"],
+            rows: [["入口压力", "10", "Pa"]]
+          }
+        ]
+      })
+    ).toBe(false);
+    for (const invalidNumericStatus of ["10 pending", "10 N/A", "10 unknown"]) {
+      expect(
+        parameterTableIncludesUnitsAndAssumptions({
+          ...spec,
+          tables: [
+            {
+              columns: ["参数", "值", "单位", "工况"],
+              rows: [["入口压力", "10", "Pa", invalidNumericStatus]]
+            }
+          ]
+        })
+      ).toBe(false);
+      expect(
+        parameterTableIncludesUnitsAndAssumptions({
+          ...spec,
+          sections: [
+            {
+              heading: "operating conditions",
+              paragraphs: [invalidNumericStatus]
+            }
+          ],
+          tables: [
+            {
+              columns: ["参数", "值", "单位"],
+              rows: [["入口压力", "10", "Pa"]]
+            }
+          ]
+        })
+      ).toBe(false);
+    }
   });
 
   it("loads checksum-bound staging evidence and returns its candidate output unchanged", async () => {

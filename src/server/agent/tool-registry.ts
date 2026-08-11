@@ -32,6 +32,7 @@ import {
   type AttachmentStorage,
   UnconfiguredAttachmentStorage
 } from "./attachment-tools";
+import { inspectParameterTableSemantics } from "./artifact-semantics";
 import {
   calculatorSchemas,
   executeCalculator,
@@ -64,6 +65,7 @@ export const ARTIFACT_PROVIDER_LIMITS = {
 
 export const ARTIFACT_PROVIDER_INSTRUCTION = [
   "create_artifact 必须只返回一个简洁、完整的函数调用。",
+  "parameter_table 必须包含有真实值的单位/unit 列，并在独立假设/工况/条件列、同一复合列的值或对应 section 中写明实质假设或适用工况；title 或 summary 的声明不能代替表内或 section 内容。具体假设必须来自当前输入、可信证据或确定性计算；信息不足时应明确标记待确认，不得编造具体工况。",
   `原始参数不得超过 ${ARTIFACT_PROVIDER_LIMITS.rawArgumentBytes} UTF-8 字节，所有字符串合计不得超过 ${ARTIFACT_PROVIDER_LIMITS.visibleCharacters} 个 Unicode 字符。`,
   `sections 最多 ${ARTIFACT_PROVIDER_LIMITS.sections} 个，每节最多 ${ARTIFACT_PROVIDER_LIMITS.paragraphsPerSection} 段；tables 最多 ${ARTIFACT_PROVIDER_LIMITS.tables} 个，每表最多 ${ARTIFACT_PROVIDER_LIMITS.columnsPerTable} 列，所有表合计最多 ${ARTIFACT_PROVIDER_LIMITS.totalRows} 行。`,
   `段落最多 ${ARTIFACT_PROVIDER_LIMITS.paragraphCharacters} 字符，列名最多 ${ARTIFACT_PROVIDER_LIMITS.columnHeaderCharacters} 字符，单元格最多 ${ARTIFACT_PROVIDER_LIMITS.cellCharacters} 字符。`
@@ -443,6 +445,31 @@ export class ToolRegistry {
             ok: false,
             result: this.invalid(input.callId, validated.error)
           };
+        }
+        if (validated.data.kind === "parameter_table") {
+          const semantics = inspectParameterTableSemantics(validated.data);
+          const missingInputs = [
+            ...(semantics.hasUnitValue ? [] : ["parameterTable.unit"]),
+            ...(semantics.hasAssumptionValue
+              ? []
+              : ["parameterTable.assumption"])
+          ];
+          if (missingInputs.length > 0) {
+            return {
+              ok: false,
+              result: this.output(
+                input.callId,
+                {
+                  ok: false,
+                  error: "INVALID_TOOL_ARGUMENTS",
+                  missingInputs
+                },
+                [],
+                [],
+                missingInputs
+              )
+            };
+          }
         }
         return { ok: true, raw, artifactSpec: validated.data };
       }
@@ -893,7 +920,7 @@ function createArtifactDefinition(): ResponsesFunctionTool {
   return {
     type: "function",
     name: "create_artifact",
-    description: `仅按用户本轮明确要求创建报告、清单或参数表产物。sections 与 tables 至少一个非空；选择 CSV 时必须提供至少一个非空表格，且每行单元格数必须等于列数。所有表合计最多 ${ARTIFACT_PROVIDER_LIMITS.totalRows} 行，所有字符串合计最多 ${ARTIFACT_PROVIDER_LIMITS.visibleCharacters} 个 Unicode 字符。`,
+    description: `仅按用户本轮明确要求创建报告、清单或参数表产物。sections 与 tables 至少一个非空；选择 CSV 时必须提供至少一个非空表格，且每行单元格数必须等于列数。parameter_table 必须包含真实单位值和显式假设或适用工况内容。所有表合计最多 ${ARTIFACT_PROVIDER_LIMITS.totalRows} 行，所有字符串合计最多 ${ARTIFACT_PROVIDER_LIMITS.visibleCharacters} 个 Unicode 字符。`,
     parameters: {
       type: "object",
       additionalProperties: false,

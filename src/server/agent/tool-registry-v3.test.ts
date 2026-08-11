@@ -421,6 +421,125 @@ describe("ToolRegistry V3 exposure", () => {
     ).toBe(false);
   });
 
+  it("rejects parameter tables without real unit and assumption values before storage", async () => {
+    const storage: ArtifactStorage & { create: ReturnType<typeof vi.fn> } = {
+      create: vi.fn(async (input) => ({
+        artifactId,
+        userId: input.userId,
+        conversationId: input.conversationId,
+        sourceTurnId: input.turnId,
+        kind: input.spec.kind,
+        title: input.spec.title,
+        formats: input.spec.formats,
+        status: "ready" as const
+      }))
+    };
+    const scoped = registry("请生成泵组选型参数表并导出 CSV", storage);
+    const invalidArguments = JSON.stringify({
+      schemaVersion: "openvac.artifact.v1",
+      kind: "parameter_table",
+      title: "泵组选型参数表",
+      formats: ["csv"],
+      summary: "参数表包含单位和假设",
+      sections: [],
+      tables: [
+        {
+          columns: ["参数", "值", "单位/假设"],
+          rows: [["有效抽速", "10", "L/s"]]
+        }
+      ]
+    });
+
+    const preflight = scoped.preflight({
+      callId: "call-parameter-semantics-invalid",
+      name: "create_artifact",
+      arguments: invalidArguments
+    });
+
+    expect(preflight.ok).toBe(false);
+    if (preflight.ok) throw new Error("Expected semantic preflight failure.");
+    expect(preflight.result).toMatchObject({
+      errorCode: "INVALID_TOOL_ARGUMENTS",
+      missingInputs: ["parameterTable.assumption"]
+    });
+    expect(preflight.result.outputItem).toMatchObject({
+      type: "function_call_output",
+      output: expect.stringContaining("parameterTable.assumption")
+    });
+    expect(preflight.result.outputItem).not.toEqual(
+      expect.objectContaining({ output: expect.stringContaining("有效抽速") })
+    );
+    expect(storage.create).not.toHaveBeenCalled();
+
+    const missingUnit = scoped.preflight({
+      callId: "call-parameter-unit-invalid",
+      name: "create_artifact",
+      arguments: JSON.stringify({
+        ...JSON.parse(invalidArguments),
+        tables: [
+          {
+            columns: ["参数", "值", "假设"],
+            rows: [["有效抽速", "10", "稳态运行"]]
+          }
+        ]
+      })
+    });
+    expect(missingUnit.ok).toBe(false);
+    if (missingUnit.ok) throw new Error("Expected unit preflight failure.");
+    expect(missingUnit.result).toMatchObject({
+      errorCode: "INVALID_TOOL_ARGUMENTS",
+      missingInputs: ["parameterTable.unit"]
+    });
+    expect(storage.create).not.toHaveBeenCalled();
+
+    const structurallyInvalid = scoped.preflight({
+      callId: "call-parameter-structure-invalid",
+      name: "create_artifact",
+      arguments: JSON.stringify({
+        ...JSON.parse(invalidArguments),
+        tables: [
+          {
+            columns: ["参数", "值", "单位/假设"],
+            rows: [["有效抽速", "10"]]
+          }
+        ]
+      })
+    });
+    expect(structurallyInvalid.ok).toBe(false);
+    if (structurallyInvalid.ok) {
+      throw new Error("Expected structural preflight failure.");
+    }
+    expect(structurallyInvalid.result.errorCode).toBe("INVALID_TOOL_ARGUMENTS");
+    if (structurallyInvalid.result.outputItem.type !== "function_call_output") {
+      throw new Error("Expected structural function output.");
+    }
+    const structuralOutput = JSON.parse(
+      String(structurallyInvalid.result.outputItem.output)
+    ) as { missingInputs?: string[] };
+    expect(structuralOutput.missingInputs).not.toContain(
+      "parameterTable.assumption"
+    );
+    expect(structuralOutput.missingInputs?.length).toBeGreaterThan(0);
+    expect(storage.create).not.toHaveBeenCalled();
+
+    await expect(
+      scoped.execute({
+        callId: "call-parameter-semantics-valid",
+        name: "create_artifact",
+        arguments: JSON.stringify({
+          ...JSON.parse(invalidArguments),
+          tables: [
+            {
+              columns: ["参数", "值", "单位/假设"],
+              rows: [["有效抽速", "10", "L/s；假设稳态"]]
+            }
+          ]
+        })
+      })
+    ).resolves.toMatchObject({ ok: true });
+    expect(storage.create).toHaveBeenCalledTimes(1);
+  });
+
   it("enforces the provider raw UTF-8 boundary after JSON parsing", () => {
     const scoped = registry("请生成泵组选型参数表并导出 CSV");
     const compact = JSON.stringify(providerSpecWithVisibleCharacters(1_000));
@@ -633,17 +752,28 @@ function providerSpecWithVisibleCharacters(target: number) {
     sections: [],
     tables: [
       {
-        columns: Array.from({ length: 8 }, (_, index) => `列${index}`),
+        columns: [
+          "参数",
+          "值",
+          "说明",
+          "列3",
+          "列4",
+          "列5",
+          "列6",
+          "单位/假设"
+        ],
         rows: Array.from({ length: 64 }, () =>
           Array.from({ length: 8 }, () => "")
         )
       }
     ]
   };
+  spec.tables[0].rows[0][7] = "Pa；假设稳态";
   let remaining = target - visibleStringCharacters(spec);
   if (remaining < 0) throw new Error("Target is smaller than the base spec.");
-  for (const row of spec.tables[0].rows) {
+  for (const [rowIndex, row] of spec.tables[0].rows.entries()) {
     for (let index = 0; index < row.length && remaining > 0; index += 1) {
+      if (rowIndex === 0 && index === 7) continue;
       const length = Math.min(
         ARTIFACT_PROVIDER_LIMITS.cellCharacters,
         remaining
