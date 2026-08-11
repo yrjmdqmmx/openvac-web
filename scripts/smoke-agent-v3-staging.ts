@@ -124,6 +124,13 @@ const DIAGNOSTIC_PARSE_STATUSES = new Set([
   "failed",
   "not_required"
 ]);
+const ANSWER_VALIDATION_STAGES = new Set([
+  "json_parse",
+  "schema",
+  "linkless",
+  "binding",
+  "final"
+]);
 
 type SmokeDiagnosticStage = (typeof SMOKE_DIAGNOSTIC_STAGES)[number];
 type SmokeDiagnosticState = {
@@ -138,6 +145,7 @@ type SmokeDiagnosticState = {
   settlement?: string;
   attachmentStatus?: string;
   parseStatus?: string;
+  answerValidationStage?: string;
 };
 
 const RUNTIME_EVIDENCE_TOP_LEVEL_FAILURE_CODES = {
@@ -328,6 +336,10 @@ export function publicSmokeFailureDiagnostic(
     ...(httpStatus ? { httpStatus } : {}),
     ...(attachmentStatus ? { attachmentStatus } : {}),
     ...(parseStatus ? { parseStatus } : {}),
+    ...(input.answerValidationStage &&
+    ANSWER_VALIDATION_STAGES.has(input.answerValidationStage)
+      ? { answerValidationStage: input.answerValidationStage }
+      : {}),
     ...(typeof input.retryable === "boolean"
       ? { retryable: input.retryable }
       : {}),
@@ -362,7 +374,11 @@ export function runtimeTerminalFailureDiagnostic(
         ? event.suggestedAction
         : undefined,
     settlement:
-      typeof event.settlement === "string" ? event.settlement : undefined
+      typeof event.settlement === "string" ? event.settlement : undefined,
+    answerValidationStage:
+      typeof event.answerValidationStage === "string"
+        ? event.answerValidationStage
+        : undefined
   };
 }
 

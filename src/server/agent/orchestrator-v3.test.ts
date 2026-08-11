@@ -409,6 +409,273 @@ describe("Agent V3 verified link selection repair", () => {
     }
   );
 
+  it.each([
+    {
+      name: "missing linkId",
+      block: { type: "link_reference", label: "model label" },
+      usedLinkIds: ["W9"]
+    },
+    {
+      name: "non-string linkId",
+      block: { type: "link_reference", linkId: 9, label: "model label" },
+      usedLinkIds: [9]
+    },
+    {
+      name: "oversized link fields",
+      block: {
+        type: "link_reference",
+        linkId: "W".repeat(161),
+        label: `https://invalid.example/${"SENTINEL".repeat(40)}`
+      },
+      usedLinkIds: ["W".repeat(161)]
+    },
+    {
+      name: "extra link field",
+      block: {
+        type: "link_reference",
+        linkId: "W9",
+        label: "model label",
+        internalToken: "SENTINEL_INTERNAL_TOKEN"
+      },
+      usedLinkIds: ["W9"]
+    },
+    {
+      name: "malformed usedLinkIds",
+      block: {
+        type: "link_reference",
+        linkId: "W9",
+        label: "model label",
+        extra: true
+      },
+      usedLinkIds: { invalid: true }
+    }
+  ])("projects one server link after stripping $name", async (failure) => {
+    const subject = verifiedLinkRepairSubject();
+    const base = subject.answer([]);
+    const rawCandidate: Record<string, unknown> = {
+      ...base,
+      blocks: [...base.blocks, failure.block],
+      usedLinkIds: failure.usedLinkIds
+    };
+    const rawSnapshot = JSON.stringify(rawCandidate);
+    subject.invoke.repair = vi.fn();
+
+    const result = await subject.invoke.validateOrRepair({
+      ...subject.input,
+      currentInput: [],
+      outputText: JSON.stringify(rawCandidate)
+    });
+
+    expect(result?.usedLinkIds).toEqual(["W2"]);
+    expect(result?.blocks.at(-1)).toEqual({
+      type: "link_reference",
+      linkId: "W2",
+      label: "Leybold 厂家手册"
+    });
+    expect(answerWithoutLinks(result)).toEqual(base);
+    expect(subject.invoke.repair).not.toHaveBeenCalled();
+    expect(JSON.stringify(rawCandidate)).toBe(rawSnapshot);
+    expect(JSON.stringify(result)).not.toMatch(/SENTINEL|invalid\.example/iu);
+  });
+
+  it.each([
+    {
+      name: "top-level extra field",
+      mutate: (candidate: Record<string, unknown>) => {
+        candidate.unexpected = "SENTINEL";
+      }
+    },
+    {
+      name: "non-link extra field",
+      mutate: (candidate: Record<string, unknown>) => {
+        const blocks = candidate.blocks as Array<Record<string, unknown>>;
+        blocks[0] = { ...blocks[0], unexpected: "SENTINEL" };
+      }
+    },
+    {
+      name: "near-link block type",
+      mutate: (candidate: Record<string, unknown>) => {
+        const blocks = candidate.blocks as unknown[];
+        blocks.push({ type: "linkReference", label: "SENTINEL" });
+      }
+    }
+  ])("keeps an invalid $name fail-closed", async ({ mutate }) => {
+    const subject = verifiedLinkRepairSubject();
+    const base = subject.answer([]);
+    const candidate = {
+      ...base,
+      blocks: [...base.blocks, { type: "link_reference", label: "invalid" }],
+      usedLinkIds: []
+    } as Record<string, unknown>;
+    mutate(candidate);
+    subject.invoke.repair = vi.fn();
+
+    await expect(
+      subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify(candidate)
+      })
+    ).rejects.toMatchObject({
+      code: "ANSWER_VALIDATION_FAILED",
+      answerValidationStage: "linkless"
+    });
+    expect(subject.invoke.repair).not.toHaveBeenCalled();
+    expect(subject.store.complete).not.toHaveBeenCalled();
+  });
+
+  it("reports invalid JSON through the fixed safe validation stage", async () => {
+    const subject = verifiedLinkRepairSubject();
+    subject.invoke.repair = vi.fn();
+
+    await expect(
+      subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: "{invalid-json"
+      })
+    ).rejects.toMatchObject({
+      code: "ANSWER_VALIDATION_FAILED",
+      answerValidationStage: "json_parse"
+    });
+    expect(subject.invoke.repair).not.toHaveBeenCalled();
+  });
+
+  it("reports a parsed non-Answer object as a schema-stage failure", async () => {
+    const subject = verifiedLinkRepairSubject();
+    subject.invoke.repair = vi.fn();
+
+    await expect(
+      subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify({ schemaVersion: "openvac.answer.v3" })
+      })
+    ).rejects.toMatchObject({
+      code: "ANSWER_VALIDATION_FAILED",
+      answerValidationStage: "schema"
+    });
+    expect(subject.invoke.repair).not.toHaveBeenCalled();
+  });
+
+  it("reports a missing evidence-bound server link as a binding-stage failure", async () => {
+    const subject = verifiedLinkRepairSubject();
+    subject.invoke.verifiedLinks.set("W2", {
+      type: "verified_link",
+      linkId: "W2",
+      url: "https://www.leybold.com/manual",
+      label: "Leybold 厂家手册",
+      hostname: "www.leybold.com",
+      status: "verified",
+      evidenceIds: ["E9"]
+    });
+    const base = subject.answer([]);
+    const candidate = {
+      ...base,
+      blocks: [...base.blocks, { type: "link_reference", label: "invalid" }]
+    };
+    subject.invoke.repair = vi.fn();
+
+    await expect(
+      subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify(candidate)
+      })
+    ).rejects.toMatchObject({
+      code: "ANSWER_VALIDATION_FAILED",
+      answerValidationStage: "binding"
+    });
+    expect(subject.invoke.repair).not.toHaveBeenCalled();
+  });
+
+  it("reports an invalid server-owned projection as a final-stage failure", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const bound = subject.invoke.verifiedLinks.get("W2");
+    if (!bound) throw new Error("Expected verified link W2.");
+    subject.invoke.verifiedLinks.set("W2", {
+      ...bound,
+      label: "https://invalid.example/SENTINEL"
+    });
+    const base = subject.answer([]);
+    const candidate = {
+      ...base,
+      blocks: [...base.blocks, { type: "link_reference", label: "invalid" }]
+    };
+    subject.invoke.repair = vi.fn();
+
+    await expect(
+      subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify(candidate)
+      })
+    ).rejects.toMatchObject({
+      code: "ANSWER_VALIDATION_FAILED",
+      answerValidationStage: "final"
+    });
+    expect(subject.invoke.repair).not.toHaveBeenCalled();
+  });
+
+  it("does not enable raw link recovery when no verified link is requested", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const base = subject.answer([]);
+    const candidate = {
+      ...base,
+      blocks: [...base.blocks, { type: "link_reference", label: "invalid" }]
+    };
+    subject.invoke.repair = vi.fn();
+
+    const result = await subject.invoke.validateOrRepair({
+      ...subject.input,
+      run: { ...subject.input.run, question: "请核对前级压力。" },
+      currentInput: [],
+      outputText: JSON.stringify(candidate)
+    });
+
+    expect(result?.usedLinkIds).toEqual([]);
+    expect(result?.blocks).not.toContainEqual(
+      expect.objectContaining({ type: "link_reference" })
+    );
+    expect(subject.invoke.repair).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "128 raw blocks", headings: 126, succeeds: true },
+    { name: "129 raw blocks", headings: 127, succeeds: false }
+  ])("enforces the $name recovery boundary", async (boundary) => {
+    const subject = verifiedLinkRepairSubject();
+    const base = subject.answer([]);
+    const candidate = {
+      ...base,
+      blocks: [
+        ...base.blocks,
+        ...Array.from({ length: boundary.headings }, (_, index) => ({
+          type: "heading",
+          level: 2,
+          text: `Raw heading ${index}`
+        })),
+        { type: "link_reference", label: "invalid" }
+      ]
+    };
+    subject.invoke.repair = vi.fn();
+    const action = subject.invoke.validateOrRepair({
+      ...subject.input,
+      currentInput: [],
+      outputText: JSON.stringify(candidate)
+    });
+
+    if (boundary.succeeds) {
+      await expect(action).resolves.toMatchObject({ usedLinkIds: ["W2"] });
+    } else {
+      await expect(action).rejects.toMatchObject({
+        code: "ANSWER_VALIDATION_FAILED",
+        answerValidationStage: "schema"
+      });
+    }
+    expect(subject.invoke.repair).not.toHaveBeenCalled();
+  });
+
   it.each(["block_only", "duplicate_blocks", "duplicate_declared"] as const)(
     "normalizes an asymmetric %s selection without changing non-link JSON",
     async (failure) => {
@@ -786,7 +1053,7 @@ describe("Agent V3 verified link selection repair", () => {
     });
   });
 
-  it("fails a structurally invalid full run without repair, persistence, or audit", async () => {
+  it("projects a structurally invalid model link without repair or duplicate persistence", async () => {
     const subject = verifiedLinkRepairSubject();
     const invalid = subject.answer([]);
     invalid.blocks.push({
@@ -800,15 +1067,15 @@ describe("Agent V3 verified link selection repair", () => {
       return answerModelResponse(invalid);
     });
 
-    await expect(subject.orchestrator.run(subject.input)).rejects.toMatchObject(
-      {
-        code: "ANSWER_VALIDATION_FAILED",
-        retryable: false
-      }
-    );
+    await expect(
+      subject.orchestrator.run(subject.input)
+    ).resolves.toMatchObject({
+      status: "completed",
+      answer: { usedLinkIds: ["W2"] }
+    });
 
     expect(subject.invoke.requestWithOneRetry).toHaveBeenCalledTimes(1);
-    expect(subject.store.complete).not.toHaveBeenCalled();
+    expect(subject.store.complete).toHaveBeenCalledTimes(1);
     expect(subject.store.recordToolCall).not.toHaveBeenCalled();
     expect(subject.orchestrator.counters).toEqual({
       modelRequests: 1,

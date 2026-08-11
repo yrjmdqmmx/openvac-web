@@ -288,6 +288,7 @@ describe("Agent V3 staging runtime smoke safety", () => {
       {
         type: "run.failed",
         code: "PROVIDER_TIMEOUT",
+        answerValidationStage: "linkless",
         retryable: true,
         suggestedAction: "retry",
         settlement: "released",
@@ -302,12 +303,30 @@ describe("Agent V3 staging runtime smoke safety", () => {
       step: "history_1",
       terminalType: "run.failed",
       code: "PROVIDER_TIMEOUT",
+      answerValidationStage: "linkless",
       retryable: true,
       suggestedAction: "retry",
       settlement: "released"
     });
     expect(JSON.stringify(publicSmokeFailureDiagnostic(terminal!))).not.toMatch(
       /message|runId|secret detail/iu
+    );
+    expect(publicSmokeFailureDiagnostic(terminal!)).toMatchObject({
+      answerValidationStage: "linkless"
+    });
+  });
+
+  it("drops non-allowlisted answer validation stages", () => {
+    const terminal = runtimeTerminalFailureDiagnostic("v3-text-safety-01", {
+      type: "run.failed",
+      code: "ANSWER_VALIDATION_FAILED",
+      answerValidationStage: "blocks.0.provider secret",
+      retryable: false,
+      suggestedAction: "report",
+      settlement: "released"
+    });
+    expect(publicSmokeFailureDiagnostic(terminal!)).not.toHaveProperty(
+      "answerValidationStage"
     );
   });
 

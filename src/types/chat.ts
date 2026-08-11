@@ -13,6 +13,8 @@ export type RiskLevel = "low" | "medium" | "high";
 export type RequestedAgentMode = "auto" | "deep";
 export type ResolvedAgentMode = "fast" | "deep";
 export type WebMode = "auto" | "always";
+export type AnswerValidationStage =
+  "json_parse" | "schema" | "linkless" | "binding" | "final";
 export type AnswerKind =
   "grounded" | "general_guidance" | "clarification" | "safe_refusal";
 export type AnswerSectionName =
@@ -249,6 +251,7 @@ export type ChatStreamEvent =
       charged: boolean | null;
       settlement?: "released" | "pending_recovery";
       resetAt?: string;
+      answerValidationStage?: AnswerValidationStage;
     })
   | (SequencedRunEvent & {
       type: "attachment.updated";
