@@ -142,6 +142,147 @@ describe("ToolRegistry V3 exposure", () => {
     expect(JSON.stringify(result)).not.toMatch(/signed|signature|secret/iu);
   });
 
+  it("publishes artifact constraints that match canonical row and text bounds", () => {
+    const scoped = registry("请生成中文诊断报告并导出 CSV");
+    const definition = scoped.definitions.find(
+      (tool) => tool.type === "function" && tool.name === "create_artifact"
+    );
+    expect(definition).toBeDefined();
+    expect(definition?.description).toContain("选择 CSV 时必须提供");
+    expect(definition?.parameters).toMatchObject({
+      properties: {
+        sections: {
+          items: {
+            properties: {
+              paragraphs: {
+                minItems: 1,
+                items: { minLength: 1, maxLength: 10_000 }
+              }
+            }
+          }
+        },
+        tables: {
+          items: {
+            properties: {
+              columns: {
+                minItems: 1,
+                uniqueItems: true,
+                items: { minLength: 1, maxLength: 240 }
+              },
+              rows: {
+                minItems: 1,
+                items: { minItems: 1, items: { maxLength: 10_000 } }
+              }
+            }
+          }
+        }
+      }
+    });
+  });
+
+  it("preflights invalid artifact arguments before storage execution", async () => {
+    const storage: ArtifactStorage = {
+      create: vi.fn(async () => {
+        throw new Error("storage must not run for invalid arguments");
+      })
+    };
+    const scoped = registry("请生成中文诊断报告并导出 CSV", storage);
+    const call = {
+      callId: "call-invalid-artifact",
+      name: "create_artifact",
+      arguments: JSON.stringify({
+        schemaVersion: "openvac.artifact.v1",
+        kind: "diagnosis_report",
+        title: "诊断报告",
+        formats: ["csv"],
+        summary: "诊断摘要",
+        sections: [{ heading: "结论", paragraphs: ["检查完成"] }],
+        tables: []
+      })
+    };
+
+    const preflight = scoped.preflight(call);
+    expect(preflight.ok).toBe(false);
+    if (preflight.ok) throw new Error("Expected artifact preflight failure.");
+    expect(preflight.result).toMatchObject({
+      ok: false,
+      errorCode: "INVALID_TOOL_ARGUMENTS"
+    });
+
+    await expect(scoped.execute(call)).resolves.toMatchObject({
+      ok: false,
+      errorCode: "INVALID_TOOL_ARGUMENTS"
+    });
+    expect(storage.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "empty content",
+      value: { sections: [], tables: [] }
+    },
+    {
+      name: "trim-empty paragraph",
+      value: {
+        sections: [{ heading: "结论", paragraphs: ["   "] }],
+        tables: []
+      }
+    },
+    {
+      name: "case-fold duplicate columns",
+      value: {
+        formats: ["csv"],
+        sections: [],
+        tables: [{ columns: ["PARAM", "param"], rows: [["a", "b"]] }]
+      }
+    },
+    {
+      name: "parameter table without a table",
+      value: {
+        kind: "parameter_table",
+        sections: [{ heading: "假设", paragraphs: ["仅有说明"] }],
+        tables: []
+      }
+    },
+    {
+      name: "row width mismatch",
+      value: {
+        formats: ["csv"],
+        sections: [],
+        tables: [{ columns: ["参数", "单位"], rows: [["压力"]] }]
+      }
+    }
+  ])(
+    "rejects canonical artifact drift before execution: $name",
+    ({ value }) => {
+      const scoped = registry("请生成中文诊断报告并导出 CSV");
+      const argumentsValue = Object.assign(
+        {
+          schemaVersion: "openvac.artifact.v1",
+          kind: "diagnosis_report",
+          title: "private-title-must-not-leak",
+          formats: ["pdf"],
+          summary: "private-summary-must-not-leak",
+          sections: [{ heading: "结论", paragraphs: ["检查完成"] }],
+          tables: []
+        },
+        value
+      );
+      const preflight = scoped.preflight({
+        callId: "call-canonical-drift",
+        name: "create_artifact",
+        arguments: JSON.stringify(argumentsValue)
+      });
+
+      expect(preflight.ok).toBe(false);
+      if (preflight.ok) throw new Error("Expected artifact preflight failure.");
+      const output = JSON.stringify(preflight.result.outputItem);
+      expect(preflight.result.errorCode).toBe("INVALID_TOOL_ARGUMENTS");
+      expect(output).not.toContain("private-title-must-not-leak");
+      expect(output).not.toContain("private-summary-must-not-leak");
+    }
+  );
+
   it("accepts a bounded parameter table above the generic tool argument limit", async () => {
     const storage: ArtifactStorage & { create: ReturnType<typeof vi.fn> } = {
       create: vi.fn(async (input) => ({
