@@ -20,6 +20,7 @@ import { QuotaExceededError } from "@/server/quota";
 import type { DocumentParser, VisionProvider } from "@/server/providers";
 import type {
   AgentStage,
+  AnswerValidationStage,
   CalculationResult,
   Citation,
   RequestedAgentMode,
@@ -585,7 +586,10 @@ export class AgentRunOrchestrator {
       throw new AgentRuntimeError(
         "ANSWER_VALIDATION_FAILED",
         "回答未通过结构、引用或安全校验。",
-        false
+        false,
+        this.minimumRequiredLinkCount(input.run.question) === 1
+          ? "final"
+          : undefined
       );
     }
     if (
@@ -622,7 +626,10 @@ export class AgentRunOrchestrator {
       throw new AgentRuntimeError(
         "ANSWER_VALIDATION_FAILED",
         "最终回答未通过结构、引用或安全校验。",
-        false
+        false,
+        this.minimumRequiredLinkCount(input.run.question) === 1
+          ? "final"
+          : undefined
       );
     }
     answer = finalValidation.answer;
@@ -1038,32 +1045,48 @@ export class AgentRunOrchestrator {
     const minimumLinkCount = this.minimumRequiredLinkCount(input.run.question);
     const validate = (value: unknown) =>
       this.validateAnswerCandidate(input, value, minimumLinkCount);
-    let validated = validate(safeJson(input.outputText));
+    const parsedCandidate = safeJson(input.outputText);
+    let answerValidationStage: AnswerValidationStage | undefined =
+      minimumLinkCount === 1
+        ? parsedCandidate === undefined
+          ? "json_parse"
+          : "schema"
+        : undefined;
+    let validated = validate(parsedCandidate);
     if (!validated.valid) {
-      const repairSourceAnswer = validated.answer;
+      const linklessCandidate =
+        minimumLinkCount === 1
+          ? validated.answer
+            ? withoutVerifiedLinkSelection(validated.answer)
+            : withoutUntrustedVerifiedLinkSelection(parsedCandidate)
+          : undefined;
       const linklessValidation =
-        minimumLinkCount > 0 && repairSourceAnswer
-          ? this.validateAnswerCandidate(
-              input,
-              withoutVerifiedLinkSelection(repairSourceAnswer),
-              0
-            )
+        linklessCandidate && this.verifiedLinks.size > 0
+          ? this.validateAnswerCandidate(input, linklessCandidate, 0)
           : undefined;
-      const deterministicLinkRepair =
-        linklessValidation?.valid && repairSourceAnswer
-          ? buildDeterministicVerifiedLinkSelection(
-              repairSourceAnswer,
-              this.verifiedLinks
-            )
-          : undefined;
+      if (linklessValidation && !linklessValidation.valid) {
+        answerValidationStage = "linkless";
+      }
+      const projectionSource = linklessValidation?.valid
+        ? linklessValidation.answer
+        : undefined;
+      const deterministicLinkRepair = projectionSource
+        ? buildDeterministicVerifiedLinkSelection(
+            projectionSource,
+            this.verifiedLinks
+          )
+        : undefined;
+      if (projectionSource) {
+        answerValidationStage = deterministicLinkRepair ? "final" : "binding";
+      }
       const deterministicValidation = deterministicLinkRepair
         ? validate(deterministicLinkRepair)
         : undefined;
       if (
         deterministicValidation?.valid &&
-        repairSourceAnswer &&
+        projectionSource &&
         linkRepairPreservesCandidate(
-          repairSourceAnswer,
+          projectionSource,
           deterministicValidation.answer,
           this.verifiedLinks
         )
@@ -1092,7 +1115,8 @@ export class AgentRunOrchestrator {
           throw new AgentRuntimeError(
             "ANSWER_VALIDATION_FAILED",
             "回答未能选择请求的已验证链接。",
-            false
+            false,
+            answerValidationStage
           );
         }
         return buildDeterministicSafeAnswerV3(
@@ -1102,7 +1126,14 @@ export class AgentRunOrchestrator {
       }
       const repairSourceAnswer = validated.answer;
       const repaired = await this.repair(input, validated.errors);
-      validated = validate(safeJson(repaired));
+      const parsedRepair = safeJson(repaired);
+      answerValidationStage =
+        minimumLinkCount === 1
+          ? parsedRepair === undefined
+            ? "json_parse"
+            : "final"
+          : undefined;
+      validated = validate(parsedRepair);
       if (
         minimumLinkCount > 0 &&
         repairSourceAnswer &&
@@ -1116,7 +1147,8 @@ export class AgentRunOrchestrator {
         throw new AgentRuntimeError(
           "ANSWER_VALIDATION_FAILED",
           "链接修复改变了候选回答的事实或引用。",
-          false
+          false,
+          "final"
         );
       }
     }
@@ -1133,7 +1165,8 @@ export class AgentRunOrchestrator {
       throw new AgentRuntimeError(
         "ANSWER_VALIDATION_FAILED",
         "回答修复后仍未能选择请求的已验证链接。",
-        false
+        false,
+        answerValidationStage ?? "final"
       );
     }
     if (
@@ -1603,6 +1636,28 @@ function withoutVerifiedLinkSelection(answer: AnswerV3): AnswerV3 {
     blocks: answer.blocks.filter((block) => block.type !== "link_reference"),
     usedLinkIds: []
   };
+}
+
+function withoutUntrustedVerifiedLinkSelection(
+  value: unknown
+): unknown | undefined {
+  if (!isPlainRecord(value) || !Array.isArray(value.blocks)) return undefined;
+  if (value.blocks.length > 128) return undefined;
+  return {
+    ...value,
+    blocks: value.blocks.filter(
+      (block) => !(isPlainRecord(block) && block.type === "link_reference")
+    ),
+    usedLinkIds: []
+  };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function buildDeterministicVerifiedLinkSelection(
@@ -2366,7 +2421,8 @@ export class AgentRuntimeError extends Error {
   constructor(
     readonly code: string,
     message: string,
-    readonly retryable: boolean
+    readonly retryable: boolean,
+    readonly answerValidationStage?: AnswerValidationStage
   ) {
     super(message);
     this.name = "AgentRuntimeError";

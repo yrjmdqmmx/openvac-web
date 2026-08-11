@@ -552,6 +552,10 @@ function streamRun(input: {
             retryable: true
           });
         } else {
+          const answerValidationStage =
+            error instanceof AgentRuntimeError
+              ? error.answerValidationStage
+              : undefined;
           send({
             type: "run.failed",
             code: publicErrorCode(error),
@@ -559,7 +563,8 @@ function streamRun(input: {
             retryable: isRetryable(error),
             suggestedAction: isRetryable(error) ? "retry" : "report",
             charged: false,
-            settlement: "released"
+            settlement: "released",
+            ...(answerValidationStage ? { answerValidationStage } : {})
           });
         }
       } finally {

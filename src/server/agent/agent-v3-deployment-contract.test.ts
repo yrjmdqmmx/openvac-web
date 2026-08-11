@@ -109,6 +109,12 @@ describe("Agent V3 deployment contract", () => {
     expect(agentHttp).toContain('settlement: "pending_recovery"');
   });
 
+  it("propagates only the fixed answer validation stage on failed runs", () => {
+    expect(agentHttp).toContain("error.answerValidationStage");
+    expect(agentHttp).toContain("{ answerValidationStage }");
+    expect(agentHttp).not.toContain("validated.errors");
+  });
+
   it("states that the release document is not production authorization", () => {
     expect(releaseContract).toContain(
       "does not authorize or claim an actual staging or production operation"
