@@ -42,6 +42,7 @@ import { VerifiedUrlReader } from "./verified-url";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_ARGUMENT_BYTES = 32 * 1024;
+const MAX_ARTIFACT_ARGUMENT_BYTES = MAX_ARTIFACT_SPEC_BYTES * 8;
 const MAX_RESULT_BYTES = 32 * 1024;
 
 const searchKnowledgeSchema = z.object({
@@ -206,7 +207,7 @@ export class ToolRegistry {
   }): Promise<ToolExecutionResult> {
     const isArtifactCall = input.name === "create_artifact";
     const argumentLimit = isArtifactCall
-      ? MAX_ARTIFACT_SPEC_BYTES
+      ? MAX_ARTIFACT_ARGUMENT_BYTES
       : MAX_ARGUMENT_BYTES;
     if (Buffer.byteLength(input.arguments, "utf8") > argumentLimit) {
       return this.output(input.callId, {

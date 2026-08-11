@@ -124,17 +124,27 @@ describe("ToolRegistry V3 exposure", () => {
           columns: ["参数", "说明"],
           rows: Array.from({ length: 200 }, (_, index) => [
             `参数 ${index + 1}`,
-            "泵".repeat(200)
+            "泵".repeat(250)
           ])
         }
       ]
     });
     expect(Buffer.byteLength(argumentsJson, "utf8")).toBeGreaterThan(32 * 1024);
+    const escapedArgumentsJson = argumentsJson.replaceAll("泵", "\\u6cf5");
+    expect(Buffer.byteLength(escapedArgumentsJson, "utf8")).toBeGreaterThan(
+      256 * 1024
+    );
+    expect(
+      Buffer.byteLength(
+        JSON.stringify(JSON.parse(escapedArgumentsJson)),
+        "utf8"
+      )
+    ).toBeLessThan(256 * 1024);
 
     const result = await scoped.execute({
       callId: "call-large-parameter-table",
       name: "create_artifact",
-      arguments: argumentsJson
+      arguments: escapedArgumentsJson
     });
 
     expect(result.ok).toBe(true);
@@ -157,7 +167,7 @@ describe("ToolRegistry V3 exposure", () => {
       scoped.execute({
         callId: "call-oversized-artifact",
         name: "create_artifact",
-        arguments: "x".repeat(256 * 1024 + 1)
+        arguments: "x".repeat(2 * 1024 * 1024 + 1)
       })
     ).resolves.toMatchObject({
       ok: false,
