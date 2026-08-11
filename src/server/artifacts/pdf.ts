@@ -1,5 +1,4 @@
-import { createRequire } from "node:module";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 
 import fontkit from "@pdf-lib/fontkit";
@@ -10,7 +9,6 @@ import type { ArtifactSpec, ArtifactTable } from "@/types/chat-v3";
 const A4_PORTRAIT: [number, number] = [595.28, 841.89];
 const A4_LANDSCAPE: [number, number] = [841.89, 595.28];
 const FIXED_PDF_DATE = new Date("2000-01-01T00:00:00.000Z");
-const require = createRequire(import.meta.url);
 
 export type PdfRenderOptions = {
   fontBytes?: Uint8Array;
@@ -90,9 +88,18 @@ export async function renderPdf(
 }
 
 export async function loadBundledChineseFont(): Promise<Uint8Array> {
-  const packageEntry = require.resolve("@embedpdf/fonts-sc");
-  const packageRoot = resolve(dirname(packageEntry), "..");
-  return readFile(join(packageRoot, "fonts", "NotoSansHans-Regular.otf"));
+  return readFile(bundledChineseFontPath());
+}
+
+export function bundledChineseFontPath(root = process.cwd()): string {
+  return join(
+    root,
+    "node_modules",
+    "@embedpdf",
+    "fonts-sc",
+    "fonts",
+    "NotoSansHans-Regular.otf"
+  );
 }
 
 type TextStyle = {

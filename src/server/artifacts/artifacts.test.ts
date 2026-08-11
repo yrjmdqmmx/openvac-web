@@ -5,6 +5,7 @@ import type { ArtifactKind, ArtifactSpec } from "@/types/chat-v3";
 import {
   ArtifactService,
   ArtifactSpecValidationError,
+  bundledChineseFontPath,
   parseArtifactSpec,
   renderArtifactFiles,
   renderCsv,
@@ -74,6 +75,12 @@ describe("ArtifactSpec validation", () => {
 });
 
 describe("deterministic artifact renderers", () => {
+  it("resolves the Chinese font from the stable runtime dependency path", () => {
+    expect(bundledChineseFontPath("/app")).toBe(
+      "/app/node_modules/@embedpdf/fonts-sc/fonts/NotoSansHans-Regular.otf"
+    );
+  });
+
   it("renders deterministic MD, DOCX, PDF, and CSV with Chinese text", async () => {
     const first = await renderArtifactFiles(createSpec());
     const second = await renderArtifactFiles(createSpec());
