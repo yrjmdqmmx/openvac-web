@@ -257,12 +257,29 @@ function checkGate(
       const references = output.answer.blocks.flatMap((block) =>
         block.type === "link_reference" ? [block.linkId] : []
       );
+      const selectedLinkIds = output.answer.usedLinkIds;
+      const uniqueSelectedLinkIds = [...new Set(selectedLinkIds)];
+      const minimumLinkCount = testCase.expected.minimumLinkCount ?? 0;
+      const selectionMatches =
+        uniqueSelectedLinkIds.length === selectedLinkIds.length &&
+        (minimumLinkCount > 0
+          ? uniqueSelectedLinkIds.length >= minimumLinkCount
+          : sameSet(uniqueSelectedLinkIds, testCase.expected.linkIds));
       const bindingRequired =
         testCase.expected.requireLinkEvidenceBinding === true;
       const allowedDomains = testCase.expected.allowedLinkDomains ?? [];
-      const boundEvidence = (output.linkAudit ?? []).filter(
+      const linkAudit = output.linkAudit ?? [];
+      const derivedLinkAudit = output.verifiedLinks.flatMap((link) =>
+        (link.evidenceIds ?? []).map((evidenceId) => ({
+          evidenceId,
+          linkId: link.linkId,
+          hostname: link.hostname,
+          status: link.status
+        }))
+      );
+      const boundEvidence = linkAudit.filter(
         (audit) =>
-          testCase.expected.linkIds.includes(audit.linkId) &&
+          selectedLinkIds.includes(audit.linkId) &&
           audit.status === "verified" &&
           output.answer.usedEvidenceIds.includes(audit.evidenceId)
       );
@@ -279,34 +296,38 @@ function checkGate(
           audit.status === "completed"
       );
       return (
-        sameSet(output.answer.usedLinkIds, testCase.expected.linkIds) &&
-        sameSet(references, testCase.expected.linkIds) &&
-        output.verifiedLinks.length === testCase.expected.linkIds.length &&
+        selectionMatches &&
+        sameSet(references, selectedLinkIds) &&
+        sameSet(
+          output.verifiedLinks.map((link) => link.linkId),
+          selectedLinkIds
+        ) &&
+        sameJsonSet(linkAudit, derivedLinkAudit) &&
         output.verifiedLinks.every(
           (link) =>
             link.status === "verified" &&
             link.url.startsWith("https://") &&
-            testCase.expected.linkIds.includes(link.linkId) &&
+            selectedLinkIds.includes(link.linkId) &&
             (allowedDomains.length === 0 ||
               allowedDomains.some((domain) =>
                 hostnameWithin(link.hostname, domain)
               )) &&
             (!bindingRequired ||
               ((link.evidenceIds?.length ?? 0) > 0 &&
-                link.evidenceIds!.every((id) =>
+                link.evidenceIds!.some((id) =>
                   output.answer.usedEvidenceIds.includes(id)
                 )))
         ) &&
         (!bindingRequired ||
-          (testCase.expected.linkIds.every((linkId) =>
+          (selectedLinkIds.every((linkId) =>
             boundEvidence.some((audit) => audit.linkId === linkId)
           ) &&
             Array.isArray(webCitationIds) &&
             isNonEmptySubset(
-              [...new Set(boundEvidence.map((audit) => audit.evidenceId))],
+              [...new Set(linkAudit.map((audit) => audit.evidenceId))],
               webCitationIds
             ) &&
-            boundEvidence.every((binding) => {
+            linkAudit.every((binding) => {
               const link = output.verifiedLinks.find(
                 (candidate) => candidate.linkId === binding.linkId
               );

@@ -11,7 +11,11 @@ import {
   ANSWER_V3_CASE_VERSION,
   ANSWER_V3_EVAL_CASES
 } from "../src/evals/answer-v3/cases";
-import { runtimeEvidenceSchema } from "../src/evals/answer-v3/runtime-evidence";
+import {
+  RuntimeEvidenceSemanticError,
+  runtimeEvidenceSchema,
+  validateRuntimeEvidenceSemantics
+} from "../src/evals/answer-v3/runtime-evidence";
 import type { AnswerV3EvalCase } from "../src/evals/answer-v3/types";
 import {
   qwenVisionBenchmarkSchema,
@@ -218,6 +222,17 @@ export function runtimeEvidenceValidationFailureDiagnostic(
     stage: "runtime_evidence_validation",
     code: "RUNTIME_EVIDENCE_INVALID"
   };
+  if (error instanceof RuntimeEvidenceSemanticError) {
+    return {
+      stage: "runtime_evidence_validation",
+      ...(error.caseId && SMOKE_CASE_IDS.has(error.caseId)
+        ? { caseId: error.caseId }
+        : {}),
+      code: DIAGNOSTIC_TOKEN.test(error.code)
+        ? error.code
+        : "RUNTIME_EVIDENCE_SEMANTIC_INVALID"
+    };
+  }
   if (!(error instanceof ZodError)) return fallback;
 
   const path = error.issues[0]?.path;
@@ -623,6 +638,19 @@ async function captureRuntimeEvidence(input: {
     captureSmokeFailure();
     throw validation.error;
   }
+  try {
+    validateRuntimeEvidenceSemantics(validation.data, {
+      gitSha: input.gitSha,
+      imageDigest: input.imageDigest,
+      baseUrl: input.baseUrl.origin
+    });
+  } catch (error) {
+    const diagnostic = runtimeEvidenceValidationFailureDiagnostic(error, cases);
+    const { stage, ...details } = diagnostic;
+    markSmokeDiagnostic(stage, details);
+    captureSmokeFailure();
+    throw error;
+  }
   return validation.data;
 }
 
@@ -943,7 +971,7 @@ function missingRequiredToolEvidence(
         : testCase.category === "artifact"
           ? ["create_artifact"]
           : testCase.id === "v3-text-citation-link-02"
-            ? ["web_search"]
+            ? ["web_search", "web_link_binding"]
             : (testCase.expected.permissionAudit ?? [])
                 .filter(
                   (audit) => audit.permission === "allowed" && audit.executed

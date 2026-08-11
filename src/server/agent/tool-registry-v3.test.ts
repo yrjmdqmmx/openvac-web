@@ -13,6 +13,7 @@ import type { ArtifactStorage } from "./artifact-tools";
 import type { AttachmentStorage } from "./attachment-tools";
 import { EvidenceRegistry } from "./evidence-registry";
 import { ToolRegistry } from "./tool-registry";
+import type { VerifiedUrlReader } from "./verified-url";
 
 const userId = "user-a";
 const conversationId = "conversation-a";
@@ -39,6 +40,49 @@ describe("ToolRegistry V3 exposure", () => {
         additionalProperties: false
       });
     }
+  });
+
+  it("binds a verified current-turn URL to its private evidence", async () => {
+    const verifiedUrlReader = {
+      read: vi.fn(async () => ({
+        link: {
+          type: "verified_link" as const,
+          linkId: "L1",
+          url: "https://example.com/manual",
+          label: "说明书",
+          hostname: "example.com",
+          status: "verified" as const
+        },
+        contentType: "text/plain",
+        text: "Verified vacuum manual excerpt"
+      }))
+    } as unknown as VerifiedUrlReader;
+    const scoped = registry(
+      "请读取链接并给出依据",
+      undefined,
+      undefined,
+      undefined,
+      verifiedUrlReader
+    );
+
+    const result = await scoped.execute({
+      callId: "call-link",
+      name: "read_verified_url",
+      arguments: JSON.stringify({ linkId: "L1" })
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.evidenceIds).toEqual(["E1"]);
+    expect(result.verifiedLinks).toEqual([
+      expect.objectContaining({ linkId: "L1", evidenceIds: ["E1"] })
+    ]);
+    expect(result.outputItem.type).toBe("function_call_output");
+    if (result.outputItem.type !== "function_call_output") {
+      throw new Error("Expected function_call_output.");
+    }
+    expect(JSON.parse(String(result.outputItem.output))).toMatchObject({
+      evidence: [expect.objectContaining({ evidenceId: "E1", linkId: "L1" })]
+    });
   });
 
   it.each([
@@ -286,7 +330,8 @@ function registry(
   question: string,
   artifactStorage?: ArtifactStorage,
   signal?: AbortSignal,
-  attachmentStorage?: AttachmentStorage
+  attachmentStorage?: AttachmentStorage,
+  verifiedUrlReader?: VerifiedUrlReader
 ) {
   return new ToolRegistry(new EvidenceRegistry(), {
     userId,
@@ -303,6 +348,7 @@ function registry(
     ],
     artifactStorage,
     attachmentStorage,
+    verifiedUrlReader,
     signal
   });
 }

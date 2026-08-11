@@ -975,6 +975,10 @@ export class AgentRunOrchestrator {
         ),
         knownEvidenceIds: this.evidence.list().map((entry) => entry.id),
         knownLinkIds: this.verifiedLinks.keys(),
+        knownLinkBindings: [...this.verifiedLinks.values()].map((link) => ({
+          linkId: link.linkId,
+          evidenceIds: link.evidenceIds ?? []
+        })),
         knownArtifactIds: this.artifacts.keys(),
         knownCalculationIds: this.calculations.keys(),
         forbiddenVisibleTerms: [...this.calculations.values()].flatMap(
@@ -1106,12 +1110,17 @@ export class AgentRunOrchestrator {
           repairRules: [
             "The answer riskLevel must equal requiredRiskLevel exactly.",
             "When no allowed evidence or calculation exists, do not use answerKind expert; use clarification or safe_refusal.",
-            "Do not turn a permission denial into a claim that an attachment was accessed."
+            "Do not turn a permission denial into a claim that an attachment was accessed.",
+            "Each link_reference must cite at least one evidence ID from its allowedLinkBindings entry in a paragraph, list, table, or callout block; usedEvidenceIds and usedLinkIds must exactly match block references."
           ],
           validationErrors: errors.slice(0, 20),
           allowedEvidenceIds: this.evidence.list().map((entry) => entry.id),
           allowedCalculationIds: [...this.calculations.keys()],
           allowedLinkIds: [...this.verifiedLinks.keys()],
+          allowedLinkBindings: [...this.verifiedLinks.values()].map((link) => ({
+            linkId: link.linkId,
+            evidenceIds: link.evidenceIds ?? []
+          })),
           allowedArtifactIds: [...this.artifacts.keys()],
           candidate: input.outputText.slice(0, 32_000)
         })

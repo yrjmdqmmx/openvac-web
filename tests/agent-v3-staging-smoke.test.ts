@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
+import { RuntimeEvidenceSemanticError } from "../src/evals/answer-v3/runtime-evidence";
+
 import {
   AGENT_V3_STAGING_ORIGIN,
   assertNoForbiddenFields,
@@ -196,6 +198,34 @@ describe("Agent V3 staging runtime smoke safety", () => {
       code: "RUNTIME_TOOL_RESULT_DIGEST_INVALID"
     });
     expect(JSON.stringify(diagnostic)).not.toMatch(/secret|provider detail/iu);
+  });
+
+  it("maps shared runtime semantic failures to a bounded leaf code", () => {
+    const diagnostic = runtimeEvidenceValidationFailureDiagnostic(
+      new RuntimeEvidenceSemanticError(
+        "RUNTIME_LINK_BINDING_PROOF_INVALID",
+        "provider detail must stay private",
+        "v3-text-citation-link-02"
+      ),
+      []
+    );
+
+    expect(diagnostic).toEqual({
+      stage: "runtime_evidence_validation",
+      caseId: "v3-text-citation-link-02",
+      code: "RUNTIME_LINK_BINDING_PROOF_INVALID"
+    });
+    expect(JSON.stringify(diagnostic)).not.toMatch(/provider detail|private/iu);
+  });
+
+  it("runs the shared semantic validator and requires a binding audit", () => {
+    const source = readFileSync(
+      resolve(import.meta.dirname, "../scripts/smoke-agent-v3-staging.ts"),
+      "utf8"
+    );
+
+    expect(source).toContain("validateRuntimeEvidenceSemantics(");
+    expect(source).toContain('["web_search", "web_link_binding"]');
   });
 
   it("does not echo unknown runtime evidence paths or validation messages", () => {

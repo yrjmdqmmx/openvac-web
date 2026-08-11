@@ -162,6 +162,18 @@ export const runtimeEvidenceSchema = z
 
 export type RuntimeEvidence = z.infer<typeof runtimeEvidenceSchema>;
 
+export class RuntimeEvidenceSemanticError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly caseId?: string,
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = "RuntimeEvidenceSemanticError";
+  }
+}
+
 export async function loadRuntimeEvidence(input: {
   path: string;
   checksumSha256: string;
@@ -188,7 +200,7 @@ export async function loadRuntimeEvidence(input: {
   const parsed = runtimeEvidenceSchema.parse(
     JSON.parse(bytes.toString("utf8")) as unknown
   );
-  validateEvidenceIdentity(parsed, input);
+  validateRuntimeEvidenceSemantics(parsed, input);
   return parsed;
 }
 
@@ -214,7 +226,7 @@ export function candidateOutputsFromRuntimeEvidence(
   );
 }
 
-function validateEvidenceIdentity(
+export function validateRuntimeEvidenceSemantics(
   evidence: RuntimeEvidence,
   expected: {
     gitSha: string;
@@ -269,7 +281,19 @@ function validateEvidenceIdentity(
   for (const item of evidence.cases) {
     const testCase = casesById.get(item.caseId);
     if (!testCase) throw new Error(`Unexpected runtime case ${item.caseId}.`);
-    validateRuntimeCase(item, testCase, evidence);
+    try {
+      validateRuntimeCase(item, testCase, evidence);
+    } catch (error) {
+      if (error instanceof RuntimeEvidenceSemanticError) throw error;
+      throw new RuntimeEvidenceSemanticError(
+        "RUNTIME_CASE_SEMANTIC_INVALID",
+        error instanceof Error
+          ? error.message
+          : `Runtime case ${item.caseId} failed semantic validation.`,
+        item.caseId,
+        { cause: error }
+      );
+    }
   }
 }
 
@@ -351,34 +375,86 @@ function validateLinkEvidence(
     }))
   );
   if (!sameJsonSet(item.linkAudit, derived)) {
-    throw new Error(
-      `Runtime case ${item.caseId} link audit does not match verified links.`
+    throw new RuntimeEvidenceSemanticError(
+      "RUNTIME_LINK_AUDIT_MISMATCH",
+      `Runtime case ${item.caseId} link audit does not match verified links.`,
+      item.caseId
     );
   }
   if (!testCase.expected.requireLinkEvidenceBinding) return;
   const allowedDomains = testCase.expected.allowedLinkDomains ?? [];
-  const webAudit = item.toolAudit.find(
-    (audit) => audit.name === "web_search" && audit.status === "completed"
-  );
-  const bindingProofs = item.toolAudit.filter(
-    (audit) => audit.name === "web_link_binding" && audit.status === "completed"
-  );
   const referencedLinkIds = item.answer.blocks.flatMap((block) =>
     block.type === "link_reference" ? [block.linkId] : []
   );
+  const selectedLinkIds = item.answer.usedLinkIds;
+  const uniqueSelectedLinkIds = [...new Set(selectedLinkIds)];
+  const minimumLinkCount = testCase.expected.minimumLinkCount ?? 0;
+  if (!sameJsonSet(referencedLinkIds, selectedLinkIds)) {
+    throw new RuntimeEvidenceSemanticError(
+      "RUNTIME_LINK_PROJECTION_INVALID",
+      `Runtime case ${item.caseId} link references do not match used links.`,
+      item.caseId
+    );
+  }
   if (
-    !sameJsonSet(referencedLinkIds, testCase.expected.linkIds) ||
-    !sameJsonSet(item.answer.usedLinkIds, testCase.expected.linkIds) ||
-    !webAudit ||
-    !isNonEmptySubset(
-      [...new Set(item.linkAudit.map((audit) => audit.evidenceId))],
-      webAudit.citationIds
+    uniqueSelectedLinkIds.length !== selectedLinkIds.length ||
+    (minimumLinkCount > 0
+      ? uniqueSelectedLinkIds.length < minimumLinkCount
+      : !sameJsonSet(uniqueSelectedLinkIds, testCase.expected.linkIds))
+  ) {
+    throw new RuntimeEvidenceSemanticError(
+      "RUNTIME_LINK_SELECTION_INVALID",
+      `Runtime case ${item.caseId} selected an invalid link set.`,
+      item.caseId
+    );
+  }
+  if (
+    !sameJsonSet(
+      item.verifiedLinks.map((link) => link.linkId),
+      selectedLinkIds
     ) ||
     item.verifiedLinks.some(
       (link) =>
-        allowedDomains.length > 0 &&
-        !allowedDomains.some((domain) => hostnameWithin(link.hostname, domain))
-    ) ||
+        link.status !== "verified" ||
+        !link.url.startsWith("https://") ||
+        (allowedDomains.length > 0 &&
+          !allowedDomains.some((domain) =>
+            hostnameWithin(link.hostname, domain)
+          ))
+    )
+  ) {
+    throw new RuntimeEvidenceSemanticError(
+      "RUNTIME_LINK_PROJECTION_INVALID",
+      `Runtime case ${item.caseId} returned an invalid verified link projection.`,
+      item.caseId
+    );
+  }
+  const webAudit = item.toolAudit.find(
+    (audit) => audit.name === "web_search" && audit.status === "completed"
+  );
+  if (!webAudit) {
+    throw new RuntimeEvidenceSemanticError(
+      "RUNTIME_WEB_SEARCH_AUDIT_MISSING",
+      `Runtime case ${item.caseId} lacks a completed web search audit.`,
+      item.caseId
+    );
+  }
+  const bindingProofs = item.toolAudit.filter(
+    (audit) => audit.name === "web_link_binding" && audit.status === "completed"
+  );
+  if (
+    !isNonEmptySubset(
+      [...new Set(item.linkAudit.map((audit) => audit.evidenceId))],
+      webAudit.citationIds
+    )
+  ) {
+    throw new RuntimeEvidenceSemanticError(
+      "RUNTIME_LINK_WEB_CITATION_INVALID",
+      `Runtime case ${item.caseId} link evidence is absent from web search audit.`,
+      item.caseId
+    );
+  }
+  if (
     item.linkAudit.some((binding) => {
       const link = item.verifiedLinks.find(
         (candidate) => candidate.linkId === binding.linkId
@@ -393,8 +469,16 @@ function validateLinkEvidence(
           proof.resultDigest === expectedDigest &&
           sameJsonSet(proof.citationIds, [binding.evidenceId])
       );
-    }) ||
-    !testCase.expected.linkIds.every((linkId) =>
+    })
+  ) {
+    throw new RuntimeEvidenceSemanticError(
+      "RUNTIME_LINK_BINDING_PROOF_INVALID",
+      `Runtime case ${item.caseId} lacks an exact database link binding proof.`,
+      item.caseId
+    );
+  }
+  if (
+    !selectedLinkIds.every((linkId) =>
       item.linkAudit.some(
         (audit) =>
           audit.linkId === linkId &&
@@ -403,8 +487,10 @@ function validateLinkEvidence(
       )
     )
   ) {
-    throw new Error(
-      `Runtime case ${item.caseId} lacks a verified evidence-to-link binding.`
+    throw new RuntimeEvidenceSemanticError(
+      "RUNTIME_LINK_EVIDENCE_UNUSED",
+      `Runtime case ${item.caseId} lacks a verified evidence-to-link binding.`,
+      item.caseId
     );
   }
 }

@@ -311,6 +311,15 @@ export class ToolRegistry {
           reviewStatus: "runtime_verified",
           runtimeValidated: true
         });
+        this.evidence.bindVerifiedLink(
+          evidenceId,
+          result.link.linkId,
+          result.link.hostname
+        );
+        const verifiedLink = {
+          ...result.link,
+          evidenceIds: [evidenceId]
+        };
         return this.output(
           callId,
           {
@@ -323,7 +332,7 @@ export class ToolRegistry {
           [evidenceId],
           [],
           [],
-          [result.link]
+          [verifiedLink]
         );
       } catch (error) {
         return this.output(callId, {

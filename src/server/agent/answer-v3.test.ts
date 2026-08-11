@@ -181,6 +181,51 @@ describe("Answer V3", () => {
     expect(result.errors.join(" ")).toMatch(/URL、内部字段/u);
   });
 
+  it("requires every referenced link to share a verified evidence binding", () => {
+    const answer: AnswerV3 = {
+      ...directAnswer,
+      answerKind: "expert",
+      blocks: [
+        {
+          type: "paragraph",
+          text: "应按具体型号核对前级压力。",
+          evidenceIds: ["E2"]
+        },
+        { type: "link_reference", linkId: "W1", label: "厂家手册" }
+      ],
+      usedEvidenceIds: ["E2"],
+      usedLinkIds: ["W1"]
+    };
+    const common = {
+      value: answer,
+      knownEvidenceIds: ["E1", "E2"],
+      knownLinkIds: ["W1"]
+    };
+
+    const missing = validateAnswerV3(common);
+    expect(missing.valid).toBe(false);
+    expect(missing.errors.join(" ")).toContain(
+      "回答中的链接缺少已验证证据绑定映射"
+    );
+    expect(validateAnswerV3({ ...common, knownLinkBindings: [] }).valid).toBe(
+      false
+    );
+    const mismatched = validateAnswerV3({
+      ...common,
+      knownLinkBindings: [{ linkId: "W1", evidenceIds: ["E1"] }]
+    });
+    expect(mismatched.valid).toBe(false);
+    expect(mismatched.errors.join(" ")).toContain(
+      "链接 W1 未与回答引用的已验证证据绑定"
+    );
+    expect(
+      validateAnswerV3({
+        ...common,
+        knownLinkBindings: [{ linkId: "W1", evidenceIds: ["E1", "E2"] }]
+      }).valid
+    ).toBe(true);
+  });
+
   it("rejects dynamic internal calculation keys in any visible block", () => {
     const result = validateAnswerV3({
       value: {

@@ -215,6 +215,66 @@ describe("Answer V3 automated release gate", () => {
     expect(report.deterministicGates.link).toMatchObject({ passed: true });
   });
 
+  it("accepts a dynamically selected non-first verified link", async () => {
+    const dependencies = mutateCandidate(
+      "v3-text-citation-link-02",
+      (output) => {
+        output.answer.blocks = output.answer.blocks.map((block) =>
+          block.type === "link_reference" ? { ...block, linkId: "W2" } : block
+        );
+        output.answer.usedLinkIds = ["W2"];
+        output.verifiedLinks = output.verifiedLinks.map((link) => ({
+          ...link,
+          linkId: "W2"
+        }));
+        output.linkAudit = (output.linkAudit ?? []).map((audit) => ({
+          ...audit,
+          linkId: "W2"
+        }));
+        output.toolAudit = output.toolAudit.map((audit) =>
+          audit.name === "web_link_binding"
+            ? {
+                ...audit,
+                resultDigest: webLinkBindingDigest({
+                  evidenceId: audit.citationIds![0]!,
+                  link: output.verifiedLinks[0]!
+                })
+              }
+            : audit
+        );
+      }
+    );
+    const report = await runAnswerV3Eval({ dependencies, gitSha: "test" });
+
+    expect(report.deterministicGates.link).toMatchObject({
+      passed: true,
+      score: 100
+    });
+    expect(report.failureIds).not.toContain("v3-text-citation-link-02:link");
+  });
+
+  it("does not count duplicate link projections toward the minimum", async () => {
+    const dependencies = mutateCandidate(
+      "v3-text-citation-link-02",
+      (output) => {
+        const linkBlock = output.answer.blocks.find(
+          (block) => block.type === "link_reference"
+        )!;
+        output.answer.blocks.push({ ...linkBlock });
+        output.answer.usedLinkIds = ["W1", "W1"];
+        output.verifiedLinks.push({ ...output.verifiedLinks[0]! });
+        output.linkAudit = [
+          ...(output.linkAudit ?? []),
+          { ...output.linkAudit![0]! }
+        ];
+      }
+    );
+    const report = await runAnswerV3Eval({ dependencies, gitSha: "test" });
+
+    expect(report.deterministicGates.link.passed).toBe(false);
+    expect(report.failureIds).toContain("v3-text-citation-link-02:link");
+  });
+
   it("rejects a verified link whose evidence binding was tampered", async () => {
     const dependencies = mutateCandidate(
       "v3-text-citation-link-02",
