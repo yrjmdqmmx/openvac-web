@@ -69,18 +69,9 @@ export const ARTIFACT_PROVIDER_LIMITS = {
 } as const;
 
 export const PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION =
-  "openvac.parameter-table-provider.v1";
+  "openvac.parameter-table-provider.v2";
 
 export type ArtifactProviderContract = "parameter_table";
-
-export const ARTIFACT_PROVIDER_INSTRUCTION = [
-  "create_artifact 必须只返回一个简洁、完整的函数调用。",
-  "parameter_table 必须作为整体包含至少一个真实有量纲单位，并在每行 assumptionOrCondition 中写明实质假设、适用工况或待确认状态。物理量参数必须使用真实单位；型号、品牌、泵型、配置等描述参数的 unit 只能写不适用，数量和级数只能写无量纲或计数单位，压缩比、系数和效率只能写无量纲或百分比。title 或 summary 的声明不能代替表内内容。具体假设必须来自当前输入、可信证据或确定性计算；信息不足时应明确标记待确认，不得编造具体工况。",
-  "专用 parameter_table provider contract 的 rows 使用 parameter、valueOrStatus、unit、assumptionOrCondition 对象；不得添加 columns 或改成 cell 数组。",
-  `原始参数不得超过 ${ARTIFACT_PROVIDER_LIMITS.rawArgumentBytes} UTF-8 字节，所有字符串合计不得超过 ${ARTIFACT_PROVIDER_LIMITS.visibleCharacters} 个 Unicode 字符。`,
-  `sections 最多 ${ARTIFACT_PROVIDER_LIMITS.sections} 个，每节最多 ${ARTIFACT_PROVIDER_LIMITS.paragraphsPerSection} 段；tables 最多 ${ARTIFACT_PROVIDER_LIMITS.tables} 个，每表最多 ${ARTIFACT_PROVIDER_LIMITS.columnsPerTable} 列，所有表合计最多 ${ARTIFACT_PROVIDER_LIMITS.totalRows} 行。`,
-  `段落最多 ${ARTIFACT_PROVIDER_LIMITS.paragraphCharacters} 字符，列名最多 ${ARTIFACT_PROVIDER_LIMITS.columnHeaderCharacters} 字符，单元格最多 ${ARTIFACT_PROVIDER_LIMITS.cellCharacters} 字符。`
-].join(" ");
 
 const searchKnowledgeSchema = z.object({
   query: z.string().trim().min(2).max(2_000)
@@ -107,28 +98,39 @@ const createArtifactSchema = artifactSpecBaseSchema.omit({
   sourceTurnId: true
 });
 
+function providerTextWithMaximum(maximum: number) {
+  return z.string().refine((value) => Array.from(value).length <= maximum, {
+    message: `Provider text must contain at most ${maximum} Unicode code points.`
+  });
+}
+
+function trimmedProviderText(maximum: number) {
+  return z
+    .string()
+    .trim()
+    .min(1)
+    .refine((value) => Array.from(value).length <= maximum, {
+      message: `Provider text must contain at most ${maximum} Unicode code points.`
+    });
+}
+
 const artifactProviderTableSchema = z
   .object({
-    title: z
-      .string()
-      .trim()
-      .min(1)
-      .max(ARTIFACT_PROVIDER_LIMITS.titleCharacters)
-      .optional(),
+    title: trimmedProviderText(
+      ARTIFACT_PROVIDER_LIMITS.titleCharacters
+    ).optional(),
     columns: z
       .array(
-        z
-          .string()
-          .trim()
-          .min(1)
-          .max(ARTIFACT_PROVIDER_LIMITS.columnHeaderCharacters)
+        trimmedProviderText(ARTIFACT_PROVIDER_LIMITS.columnHeaderCharacters)
       )
       .min(1)
       .max(ARTIFACT_PROVIDER_LIMITS.columnsPerTable),
     rows: z
       .array(
         z
-          .array(z.string().max(ARTIFACT_PROVIDER_LIMITS.cellCharacters))
+          .array(
+            providerTextWithMaximum(ARTIFACT_PROVIDER_LIMITS.cellCharacters)
+          )
           .min(1)
           .max(ARTIFACT_PROVIDER_LIMITS.columnsPerTable)
       )
@@ -137,50 +139,164 @@ const artifactProviderTableSchema = z
   })
   .strict();
 
-type NonDimensionalParameterCategory = "descriptor" | "count" | "ratio";
-
 const nonDimensionalUnitValue =
   /^(?:无量纲|不适用|百分比|台|套|级|个|dimensionless|n\/?a|%)$/iu;
-const chineseDescriptorParameter =
-  /^(?:(?:推荐|候选|主泵|前级泵|增压泵|设备|泵组|真空泵|泵)?(?:型号|泵型号|泵型|类型|类别|品牌|厂商|制造商|系列|名称|配置|形式))$/u;
-const chineseCountParameter =
-  /^(?:(?:推荐|候选|主泵|前级泵|增压泵|设备|泵组|真空泵|泵)?(?:数量|台数|级数))$/u;
-const chineseRatioParameter =
-  /^(?:(?:额定|容积|机械|泵|泵组|系统|级间|总|理论|实际|综合|等熵|最大|最小))?(?:压缩比|比例|系数|效率)$/u;
-const englishDescriptorParameter =
-  /^(?:(?:recommended|candidate|primary|backing|booster|vacuum|pump|system)\s+)*(?:model(?:\s+(?:name|number|no\.?))?|type|category|brand|manufacturer|series|name|configuration|arrangement)$/iu;
-const englishCountParameter =
-  /^(?:(?:recommended|candidate|primary|backing|booster|vacuum|pump|system)\s+)*(?:count|quantity|stages?)$/iu;
-const englishRatioParameter =
-  /^(?:(?:recommended|candidate|primary|backing|booster|vacuum|pump|system|rated|volumetric|mechanical|isentropic|interstage|overall|total|theoretical|actual)\s+)*(?:compression\s+ratio|ratio|coefficient|efficiency)$/iu;
-const allowedUnitByNonDimensionalCategory = {
+const parameterKindSchema = z.enum([
+  "physical",
+  "descriptor",
+  "count",
+  "ratio"
+]);
+type ParameterKind = z.infer<typeof parameterKindSchema>;
+const allowedUnitByParameterKind = {
   descriptor: /^(?:不适用|n\/?a)$/iu,
   count: /^(?:无量纲|台|套|级|个|dimensionless)$/iu,
   ratio: /^(?:无量纲|百分比|dimensionless|%)$/iu
-} satisfies Record<NonDimensionalParameterCategory, RegExp>;
+} satisfies Record<Exclude<ParameterKind, "physical">, RegExp>;
+const parameterKindSuffixes = {
+  descriptor: [
+    "型号",
+    "泵型",
+    "类型",
+    "类别",
+    "品牌",
+    "厂商",
+    "制造商",
+    "系列",
+    "名称",
+    "配置",
+    "形式",
+    "方案",
+    "介质",
+    "气体",
+    "冷却方式",
+    "密封方式",
+    "接口",
+    "法兰",
+    "备注",
+    "说明",
+    "清洁度要求",
+    "model",
+    "model name",
+    "model number",
+    "model no.",
+    "type",
+    "category",
+    "brand",
+    "manufacturer",
+    "series",
+    "name",
+    "configuration",
+    "arrangement",
+    "scheme",
+    "medium",
+    "gas",
+    "cooling method",
+    "sealing method",
+    "seal method",
+    "interface",
+    "flange",
+    "note",
+    "description"
+  ],
+  count: ["数量", "台数", "级数", "count", "quantity", "stage", "stages"],
+  ratio: [
+    "压缩比",
+    "比例",
+    "系数",
+    "效率",
+    "compression ratio",
+    "ratio",
+    "coefficient",
+    "efficiency"
+  ],
+  physical: [
+    "压力",
+    "真空度",
+    "抽速",
+    "抽气速度",
+    "流量",
+    "进气量",
+    "气载",
+    "漏率",
+    "吞吐量",
+    "容积",
+    "流导",
+    "功率",
+    "温度",
+    "尺寸",
+    "直径",
+    "长度",
+    "质量",
+    "转速",
+    "噪声",
+    "时间",
+    "pressure",
+    "vacuum level",
+    "pumping speed",
+    "flow",
+    "flow rate",
+    "gas load",
+    "leak rate",
+    "throughput",
+    "volume",
+    "conductance",
+    "power",
+    "temperature",
+    "size",
+    "diameter",
+    "length",
+    "mass",
+    "rotational speed",
+    "noise",
+    "time"
+  ]
+} as const satisfies Record<ParameterKind, readonly string[]>;
+const parameterKindVocabulary = (
+  Object.keys(parameterKindSuffixes) as ParameterKind[]
+)
+  .map((kind) => `${kind}=${parameterKindSuffixes[kind].join("、")}`)
+  .join("；");
 
-function nonDimensionalParameterCategory(
-  parameter: string
-): NonDimensionalParameterCategory | undefined {
-  const normalized = parameter.normalize("NFKC").trim();
-  const compact = normalized.replace(/\s+/gu, "");
-  if (
-    chineseDescriptorParameter.test(compact) ||
-    englishDescriptorParameter.test(normalized)
-  )
-    return "descriptor";
-  if (
-    chineseCountParameter.test(compact) ||
-    englishCountParameter.test(normalized)
-  )
-    return "count";
-  if (
-    chineseRatioParameter.test(compact) ||
-    englishRatioParameter.test(normalized)
-  )
-    return "ratio";
-  return undefined;
+function parameterKindForLabel(parameter: string): ParameterKind | undefined {
+  const normalized = parameter
+    .normalize("NFKC")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLocaleLowerCase("en-US");
+  return (Object.keys(parameterKindSuffixes) as ParameterKind[]).find((kind) =>
+    parameterKindSuffixes[kind].some((suffix) => {
+      const normalizedSuffix = suffix.toLocaleLowerCase("en-US");
+      if (!normalized.endsWith(normalizedSuffix)) return false;
+      if (/[^\x00-\x7f]/u.test(normalizedSuffix)) return true;
+      const prefix = normalized.slice(0, -normalizedSuffix.length);
+      return (
+        prefix.length === 0 || !/[\p{L}\p{N}\p{M}\p{Cf}\p{Cc}]$/u.test(prefix)
+      );
+    })
+  );
 }
+
+function providerParameterText(maximum: number) {
+  return z
+    .string()
+    .min(1)
+    .refine((value) => Array.from(value).length <= maximum, {
+      message: `Provider parameter text must contain at most ${maximum} Unicode code points.`
+    })
+    .refine((value) => value === value.trim(), {
+      message: "Provider parameter text must not contain outer whitespace."
+    });
+}
+
+export const ARTIFACT_PROVIDER_INSTRUCTION = [
+  "create_artifact 必须只返回一个简洁、完整的函数调用。",
+  "parameter_table 必须作为整体包含至少一个真实有量纲单位，并在每行 assumptionOrCondition 中写明实质假设、适用工况或待确认状态。每行 parameterKind 必须明确为 physical、descriptor、count 或 ratio：physical 使用真实有量纲单位；descriptor 只能使用不适用；count 只能使用无量纲或台、套、级、个；ratio 只能使用无量纲、百分比或 %。服务端会用公开参数词汇交叉校验 parameterKind，不接受 provider 自报类别覆盖参数语义。title 或 summary 的声明不能代替表内内容。具体假设必须来自当前输入、可信证据或确定性计算；信息不足时应明确标记待确认，不得编造具体工况。",
+  `专用 parameter_table provider contract 的 rows 使用 parameterKind、parameter、valueOrStatus、unit、assumptionOrCondition 对象；不得添加 columns 或改成 cell 数组。所有文本不得包含首尾空白。parameterKind 必须匹配下列中英文参数结尾词汇：${parameterKindVocabulary}。`,
+  `原始参数不得超过 ${ARTIFACT_PROVIDER_LIMITS.rawArgumentBytes} UTF-8 字节，所有字符串合计不得超过 ${ARTIFACT_PROVIDER_LIMITS.visibleCharacters} 个 Unicode 字符。`,
+  `sections 最多 ${ARTIFACT_PROVIDER_LIMITS.sections} 个，每节最多 ${ARTIFACT_PROVIDER_LIMITS.paragraphsPerSection} 段；tables 最多 ${ARTIFACT_PROVIDER_LIMITS.tables} 个，每表最多 ${ARTIFACT_PROVIDER_LIMITS.columnsPerTable} 列，所有表合计最多 ${ARTIFACT_PROVIDER_LIMITS.totalRows} 行。`,
+  `段落最多 ${ARTIFACT_PROVIDER_LIMITS.paragraphCharacters} 字符，列名最多 ${ARTIFACT_PROVIDER_LIMITS.columnHeaderCharacters} 字符，单元格最多 ${ARTIFACT_PROVIDER_LIMITS.cellCharacters} 字符。`
+].join(" ");
 
 function hasDimensionalPhysicalUnitValue(unit: string): boolean {
   return (
@@ -188,50 +304,63 @@ function hasDimensionalPhysicalUnitValue(unit: string): boolean {
   );
 }
 
+function hasSupportedParameterUnitValue(unit: string): boolean {
+  return (
+    hasDimensionalPhysicalUnitValue(unit) ||
+    Object.values(allowedUnitByParameterKind).some((allowed) =>
+      allowed.test(unit.trim())
+    )
+  );
+}
+
 const parameterTableProviderRowSchema = z
   .object({
-    parameter: z
-      .string()
-      .trim()
-      .min(1)
-      .max(ARTIFACT_PROVIDER_LIMITS.cellCharacters),
-    valueOrStatus: z
-      .string()
-      .trim()
-      .min(1)
-      .max(ARTIFACT_PROVIDER_LIMITS.cellCharacters),
-    unit: z.string().trim().min(1).max(ARTIFACT_PROVIDER_LIMITS.cellCharacters),
-    assumptionOrCondition: z
-      .string()
-      .trim()
-      .min(1)
-      .max(ARTIFACT_PROVIDER_LIMITS.cellCharacters)
+    parameterKind: parameterKindSchema,
+    parameter: providerParameterText(ARTIFACT_PROVIDER_LIMITS.cellCharacters),
+    valueOrStatus: providerParameterText(
+      ARTIFACT_PROVIDER_LIMITS.cellCharacters
+    ),
+    unit: providerParameterText(ARTIFACT_PROVIDER_LIMITS.cellCharacters),
+    assumptionOrCondition: providerParameterText(
+      ARTIFACT_PROVIDER_LIMITS.cellCharacters
+    )
   })
   .strict()
   .superRefine((row, context) => {
-    const nonDimensionalCategory = nonDimensionalParameterCategory(
-      row.parameter
-    );
-    if (
-      nonDimensionalCategory === undefined &&
-      !hasDimensionalPhysicalUnitValue(row.unit)
-    ) {
+    const serverKind = parameterKindForLabel(row.parameter);
+    if (serverKind === undefined) {
       context.addIssue({
         code: "custom",
-        path: ["unit"],
-        message: "Provider physical-quantity row requires a dimensional unit."
+        path: ["parameter"],
+        message:
+          "Provider parameter is outside the server-owned parameter vocabulary."
+      });
+      context.addIssue({
+        code: "custom",
+        path: ["parameterKind"],
+        message:
+          "Provider parameterKind cannot classify an unsupported parameter."
+      });
+    } else if (serverKind !== row.parameterKind) {
+      context.addIssue({
+        code: "custom",
+        path: ["parameterKind"],
+        message:
+          "Provider parameterKind does not match the server-owned parameter vocabulary."
       });
     }
-    if (
-      nonDimensionalCategory !== undefined &&
-      !allowedUnitByNonDimensionalCategory[nonDimensionalCategory].test(
-        row.unit.trim()
-      )
-    ) {
+    const validUnit =
+      serverKind === undefined
+        ? hasSupportedParameterUnitValue(row.unit)
+        : serverKind === "physical"
+          ? hasDimensionalPhysicalUnitValue(row.unit)
+          : allowedUnitByParameterKind[serverKind].test(row.unit.trim());
+    if (!validUnit) {
       context.addIssue({
         code: "custom",
         path: ["unit"],
-        message: "Provider non-dimensional row has an invalid unit."
+        message:
+          "Provider parameter row unit does not match the declared parameterKind."
       });
     }
     if (!hasAssumptionValueText(row.assumptionOrCondition)) {
@@ -246,36 +375,24 @@ const parameterTableProviderRowSchema = z
 export const parameterTableProviderSchema = z
   .object({
     contractVersion: z.literal(PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION),
-    title: z
-      .string()
-      .trim()
-      .min(1)
-      .max(ARTIFACT_PROVIDER_LIMITS.titleCharacters),
+    title: providerParameterText(ARTIFACT_PROVIDER_LIMITS.titleCharacters),
     formats: z
       .array(z.enum(["md", "docx", "pdf", "csv"]))
       .min(1)
       .max(ARTIFACT_PROVIDER_LIMITS.formats),
-    summary: z
-      .string()
-      .trim()
-      .min(1)
-      .max(ARTIFACT_PROVIDER_LIMITS.summaryCharacters),
+    summary: providerParameterText(ARTIFACT_PROVIDER_LIMITS.summaryCharacters),
     sections: z
       .array(
         z
           .object({
-            heading: z
-              .string()
-              .trim()
-              .min(1)
-              .max(ARTIFACT_PROVIDER_LIMITS.titleCharacters),
+            heading: providerParameterText(
+              ARTIFACT_PROVIDER_LIMITS.titleCharacters
+            ),
             paragraphs: z
               .array(
-                z
-                  .string()
-                  .trim()
-                  .min(1)
-                  .max(ARTIFACT_PROVIDER_LIMITS.paragraphCharacters)
+                providerParameterText(
+                  ARTIFACT_PROVIDER_LIMITS.paragraphCharacters
+                )
               )
               .min(1)
               .max(ARTIFACT_PROVIDER_LIMITS.paragraphsPerSection)
@@ -287,11 +404,9 @@ export const parameterTableProviderSchema = z
       .array(
         z
           .object({
-            title: z
-              .string()
-              .trim()
-              .min(1)
-              .max(ARTIFACT_PROVIDER_LIMITS.titleCharacters),
+            title: providerParameterText(
+              ARTIFACT_PROVIDER_LIMITS.titleCharacters
+            ),
             rows: z
               .array(parameterTableProviderRowSchema)
               .min(1)
@@ -319,7 +434,7 @@ export const parameterTableProviderSchema = z
       !spec.tables.some((table) =>
         table.rows.some(
           (row) =>
-            nonDimensionalParameterCategory(row.parameter) === undefined &&
+            parameterKindForLabel(row.parameter) === "physical" &&
             hasDimensionalPhysicalUnitValue(row.unit)
         )
       )
@@ -336,6 +451,7 @@ export const parameterTableProviderSchema = z
     ) {
       context.addIssue({
         code: "custom",
+        path: ["providerEnvelope", "visibleCharacters"],
         message:
           "Provider parameter-table content exceeds the visible text limit."
       });
@@ -351,36 +467,24 @@ export const createArtifactProviderSchema = z
       "inspection_checklist",
       "parameter_table"
     ]),
-    title: z
-      .string()
-      .trim()
-      .min(1)
-      .max(ARTIFACT_PROVIDER_LIMITS.titleCharacters),
+    title: trimmedProviderText(ARTIFACT_PROVIDER_LIMITS.titleCharacters),
     formats: z
       .array(z.enum(["md", "docx", "pdf", "csv"]))
       .min(1)
       .max(ARTIFACT_PROVIDER_LIMITS.formats),
-    summary: z
-      .string()
-      .trim()
-      .min(1)
-      .max(ARTIFACT_PROVIDER_LIMITS.summaryCharacters),
+    summary: trimmedProviderText(ARTIFACT_PROVIDER_LIMITS.summaryCharacters),
     sections: z
       .array(
         z
           .object({
-            heading: z
-              .string()
-              .trim()
-              .min(1)
-              .max(ARTIFACT_PROVIDER_LIMITS.titleCharacters),
+            heading: trimmedProviderText(
+              ARTIFACT_PROVIDER_LIMITS.titleCharacters
+            ),
             paragraphs: z
               .array(
-                z
-                  .string()
-                  .trim()
-                  .min(1)
-                  .max(ARTIFACT_PROVIDER_LIMITS.paragraphCharacters)
+                trimmedProviderText(
+                  ARTIFACT_PROVIDER_LIMITS.paragraphCharacters
+                )
               )
               .min(1)
               .max(ARTIFACT_PROVIDER_LIMITS.paragraphsPerSection)
@@ -410,6 +514,7 @@ export const createArtifactProviderSchema = z
     ) {
       context.addIssue({
         code: "custom",
+        path: ["providerEnvelope", "visibleCharacters"],
         message: "Provider artifact content exceeds the visible text limit."
       });
     }
@@ -1227,8 +1332,7 @@ function createParameterTableArtifactDefinition(): ResponsesFunctionTool {
   return {
     type: "function",
     name: "create_artifact",
-    description:
-      "创建一个泵组或真空系统参数表。每一行必须提供参数、数值或状态、单位、以及假设或适用工况。物理量参数必须使用真实有量纲单位；型号、品牌、泵型、配置等描述参数只能用不适用，数量和级数只能用无量纲或台/套/级/个，压缩比、系数和效率只能用无量纲或百分比。整表至少包含一行真实有量纲物理参数。每行假设或工况信息不足时可标记待用户确认。服务端只做结构映射，不会补写内容；rows 不得添加 columns 或改成 cell 数组。",
+    description: `创建一个泵组或真空系统参数表。每一行必须提供 parameterKind、参数、数值或状态、单位、以及假设或适用工况；所有文本不得包含首尾空白。parameterKind 必须匹配公开中英文参数结尾词汇：${parameterKindVocabulary}。physical 使用真实有量纲单位；descriptor 只能使用不适用；count 只能使用无量纲或台、套、级、个；ratio 只能使用无量纲、百分比或 %。整表至少包含一行 physical 且有真实有量纲单位的参数。信息不足时，优先使用目标有效抽速（physical，L/s）、目标入口压力（physical，Pa）、候选泵型号（descriptor，不适用）、数量（count，台）等受支持字段，并将数值或状态与工况写为待用户确认；不得编造数值。服务端只做结构映射，不会补写内容；rows 不得添加 columns 或改成 cell 数组。`,
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -1313,12 +1417,17 @@ function createParameterTableArtifactDefinition(): ResponsesFunctionTool {
                   type: "object",
                   additionalProperties: false,
                   required: [
+                    "parameterKind",
                     "parameter",
                     "valueOrStatus",
                     "unit",
                     "assumptionOrCondition"
                   ],
                   properties: {
+                    parameterKind: {
+                      type: "string",
+                      enum: ["physical", "descriptor", "count", "ratio"]
+                    },
                     parameter: {
                       type: "string",
                       minLength: 1,
