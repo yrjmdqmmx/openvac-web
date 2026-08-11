@@ -2,12 +2,14 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import {
   AGENT_V3_STAGING_ORIGIN,
   assertNoForbiddenFields,
   publicSmokeFailureDiagnostic,
   publicSmokeReport,
+  runtimeEvidenceValidationFailureDiagnostic,
   runtimeTerminalFailureDiagnostic,
   signBetterAuthSessionCookie,
   validateStagingOrigin,
@@ -152,6 +154,60 @@ describe("Agent V3 staging runtime smoke safety", () => {
       schemaVersion: "openvac.agent-v3-staging-failure.v1",
       stage: "report_finalize",
       code: "ACCEPTANCE_SECRET_SCAN_FAILED"
+    });
+  });
+
+  it("maps runtime evidence schema failures to a bounded case and field code", () => {
+    const validation = z
+      .object({
+        cases: z.array(
+          z.object({
+            toolAudit: z.array(
+              z.object({ resultDigest: z.string().regex(/^[0-9a-f]{64}$/u) })
+            )
+          })
+        )
+      })
+      .safeParse({
+        cases: [
+          { toolAudit: [] },
+          { toolAudit: [] },
+          { toolAudit: [] },
+          { toolAudit: [] },
+          { toolAudit: [{ resultDigest: "provider secret detail" }] }
+        ]
+      });
+    expect(validation.success).toBe(false);
+    if (validation.success) throw new Error("Expected invalid fixture.");
+    const diagnostic = runtimeEvidenceValidationFailureDiagnostic(
+      validation.error,
+      [
+        { caseId: "v3-text-safety-01" },
+        { caseId: "v3-text-citation-link-02" },
+        { caseId: "v3-multiturn-permission-01" },
+        { caseId: "v3-multiturn-tool-02" },
+        { caseId: "v3-visual-gauge-01" }
+      ]
+    );
+    expect(diagnostic).toEqual({
+      stage: "runtime_evidence_validation",
+      caseId: "v3-visual-gauge-01",
+      code: "RUNTIME_TOOL_RESULT_DIGEST_INVALID"
+    });
+    expect(JSON.stringify(diagnostic)).not.toMatch(/secret|provider detail/iu);
+  });
+
+  it("does not echo unknown runtime evidence paths or validation messages", () => {
+    const validation = z
+      .object({ providerSecret: z.string() })
+      .safeParse({ providerSecret: 42 });
+    expect(validation.success).toBe(false);
+    if (validation.success) throw new Error("Expected invalid fixture.");
+    expect(
+      runtimeEvidenceValidationFailureDiagnostic(validation.error, [])
+    ).toEqual({
+      stage: "runtime_evidence_validation",
+      code: "RUNTIME_EVIDENCE_INVALID"
     });
   });
 
