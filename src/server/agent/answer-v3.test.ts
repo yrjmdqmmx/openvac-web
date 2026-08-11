@@ -136,6 +136,28 @@ describe("Answer V3", () => {
     ).toThrow("ready artifact");
   });
 
+  it("claims parameter-table semantics only after server verification", () => {
+    const artifact = {
+      type: "artifact" as const,
+      artifactId: "00000000-0000-4000-8000-000000000002",
+      kind: "parameter_table" as const,
+      title: "泵组选型参数表",
+      formats: ["csv" as const],
+      status: "ready" as const
+    };
+
+    expect(
+      renderAnswerV3(
+        buildDeterministicArtifactAnswerV3(artifact, "medium", ["E1"])
+      )
+    ).not.toContain("参数表包含单位和假设");
+    expect(
+      renderAnswerV3(
+        buildDeterministicArtifactAnswerV3(artifact, "medium", ["E1"], true)
+      )
+    ).toContain("参数表包含单位和假设");
+  });
+
   it("accepts a simple low-risk direct answer and rejects direct complex answers", () => {
     expect(
       validateAnswerV3({ value: directAnswer, question: "什么是真空？" }).valid

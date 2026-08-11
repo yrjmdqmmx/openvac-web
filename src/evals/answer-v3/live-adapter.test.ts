@@ -10,6 +10,7 @@ import type {
   ResponsesStreamRequest
 } from "@/server/providers";
 import { webLinkBindingDigest } from "@/server/agent/web-link-binding";
+import type { ArtifactSpec } from "@/types/chat-v3";
 
 import { ANSWER_V3_CASE_VERSION, ANSWER_V3_EVAL_CASES } from "./cases";
 import { createFixtureEvalDependencies } from "./fixtures";
@@ -20,6 +21,7 @@ import {
 } from "./live-adapter";
 import {
   loadRuntimeEvidence,
+  parameterTableIncludesUnitsAndAssumptions,
   runtimeEvidenceSchema,
   type RuntimeEvidence
 } from "./runtime-evidence";
@@ -31,6 +33,56 @@ const IMAGE_DIGEST = `sha256:${"b".repeat(64)}`;
 const BASE_URL = "https://staging-openvac.openvac.cn/";
 
 describe("Answer V3 runtime-evidence adapter", () => {
+  it("requires real unit and assumption content in parameter-table specs", () => {
+    const spec: ArtifactSpec = {
+      schemaVersion: "openvac.artifact.v1",
+      kind: "parameter_table",
+      title: "泵组选型参数表",
+      formats: ["csv"],
+      summary: "按额定工况选择",
+      sections: [],
+      tables: [
+        {
+          columns: ["参数", "值", "单位"],
+          rows: [["有效抽速", "10", "L/s；假设稳态"]]
+        }
+      ],
+      sourceTurnId: "00000000-0000-4000-8000-000000000101"
+    };
+
+    expect(parameterTableIncludesUnitsAndAssumptions(spec)).toBe(true);
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        tables: [{ columns: ["参数", "值"], rows: [["抽速", "10"]] }]
+      })
+    ).toBe(false);
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        summary: "参数表包含单位和假设",
+        tables: [
+          {
+            columns: ["参数", "值", "单位/假设"],
+            rows: [["抽速", "10", "L/s"]]
+          }
+        ]
+      })
+    ).toBe(false);
+    expect(
+      parameterTableIncludesUnitsAndAssumptions({
+        ...spec,
+        summary: "参数表",
+        tables: [
+          {
+            columns: ["参数", "值", "单位"],
+            rows: [["入口压力", "10", "Pa"]]
+          }
+        ]
+      })
+    ).toBe(false);
+  });
+
   it("loads checksum-bound staging evidence and returns its candidate output unchanged", async () => {
     const source = await runtimeEvidence();
     const loaded = await writeAndLoad(source);

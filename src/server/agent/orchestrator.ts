@@ -31,6 +31,7 @@ import type {
   AnswerBlock,
   AnswerV3,
   ArtifactPart,
+  ArtifactSpec,
   InputMessagePart,
   VerifiedLinkPart
 } from "@/types/chat-v3";
@@ -66,8 +67,14 @@ import {
   hasExplicitArtifactIntent,
   type ArtifactStorage
 } from "./artifact-tools";
+import { parameterTableIncludesUnitsAndAssumptions } from "./artifact-semantics";
 import type { AttachmentStorage } from "./attachment-tools";
-import { ToolRegistry, type ToolExecutionResult } from "./tool-registry";
+import {
+  ARTIFACT_PROVIDER_INSTRUCTION,
+  MAX_ARTIFACT_ARGUMENT_BYTES,
+  ToolRegistry,
+  type ToolExecutionResult
+} from "./tool-registry";
 import {
   answerUsesOnlyProjectedCalculations,
   boundCalculationIdFromToolResult,
@@ -91,6 +98,12 @@ const MAX_PARALLEL_TOOLS = 2;
 const MAX_MODEL_REQUESTS = 6;
 const EXPLICIT_ARTIFACT_RUN_TIMEOUT_FLOOR_MS = 300_000;
 const NON_REPEATABLE_TOOL_NAMES = new Set(["create_artifact"]);
+export const MAX_ARTIFACT_PROVIDER_OUTPUT_TOKENS = 8_192;
+const FRESH_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION =
+  "上一次 create_artifact 参数不是合法 JSON。重新生成一个简洁、完整、符合 provider envelope 的单一 create_artifact 调用；不得复述、猜测或引用上一次调用的参数。";
+
+export type ArtifactArgumentRecoveryMode =
+  "fresh_json_invalid" | "continuation_invalid_arguments";
 
 export type OrchestratorEvent =
   | { type: "stage"; stage: AgentStage; label: string }
@@ -162,7 +175,7 @@ export class AgentRunOrchestrator {
   private retries = 0;
   private repairs = 0;
   private artifactArgumentRepairs = 0;
-  private artifactArgumentRepairPending = false;
+  private pendingArtifactArgumentRecovery?: ArtifactArgumentRecoveryMode;
   private toolSequence = 0;
   private webSearched = false;
   private webSearchFailure:
@@ -278,14 +291,20 @@ export class AgentRunOrchestrator {
         this.calculations.values(),
         input.run.inputParts
       );
+      const requestInput = [...currentInput];
+      const artifactRecoveryMode = this.pendingArtifactArgumentRecovery;
+      this.pendingArtifactArgumentRecovery = undefined;
       let result: CollectedModelResponse;
       try {
         result = await this.requestWithOneRetry(
           input,
-          currentInput,
+          requestInput,
           signal,
-          `answer_${this.modelRequests + 1}`,
-          !forceToolFreeAnswer && this.toolRounds < toolRoundLimit
+          artifactRecoveryMode
+            ? `answer_artifact_${artifactRecoveryMode}`
+            : `answer_${this.modelRequests + 1}`,
+          !forceToolFreeAnswer && this.toolRounds < toolRoundLimit,
+          artifactRecoveryMode
         );
       } catch (error) {
         if (
@@ -397,25 +416,26 @@ export class AgentRunOrchestrator {
       const artifactCallIndex = executionCalls.findIndex(
         (call) => call.name === "create_artifact"
       );
+      assertSingleArtifactCall(executionCalls);
+      let validatedArtifactSpec: ArtifactSpec | undefined;
       if (artifactCallIndex >= 0) {
         const artifactCall = executionCalls[artifactCallIndex]!;
         const preflight = this.tools.preflight(artifactCall);
         if (!preflight.ok) {
-          this.artifactArgumentRepairPending = false;
-          if (
-            shouldRetryArtifactArguments(
-              preflight.result.errorCode,
-              this.artifactArgumentRepairs,
-              Buffer.byteLength(artifactCall.arguments, "utf8")
-            )
-          ) {
+          const recoveryMode = selectArtifactArgumentRecoveryMode(
+            preflight.result.errorCode,
+            this.artifactArgumentRepairs,
+            Buffer.byteLength(artifactCall.arguments, "utf8")
+          );
+          if (recoveryMode) {
             this.artifactArgumentRepairs += 1;
-            this.artifactArgumentRepairPending = true;
-            currentInput = [
-              ...currentInput,
-              ...result.finish.continuationItems,
-              preflight.result.outputItem
-            ];
+            this.pendingArtifactArgumentRecovery = recoveryMode;
+            currentInput = buildArtifactRecoveryInput({
+              mode: recoveryMode,
+              requestInput,
+              continuationItems: result.finish.continuationItems,
+              safeOutputItem: preflight.result.outputItem
+            });
             continue;
           }
           throw new AgentRuntimeError(
@@ -424,6 +444,7 @@ export class AgentRunOrchestrator {
             false
           );
         }
+        validatedArtifactSpec = preflight.artifactSpec;
       }
       this.toolRounds += 1;
       const outputs = await this.executeToolCalls(
@@ -434,7 +455,6 @@ export class AgentRunOrchestrator {
       if (artifactCallIndex >= 0) {
         const artifactOutput = outputs[artifactCallIndex];
         const artifact = artifactOutput?.artifacts[0];
-        this.artifactArgumentRepairPending = false;
         if (
           !artifactOutput?.ok ||
           artifactOutput.artifacts.length !== 1 ||
@@ -454,7 +474,10 @@ export class AgentRunOrchestrator {
             this.evidence
               .list()
               .filter((entry) => entry.citationVisible)
-              .map((entry) => entry.id)
+              .map((entry) => entry.id),
+            validatedArtifactSpec
+              ? parameterTableIncludesUnitsAndAssumptions(validatedArtifactSpec)
+              : false
           )
         );
         incomplete = false;
@@ -1181,7 +1204,8 @@ export class AgentRunOrchestrator {
     modelInput: ResponsesInputItem[],
     signal: AbortSignal,
     phase: string,
-    allowTools: boolean
+    allowTools: boolean,
+    artifactRecoveryMode?: ArtifactArgumentRecoveryMode
   ): Promise<CollectedModelResponse> {
     try {
       return await this.collectModelResponse(
@@ -1189,7 +1213,8 @@ export class AgentRunOrchestrator {
         modelInput,
         signal,
         phase,
-        allowTools
+        allowTools,
+        artifactRecoveryMode
       );
     } catch (error) {
       if (!(error instanceof ProviderError) || !error.retryable) throw error;
@@ -1199,7 +1224,8 @@ export class AgentRunOrchestrator {
         modelInput,
         signal,
         `${phase}_retry`,
-        allowTools
+        allowTools,
+        artifactRecoveryMode
       );
     }
   }
@@ -1217,7 +1243,8 @@ export class AgentRunOrchestrator {
     modelInput: ResponsesInputItem[],
     signal: AbortSignal,
     phase: string,
-    allowTools: boolean
+    allowTools: boolean,
+    artifactRecoveryMode?: ArtifactArgumentRecoveryMode
   ): Promise<CollectedModelResponse> {
     let outputText = "";
     const calls: CollectedModelResponse["calls"] = [];
@@ -1234,8 +1261,12 @@ export class AgentRunOrchestrator {
         ...this.attemptedNonRepeatableToolNames,
         ...this.serverBlockedCallableToolNames
       ]),
-      forceArtifactRepair: this.artifactArgumentRepairPending
+      artifactArgumentRecoveryMode: artifactRecoveryMode
     });
+    const forcesArtifact =
+      typeof toolPolicy.toolChoice === "object" &&
+      toolPolicy.toolChoice.type === "function" &&
+      toolPolicy.toolChoice.name === "create_artifact";
     const request: ResponsesStreamRequest = {
       instructions: undefined,
       input: modelInput,
@@ -1253,15 +1284,20 @@ export class AgentRunOrchestrator {
         schema: answerV3JsonSchemaForRisk(input.riskLevel),
         strict: true
       },
-      maxOutputTokens: readPositiveInteger(
-        budgetProfile.outputTokenEnvironmentName,
-        budgetProfile.outputTokenFallback
-      ),
+      maxOutputTokens: forcesArtifact
+        ? MAX_ARTIFACT_PROVIDER_OUTPUT_TOKENS
+        : readPositiveInteger(
+            budgetProfile.outputTokenEnvironmentName,
+            budgetProfile.outputTokenFallback
+          ),
       user: input.userPartition,
       signal
     };
     // Instructions are kept out of untrusted input and applied on every call.
-    request.instructions = buildAgentV3InstructionsForRisk(input.riskLevel);
+    request.instructions = buildAgentV3InstructionsForRisk(
+      input.riskLevel,
+      artifactRecoveryMode
+    );
     const inputBudget = budgetProfile.inputTokenBudget;
     const estimatedInputTokens = estimateTokens(
       `${request.instructions}\n${JSON.stringify(request.input)}`
@@ -1403,12 +1439,19 @@ export class AgentRunOrchestrator {
   }
 }
 
-export function buildAgentV3InstructionsForRisk(riskLevel: RiskLevel): string {
+export function buildAgentV3InstructionsForRisk(
+  riskLevel: RiskLevel,
+  artifactRecoveryMode?: ArtifactArgumentRecoveryMode
+): string {
   return [
     AGENT_V3_INSTRUCTIONS,
     `本轮服务端风险等级已固定为 ${riskLevel}；最终答案的 riskLevel 必须原样使用该值，不得由模型重新分类。`,
     "如果复杂或中高风险回答没有可用证据或服务端确定性计算，不得生成无依据的 expert；应使用 clarification 或 safe_refusal。",
-    "调用 create_artifact 时，sections 与 tables 至少一个非空；CSV 必须包含非空 tables；每个 section 的 paragraphs 非空；每个 table 的 rows 非空、列名不重复且每行单元格数必须等于 columns 数。"
+    "调用 create_artifact 时，sections 与 tables 至少一个非空；CSV 必须包含非空 tables；每个 section 的 paragraphs 非空；每个 table 的 rows 非空、列名不重复且每行单元格数必须等于 columns 数。",
+    ARTIFACT_PROVIDER_INSTRUCTION,
+    ...(artifactRecoveryMode === "fresh_json_invalid"
+      ? [FRESH_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION]
+      : [])
   ].join("\n");
 }
 
@@ -1757,7 +1800,7 @@ export function selectAnswerToolRequestPolicy(input: {
   question: string;
   allowTools: boolean;
   blockedCallableToolNames?: ReadonlySet<string>;
-  forceArtifactRepair?: boolean;
+  artifactArgumentRecoveryMode?: ArtifactArgumentRecoveryMode;
 }): {
   tools?: ResponsesTool[];
   toolChoice: ResponsesToolChoice;
@@ -1774,7 +1817,7 @@ export function selectAnswerToolRequestPolicy(input: {
   const replayTools = selectContinuationTools(input.tools, input.modelInput);
   const selectedTools = mergeResponseTools(callableTools, replayTools);
   const artifactRepairAvailable =
-    input.forceArtifactRepair === true &&
+    input.artifactArgumentRecoveryMode !== undefined &&
     callableTools.some(
       (tool) => tool.type === "function" && tool.name === "create_artifact"
     );
@@ -2076,23 +2119,61 @@ const SAFE_ARTIFACT_FAILURE_CODES = new Set([
   "INVALID_TOOL_ARGUMENTS"
 ]);
 
-const RETRYABLE_ARTIFACT_ARGUMENT_FAILURE_CODES = new Set([
-  "INVALID_TOOL_ARGUMENTS"
-]);
 const MAX_ARTIFACT_ARGUMENT_REPAIR_REPLAY_BYTES = 64 * 1024;
 
-export function shouldRetryArtifactArguments(
+export function selectArtifactArgumentRecoveryMode(
   value: unknown,
   priorRepairs: number,
   argumentBytes: number
-): boolean {
-  return (
-    priorRepairs === 0 &&
-    Number.isSafeInteger(argumentBytes) &&
-    argumentBytes >= 0 &&
-    argumentBytes <= MAX_ARTIFACT_ARGUMENT_REPAIR_REPLAY_BYTES &&
-    typeof value === "string" &&
-    RETRYABLE_ARTIFACT_ARGUMENT_FAILURE_CODES.has(value)
+): ArtifactArgumentRecoveryMode | undefined {
+  if (
+    priorRepairs !== 0 ||
+    !Number.isSafeInteger(argumentBytes) ||
+    argumentBytes < 0
+  ) {
+    return undefined;
+  }
+  if (
+    value === "ARTIFACT_ARGUMENTS_JSON_INVALID" &&
+    argumentBytes <= MAX_ARTIFACT_ARGUMENT_BYTES
+  ) {
+    return "fresh_json_invalid";
+  }
+  if (
+    value === "INVALID_TOOL_ARGUMENTS" &&
+    argumentBytes <= MAX_ARTIFACT_ARGUMENT_REPAIR_REPLAY_BYTES
+  ) {
+    return "continuation_invalid_arguments";
+  }
+  return undefined;
+}
+
+export function buildArtifactRecoveryInput(input: {
+  mode: ArtifactArgumentRecoveryMode;
+  requestInput: readonly ResponsesInputItem[];
+  continuationItems: readonly ResponsesInputItem[];
+  safeOutputItem: ResponsesInputItem;
+}): ResponsesInputItem[] {
+  if (input.mode === "fresh_json_invalid") {
+    return [...input.requestInput];
+  }
+  return [
+    ...input.requestInput,
+    ...input.continuationItems,
+    input.safeOutputItem
+  ];
+}
+
+export function assertSingleArtifactCall(
+  calls: readonly { name: string }[]
+): void {
+  if (calls.filter((call) => call.name === "create_artifact").length <= 1) {
+    return;
+  }
+  throw new AgentRuntimeError(
+    "ARTIFACT_TOOL_CALL_COUNT_MISMATCH",
+    "产物生成要求恰好一个 create_artifact 调用。",
+    false
   );
 }
 

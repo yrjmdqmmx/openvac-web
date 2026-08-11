@@ -8,8 +8,11 @@ import {
   artifactSpecSchema,
   verifiedLinkPartSchema
 } from "@/server/chat-v3/contracts";
+import { parameterTableIncludesUnitsAndAssumptions } from "@/server/agent/artifact-semantics";
 import { webLinkBindingDigest } from "@/server/agent/web-link-binding";
 import type { AnswerBlock, AnswerV3 } from "@/types/chat-v3";
+
+export { parameterTableIncludesUnitsAndAssumptions } from "@/server/agent/artifact-semantics";
 
 import { qwenVisionBenchmarkSchema } from "../vision/qwen-vl-benchmark";
 
@@ -332,6 +335,15 @@ function validateRuntimeCase(
   ) {
     throw new Error(
       `Runtime case ${item.caseId} is missing its real ArtifactSpec.`
+    );
+  }
+  if (
+    item.caseId === "v3-artifact-parameter-02" &&
+    item.artifactSpec &&
+    !parameterTableIncludesUnitsAndAssumptions(item.artifactSpec)
+  ) {
+    throw new Error(
+      "Runtime parameter-table artifact does not contain real unit and assumption fields."
     );
   }
   validateBrowserEvidence(item);

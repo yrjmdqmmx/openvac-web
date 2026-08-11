@@ -12,6 +12,7 @@ import {
   ANSWER_V3_EVAL_CASES
 } from "../src/evals/answer-v3/cases";
 import {
+  parameterTableIncludesUnitsAndAssumptions,
   RuntimeEvidenceSemanticError,
   runtimeEvidenceSchema,
   validateRuntimeEvidenceSemantics
@@ -1403,6 +1404,18 @@ async function validateRuntimeArtifacts(
     throw new Error("Runtime artifact specification is invalid.");
   }
   const spec = parsedSpec.data;
+  if (
+    testCase.id === "v3-artifact-parameter-02" &&
+    !parameterTableIncludesUnitsAndAssumptions(spec)
+  ) {
+    markSmokeDiagnostic("artifact_validation", {
+      caseId: testCase.id,
+      code: "ARTIFACT_PARAMETER_SEMANTICS_INVALID"
+    });
+    throw new Error(
+      "Runtime parameter-table artifact is missing unit or assumption content."
+    );
+  }
   for (const format of spec.formats) {
     const response = await appFetch(
       input,

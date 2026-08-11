@@ -8,20 +8,23 @@ import {
 import type { CalculationResult } from "@/types/chat";
 
 import {
+  assertSingleArtifactCall,
   assertAuthorizedFunctionCalls,
+  buildArtifactRecoveryInput,
+  buildAgentV3InstructionsForRisk,
   extractTrustedPumpdownArguments,
   reserveNonRepeatableToolCalls,
   requiresDocumentAttachmentEvidence,
   safeArtifactFailureCode,
   safeModelInvocationErrorMessage,
   safeProviderTerminalErrorCode,
+  selectArtifactArgumentRecoveryMode,
   selectAgentRunTimeoutMs,
   selectAnswerToolRequestPolicy,
   selectAnswerToolChoice,
   selectAnswerToolRoundLimit,
   selectAnswerTools,
   selectContinuationTools,
-  shouldRetryArtifactArguments,
   shouldBlockArtifactCreation
 } from "./orchestrator";
 
@@ -55,25 +58,117 @@ describe("Agent V3 deterministic calculator routing", () => {
     );
   });
 
-  it("retries only pre-storage artifact argument failures once", () => {
+  it("selects one bounded artifact argument recovery mode", () => {
     expect(
-      shouldRetryArtifactArguments("INVALID_TOOL_ARGUMENTS", 0, 1024)
-    ).toBe(true);
-    expect(shouldRetryArtifactArguments("INVALID_ARTIFACT_SPEC", 0, 1024)).toBe(
-      false
+      selectArtifactArgumentRecoveryMode("INVALID_TOOL_ARGUMENTS", 0, 1024)
+    ).toBe("continuation_invalid_arguments");
+    expect(
+      selectArtifactArgumentRecoveryMode(
+        "ARTIFACT_ARGUMENTS_JSON_INVALID",
+        0,
+        1024
+      )
+    ).toBe("fresh_json_invalid");
+    expect(
+      selectArtifactArgumentRecoveryMode("INVALID_ARTIFACT_SPEC", 0, 1024)
+    ).toBeUndefined();
+    expect(
+      selectArtifactArgumentRecoveryMode("INVALID_TOOL_ARGUMENTS", 1, 1024)
+    ).toBeUndefined();
+    expect(
+      selectArtifactArgumentRecoveryMode(
+        "ARTIFACT_ARGUMENTS_JSON_INVALID",
+        1,
+        1024
+      )
+    ).toBeUndefined();
+    expect(
+      selectArtifactArgumentRecoveryMode("ARTIFACT_PERSIST_FAILED", 0, 1024)
+    ).toBeUndefined();
+    expect(
+      selectArtifactArgumentRecoveryMode(
+        "INVALID_TOOL_ARGUMENTS",
+        0,
+        64 * 1024 + 1
+      )
+    ).toBeUndefined();
+    expect(
+      selectArtifactArgumentRecoveryMode(
+        "ARTIFACT_ARGUMENTS_JSON_INVALID",
+        0,
+        2 * 1024 * 1024 + 1
+      )
+    ).toBeUndefined();
+  });
+
+  it("adds trusted instructions only for a fresh JSON repair", () => {
+    const initial = buildAgentV3InstructionsForRisk("medium");
+    const fresh = buildAgentV3InstructionsForRisk(
+      "medium",
+      "fresh_json_invalid"
     );
-    expect(
-      shouldRetryArtifactArguments("INVALID_TOOL_ARGUMENTS", 1, 1024)
-    ).toBe(false);
-    expect(
-      shouldRetryArtifactArguments("ARTIFACT_PERSIST_FAILED", 0, 1024)
-    ).toBe(false);
-    expect(
-      shouldRetryArtifactArguments("INVALID_TOOL_ARGUMENTS", 0, 64 * 1024 + 1)
-    ).toBe(false);
-    expect(
-      shouldRetryArtifactArguments("ARTIFACT_ARGUMENTS_JSON_INVALID", 0, 1024)
-    ).toBe(false);
+
+    expect(initial).toContain("所有字符串合计不得超过 6000");
+    expect(initial).not.toContain("上一次 create_artifact 参数不是合法 JSON");
+    expect(fresh).toContain("上一次 create_artifact 参数不是合法 JSON");
+    expect(fresh).not.toContain("request-id");
+  });
+
+  it("builds a clean fresh input and a paired continuation input", () => {
+    const requestInput: ResponsesInputItem[] = [
+      { type: "message", role: "user", content: "生成参数表" }
+    ];
+    const malformedCall: ResponsesInputItem = {
+      type: "function_call",
+      call_id: "private-malformed-call",
+      name: "create_artifact",
+      arguments: "{private-malformed-arguments"
+    };
+    const safeOutput: ResponsesInputItem = {
+      type: "function_call_output",
+      call_id: "private-malformed-call",
+      output: JSON.stringify({
+        ok: false,
+        error: "INVALID_TOOL_ARGUMENTS",
+        missingInputs: ["tables"]
+      })
+    };
+
+    const fresh = buildArtifactRecoveryInput({
+      mode: "fresh_json_invalid",
+      requestInput,
+      continuationItems: [malformedCall],
+      safeOutputItem: safeOutput
+    });
+    expect(fresh).toEqual(requestInput);
+    expect(JSON.stringify(fresh)).not.toMatch(
+      /private-malformed|function_call/iu
+    );
+
+    const continuation = buildArtifactRecoveryInput({
+      mode: "continuation_invalid_arguments",
+      requestInput,
+      continuationItems: [malformedCall],
+      safeOutputItem: safeOutput
+    });
+    expect(continuation).toEqual([...requestInput, malformedCall, safeOutput]);
+  });
+
+  it("fails closed when a provider returns multiple artifact calls", () => {
+    expect(() =>
+      assertSingleArtifactCall([
+        { name: "create_artifact" },
+        { name: "create_artifact" }
+      ])
+    ).toThrowError(
+      expect.objectContaining({ code: "ARTIFACT_TOOL_CALL_COUNT_MISMATCH" })
+    );
+    expect(() =>
+      assertSingleArtifactCall([
+        { name: "create_artifact" },
+        { name: "search_knowledge" }
+      ])
+    ).not.toThrow();
   });
 
   it("reserves a five-minute runtime floor for explicit artifact requests", () => {
@@ -697,7 +792,7 @@ describe("Agent V3 deterministic calculator routing", () => {
         modelInput,
         question: "生成中文诊断报告并导出 CSV。",
         allowTools: true,
-        forceArtifactRepair: true
+        artifactArgumentRecoveryMode: "continuation_invalid_arguments"
       })
     ).toMatchObject({
       toolChoice: { type: "function", name: "create_artifact" },

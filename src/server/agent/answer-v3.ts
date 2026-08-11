@@ -633,7 +633,8 @@ export function buildDeterministicCalculationAnswerV3(
 export function buildDeterministicArtifactAnswerV3(
   artifact: ArtifactPart,
   riskLevel: Exclude<AgentV3RiskLevel, "high">,
-  evidenceIds: readonly string[] = []
+  evidenceIds: readonly string[] = [],
+  parameterTableContentVerified = false
 ): AnswerV3 {
   if (artifact.status !== "ready") {
     throw new TypeError(
@@ -645,7 +646,9 @@ export function buildDeterministicArtifactAnswerV3(
     artifact.kind === "diagnosis_report"
       ? "产物包含诊断结论和检查参数。"
       : artifact.kind === "parameter_table"
-        ? "参数表包含单位和假设。"
+        ? parameterTableContentVerified
+          ? "参数表包含单位和假设。"
+          : "参数表已按本轮要求生成。"
         : "产物已按本轮明确要求生成。";
   return {
     schemaVersion: "openvac.answer.v3",
