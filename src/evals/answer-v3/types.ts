@@ -19,6 +19,7 @@ export type AnswerV3EvalCase = {
     evidenceIds: string[];
     minimumEvidenceCount?: number;
     linkIds: string[];
+    minimumLinkCount?: number;
     requireLinkEvidenceBinding?: boolean;
     allowedLinkDomains?: string[];
     facts: string[];

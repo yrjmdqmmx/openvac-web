@@ -1,6 +1,6 @@
 import type { AnswerV3EvalCase } from "./types";
 
-export const ANSWER_V3_CASE_VERSION = "openvac-answer-v3-2026-08-09.4";
+export const ANSWER_V3_CASE_VERSION = "openvac-answer-v3-2026-08-11.5";
 
 export const ANSWER_V3_EVAL_CASES: AnswerV3EvalCase[] = [
   {
@@ -31,6 +31,7 @@ export const ANSWER_V3_EVAL_CASES: AnswerV3EvalCase[] = [
       evidenceIds: [],
       minimumEvidenceCount: 1,
       linkIds: ["W1"],
+      minimumLinkCount: 1,
       requireLinkEvidenceBinding: true,
       allowedLinkDomains: [
         "leybold.com",

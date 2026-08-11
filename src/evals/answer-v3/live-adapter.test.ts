@@ -9,6 +9,7 @@ import type {
   ResponsesProvider,
   ResponsesStreamRequest
 } from "@/server/providers";
+import { webLinkBindingDigest } from "@/server/agent/web-link-binding";
 
 import { ANSWER_V3_CASE_VERSION, ANSWER_V3_EVAL_CASES } from "./cases";
 import { createFixtureEvalDependencies } from "./fixtures";
@@ -198,6 +199,47 @@ describe("Answer V3 runtime-evidence adapter", () => {
       resultDigest: "a".repeat(64),
       source: "postgres_agent_tool_call"
     });
+
+    await expect(writeAndLoad(evidence)).resolves.toMatchObject({
+      caseVersion: ANSWER_V3_CASE_VERSION
+    });
+  });
+
+  it("accepts a fully proven dynamically selected W2 link", async () => {
+    const evidence = await runtimeEvidence();
+    const item = runtimeCase(evidence, "v3-text-citation-link-02");
+    item.answer.blocks = item.answer.blocks.map((block) =>
+      block.type === "link_reference" ? { ...block, linkId: "W2" } : block
+    );
+    item.answer.usedLinkIds = ["W2"];
+    item.verifiedLinks = item.verifiedLinks.map((link) => ({
+      ...link,
+      linkId: "W2"
+    }));
+    item.linkAudit = item.linkAudit.map((audit) => ({
+      ...audit,
+      linkId: "W2"
+    }));
+    const proof = item.toolAudit.find(
+      (audit) => audit.name === "web_link_binding"
+    )!;
+    proof.resultDigest = webLinkBindingDigest({
+      evidenceId: proof.citationIds[0]!,
+      link: item.verifiedLinks[0]!
+    });
+    const completed = item.browserEvents.at(-1)!;
+    completed.answer = item.answer;
+    (
+      completed.meta as {
+        verifiedLinks: RuntimeEvidence["cases"][number]["verifiedLinks"];
+      }
+    ).verifiedLinks = item.verifiedLinks;
+    for (const event of item.browserEvents) {
+      if (event.type === "answer.block.committed") {
+        const index = Number(event.index);
+        event.block = item.answer.blocks[index];
+      }
+    }
 
     await expect(writeAndLoad(evidence)).resolves.toMatchObject({
       caseVersion: ANSWER_V3_CASE_VERSION

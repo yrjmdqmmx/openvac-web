@@ -271,6 +271,10 @@ export type AnswerV3ValidationInput = {
   requiresExpert?: boolean;
   knownEvidenceIds?: Iterable<string>;
   knownLinkIds?: Iterable<string>;
+  knownLinkBindings?: Iterable<{
+    linkId: string;
+    evidenceIds: Iterable<string>;
+  }>;
   knownArtifactIds?: Iterable<string>;
   knownCalculationIds?: Iterable<string>;
   verifiedEvidenceIds?: Iterable<string>;
@@ -434,6 +438,12 @@ export function validateAnswerV3(
     answer.usedLinkIds,
     references.linkIds,
     "usedLinkIds",
+    errors
+  );
+  validateKnownLinkBindings(
+    references.linkIds,
+    references.evidenceIds,
+    input.knownLinkBindings,
     errors
   );
 
@@ -820,6 +830,36 @@ function validateKnownReferences(
   const known = new Set(knownValues);
   for (const id of references) {
     if (!known.has(id)) errors.push(`回答引用了未知${kind} ${id}。`);
+  }
+}
+
+function validateKnownLinkBindings(
+  linkIds: string[],
+  evidenceIds: string[],
+  bindings:
+    Iterable<{ linkId: string; evidenceIds: Iterable<string> }> | undefined,
+  errors: string[]
+): void {
+  if (linkIds.length === 0) return;
+  if (bindings === undefined) {
+    errors.push("回答中的链接缺少已验证证据绑定映射。");
+    return;
+  }
+  const evidenceSet = new Set(evidenceIds);
+  const bindingMap = new Map<string, Set<string>>();
+  for (const binding of bindings) {
+    const known = bindingMap.get(binding.linkId) ?? new Set<string>();
+    for (const evidenceId of binding.evidenceIds) known.add(evidenceId);
+    bindingMap.set(binding.linkId, known);
+  }
+  for (const linkId of linkIds) {
+    const boundEvidence = bindingMap.get(linkId);
+    if (
+      !boundEvidence ||
+      ![...boundEvidence].some((evidenceId) => evidenceSet.has(evidenceId))
+    ) {
+      errors.push(`链接 ${linkId} 未与回答引用的已验证证据绑定。`);
+    }
   }
 }
 

@@ -54,11 +54,18 @@ function fixtureOutput(testCase: AnswerV3EvalCase): AnswerV3CandidateOutput {
           text: `${testCase.expected.facts.join("；")}。`,
           evidenceIds
         };
+  const fixtureLinkIds =
+    testCase.expected.linkIds.length > 0
+      ? testCase.expected.linkIds
+      : Array.from(
+          { length: testCase.expected.minimumLinkCount ?? 0 },
+          (_, index) => `W${index + 1}`
+        );
   const blocks: AnswerBlock[] = [firstBlock];
-  if (testCase.expected.linkIds.length > 0) {
+  if (fixtureLinkIds.length > 0) {
     blocks.push({
       type: "link_reference",
-      linkId: testCase.expected.linkIds[0]!,
+      linkId: fixtureLinkIds[0]!,
       label: "厂家手册"
     });
   }
@@ -78,7 +85,7 @@ function fixtureOutput(testCase: AnswerV3EvalCase): AnswerV3CandidateOutput {
     missingInputs:
       testCase.expected.answerKind === "clarification" ? ["当前会话附件"] : [],
     usedEvidenceIds: evidenceIds,
-    usedLinkIds: testCase.expected.linkIds
+    usedLinkIds: fixtureLinkIds
   };
   const linkHostname = testCase.expected.allowedLinkDomains?.[0]
     ? `www.${testCase.expected.allowedLinkDomains[0]}`
@@ -90,7 +97,7 @@ function fixtureOutput(testCase: AnswerV3EvalCase): AnswerV3CandidateOutput {
         ? "qwen-vl-fixture@1"
         : "deepseek-text-fixture@1",
     answer,
-    verifiedLinks: testCase.expected.linkIds.map((linkId) => ({
+    verifiedLinks: fixtureLinkIds.map((linkId) => ({
       type: "verified_link",
       linkId,
       url: `https://${linkHostname}/manual`,
@@ -100,7 +107,7 @@ function fixtureOutput(testCase: AnswerV3EvalCase): AnswerV3CandidateOutput {
       ...(testCase.expected.requireLinkEvidenceBinding ? { evidenceIds } : {})
     })),
     linkAudit: testCase.expected.requireLinkEvidenceBinding
-      ? testCase.expected.linkIds.flatMap((linkId) =>
+      ? fixtureLinkIds.flatMap((linkId) =>
           evidenceIds.map((evidenceId) => ({
             evidenceId,
             linkId,
@@ -125,7 +132,7 @@ function fixtureOutput(testCase: AnswerV3EvalCase): AnswerV3CandidateOutput {
           ...(audit.name === "web_search" ? { citationIds: evidenceIds } : {})
         })),
       ...(testCase.expected.requireLinkEvidenceBinding
-        ? testCase.expected.linkIds.flatMap((linkId) =>
+        ? fixtureLinkIds.flatMap((linkId) =>
             evidenceIds.map((evidenceId) => {
               const link = {
                 linkId,
