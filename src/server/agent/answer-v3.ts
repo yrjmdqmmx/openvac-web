@@ -7,6 +7,10 @@ import type {
   ArtifactPart
 } from "@/types/chat-v3";
 import type { CalculationResult } from "@/types/chat";
+import {
+  canonicalVerifiedLinkLabel,
+  containsUnsafeAnswerVisibleText
+} from "@/server/chat-v3/verified-link-label";
 
 import { localizeCalculations } from "./calculation-localization";
 import { validateHighRiskAnswerBoundaries } from "./prompt";
@@ -306,6 +310,17 @@ export function safeParseAnswerV3(value: unknown): AnswerV3 | undefined {
   return parsed.success ? (parsed.data as AnswerV3) : undefined;
 }
 
+export function sanitizeStoredAnswerV3(answer: AnswerV3): AnswerV3 {
+  return {
+    ...answer,
+    blocks: answer.blocks.map((block) =>
+      block.type === "link_reference"
+        ? { ...block, label: canonicalVerifiedLinkLabel(block.label) }
+        : block
+    )
+  };
+}
+
 export function answerV3Blocks(
   answer: AnswerV3
 ): Array<{ block: AnswerBlock; index: number }> {
@@ -459,8 +474,8 @@ export function validateAnswerV3(
     errors
   );
 
-  const unsafeText = collectUserVisibleText(answer).find((text) =>
-    UNSAFE_BODY_TEXT.test(text.normalize("NFKC"))
+  const unsafeText = collectUserVisibleText(answer).find(
+    containsUnsafeAnswerVisibleText
   );
   if (unsafeText) {
     errors.push(
@@ -736,9 +751,6 @@ function isCrossConversationAttachmentRequest(question: string): boolean {
   );
 }
 
-const UNSAFE_BODY_TEXT =
-  /(?:https?:\/\/|www\.|\[[0-9]+\]|\b(?:provider|tool|tool_call|function_call|formulaId|formulaVersion|normalizedInputs|rawArguments|schemaVersion|evidenceNotice|system\s*prompt)\b|系统提示|内部提示|(?:x-amz|x-oss)-[a-z-]*signature|ossaccesskeyid|(?:signature|expires)=[^\s&]+)/iu;
-
 function renderBlock(
   block: AnswerBlock,
   citationNumbers: ReadonlyMap<string, number>
@@ -886,9 +898,16 @@ function validateKnownLinkBindings(
     { evidenceIds: Set<string>; label?: string }
   >();
   for (const binding of bindings) {
+    const canonicalLabel =
+      binding.label === undefined
+        ? undefined
+        : canonicalVerifiedLinkLabel(binding.label);
+    if (binding.label !== undefined && canonicalLabel !== binding.label) {
+      errors.push(`链接 ${binding.linkId} 的服务端显示标签不满足安全边界。`);
+    }
     const known = bindingMap.get(binding.linkId) ?? {
       evidenceIds: new Set<string>(),
-      ...(binding.label === undefined ? {} : { label: binding.label })
+      ...(canonicalLabel === undefined ? {} : { label: canonicalLabel })
     };
     for (const evidenceId of binding.evidenceIds) {
       known.evidenceIds.add(evidenceId);
@@ -943,7 +962,7 @@ function validateUniqueReferences(
 
 function sanitizeReason(reason: string): string {
   const normalized = reason.normalize("NFKC").replace(/\s+/gu, " ").trim();
-  if (!normalized || UNSAFE_BODY_TEXT.test(normalized)) {
+  if (!normalized || containsUnsafeAnswerVisibleText(normalized)) {
     return "缺少可核验的必要信息。";
   }
   return normalized.slice(0, 500);

@@ -137,7 +137,8 @@ function fixtureOutput(testCase: AnswerV3EvalCase): AnswerV3CandidateOutput {
               const link = {
                 linkId,
                 url: `https://${linkHostname}/manual`,
-                hostname: linkHostname
+                hostname: linkHostname,
+                label: "厂家手册"
               };
               return {
                 name: "web_link_binding",

@@ -292,6 +292,27 @@ describe("Answer V3 automated release gate", () => {
     expect(report.failureIds).toContain("v3-text-citation-link-02:link");
   });
 
+  it("rejects a canonical label change without a matching database binding digest", async () => {
+    const dependencies = mutateCandidate(
+      "v3-text-citation-link-02",
+      (output) => {
+        output.answer.blocks = output.answer.blocks.map((block) =>
+          block.type === "link_reference"
+            ? { ...block, label: "另一个安全标签" }
+            : block
+        );
+        output.verifiedLinks = output.verifiedLinks.map((link) => ({
+          ...link,
+          label: "另一个安全标签"
+        }));
+      }
+    );
+    const report = await runAnswerV3Eval({ dependencies, gitSha: "test" });
+
+    expect(report.deterministicGates.link.passed).toBe(false);
+    expect(report.failureIds).toContain("v3-text-citation-link-02:link");
+  });
+
   it("rejects a coordinated E/W swap without the database binding digest", async () => {
     const dependencies = mutateCandidate(
       "v3-text-citation-link-02",

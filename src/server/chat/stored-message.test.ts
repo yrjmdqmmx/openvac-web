@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { VERIFIED_LINK_LABEL_FALLBACK } from "@/server/chat-v3/verified-link-label";
 
 import {
   serializeStoredCitation,
@@ -66,6 +67,119 @@ describe("stored chat message serialization", () => {
         ]
       }
     });
+  });
+
+  it("canonicalizes historical web citation and AnswerV3 link labels together", () => {
+    const citation = serializeStoredCitation(
+      {
+        id: "citation-web-1",
+        title: "provider tool_call result",
+        url: "https://example.com/manual",
+        license: "open",
+        locator: {},
+        metadata: {
+          sourceId: "E1",
+          originalSourceId: "web:legacy",
+          publisher: "Example",
+          fetchedAt: "2026-07-31T00:00:00.000Z"
+        }
+      },
+      "example.com"
+    );
+    const serialized = serializeStoredMessage(
+      {
+        id: "message-web-v3",
+        role: "assistant",
+        status: "completed",
+        content: "provider tool_call result",
+        metadata: {
+          riskLevel: "medium",
+          verifiedLinks: [
+            {
+              type: "verified_link",
+              linkId: "W1",
+              url: "https://example.com/manual",
+              label: "provider tool_call result",
+              hostname: "example.com",
+              status: "verified",
+              evidenceIds: ["E1"]
+            }
+          ],
+          artifacts: [
+            {
+              type: "artifact",
+              artifactId: "00000000-0000-4000-8000-000000000071",
+              kind: "parameter_table",
+              title: "历史参数表",
+              formats: ["csv"],
+              status: "ready"
+            }
+          ]
+        },
+        answerPayload: {
+          schemaVersion: "openvac.answer.v3",
+          answerKind: "expert",
+          riskLevel: "medium",
+          blocks: [
+            {
+              type: "paragraph",
+              text: "前级压力需要按具体型号核对。",
+              evidenceIds: ["E1"]
+            },
+            {
+              type: "link_reference",
+              linkId: "W1",
+              label: "provider tool_call result"
+            }
+          ],
+          missingInputs: [],
+          usedEvidenceIds: ["E1"],
+          usedLinkIds: ["W1"]
+        }
+      },
+      citation ? [citation] : []
+    );
+
+    expect(serialized?.meta?.citations[0]?.title).toBe(
+      VERIFIED_LINK_LABEL_FALLBACK
+    );
+    expect(serialized?.meta?.answerV3?.blocks.at(-1)).toMatchObject({
+      type: "link_reference",
+      linkId: "W1",
+      label: VERIFIED_LINK_LABEL_FALLBACK
+    });
+    expect(serialized?.content).toContain(VERIFIED_LINK_LABEL_FALLBACK);
+    expect(serialized?.parts?.[0]).toMatchObject({
+      type: "text",
+      text: expect.stringMatching(/\[1\]/u)
+    });
+    expect(
+      serialized?.parts?.[0]?.type === "text"
+        ? serialized.parts[0].text
+        : undefined
+    ).toContain(VERIFIED_LINK_LABEL_FALLBACK);
+    expect(serialized?.parts).toHaveLength(3);
+    expect(
+      serialized?.parts?.filter((part) => part.type === "text")
+    ).toHaveLength(1);
+    expect(serialized?.parts?.[1]).toEqual({
+      type: "verified_link",
+      linkId: "W1",
+      url: "https://example.com/manual",
+      label: VERIFIED_LINK_LABEL_FALLBACK,
+      hostname: "example.com",
+      status: "verified",
+      evidenceIds: ["E1"]
+    });
+    expect(serialized?.parts?.[2]).toEqual({
+      type: "artifact",
+      artifactId: "00000000-0000-4000-8000-000000000071",
+      kind: "parameter_table",
+      title: "历史参数表",
+      formats: ["csv"],
+      status: "ready"
+    });
+    expect(JSON.stringify(serialized)).not.toMatch(/provider|tool_call/u);
   });
 
   it("restores verified links and artifacts without exposing signed URLs", () => {

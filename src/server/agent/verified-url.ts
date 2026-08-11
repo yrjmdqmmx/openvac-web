@@ -4,12 +4,12 @@ import {
   type SafeWebFetcherOptions
 } from "@/server/knowledge/web-fetch";
 import type { VerifiedLinkPart } from "@/types/chat-v3";
+import { canonicalVerifiedLinkLabel } from "@/server/chat-v3/verified-link-label";
 
 import { parsePublicHttpsUrl } from "./public-url";
 
 const MAX_LINKS_PER_TURN = 16;
 const MAX_LINK_ID_CHARACTERS = 160;
-const MAX_LABEL_CHARACTERS = 240;
 const MAX_BODY_CHARACTERS = 16_000;
 
 export type CurrentTurnLink = {
@@ -94,7 +94,7 @@ export class VerifiedUrlReader {
       links.set(linkId, {
         linkId,
         url: parsed.href,
-        label: safePublicLabel(candidate.label, parsed.hostname)
+        label: canonicalVerifiedLinkLabel(candidate.label ?? "")
       });
     }
     this.links = links;
@@ -157,16 +157,6 @@ export class VerifiedUrlReader {
       );
     }
   }
-}
-
-function safePublicLabel(value: string | undefined, fallback: string): string {
-  if (value === undefined) return fallback;
-  const label = requiredText(value, MAX_LABEL_CHARACTERS, "label");
-  return /(?:https?:\/\/|www\.|\b(?:provider|tool_call|function_call|system\s*prompt)\b|(?:signature|expires)=)/iu.test(
-    label
-  )
-    ? fallback
-    : label;
 }
 
 function parseTurnUrl(input: string): URL {
