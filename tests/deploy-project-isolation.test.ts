@@ -38,7 +38,7 @@ describe("web-only deployment and R0 rollback compatibility", () => {
       'cp "$archive_digest" "$bundle_root/WEB_IMAGE_DIGEST"'
     );
     expect(release).toContain(
-      '"$image_repository:archive-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$WEB_IMAGE_DIGEST" <<\'REMOTE_PREPARE\''
+      '"$image_repository:archive-$GITHUB_RUN_ID-$ARCHIVE_RUN_ATTEMPT" "$WEB_IMAGE_DIGEST" <<\'REMOTE_PREPARE\''
     );
     expect(release).toContain('expected_registry_digest="$4"');
     expect(release).toContain(
@@ -183,6 +183,15 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     expect(release).toContain('"$artifacts_response" "$RUN_ID" "$RUN_ATTEMPT"');
     expect(release).toContain(
       "name: ${{ steps.deployment_archive.outputs.name }}"
+    );
+    expect(release).toContain(
+      "ARCHIVE_RUN_ATTEMPT: ${{ steps.deployment_archive.outputs.attempt }}"
+    );
+    expect(release).toContain(
+      'printf \'attempt=%s\\n\' "$archive_attempt" >>"$GITHUB_OUTPUT"'
+    );
+    expect(release).toContain(
+      '"$image_repository:archive-$GITHUB_RUN_ID-$ARCHIVE_RUN_ATTEMPT"'
     );
     expect(release).toContain(
       "EXPECTED_IMAGE_DIGEST: ${{ needs.image.outputs.web_digest }}"
