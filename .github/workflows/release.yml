@@ -607,6 +607,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
+      actions: read
       contents: read
     environment:
       name: ${{ inputs.target }}
@@ -616,11 +617,66 @@ jobs:
         with:
           ref: ${{ inputs.commit_sha }}
           persist-credentials: false
+      - id: deployment_archive
+        name: Select the latest same-run web deployment archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -Eeuo pipefail
+          artifacts_response="$RUNNER_TEMP/openvac-release-artifacts.json"
+          curl --fail --silent --show-error \
+            --get \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            --data-urlencode "per_page=100" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" \
+            --output "$artifacts_response"
+          archive_name="$(
+            node deploy/select-release-archive.mjs \
+              "$artifacts_response" "$RUN_ID" "$RUN_ATTEMPT"
+          )"
+          printf 'name=%s\n' "$archive_name" >>"$GITHUB_OUTPUT"
       - name: Download the same-run web deployment archive
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: openvac-web-release-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ steps.deployment_archive.outputs.name }}
           path: ${{ runner.temp }}/openvac-web-release
+      - id: deployment_archive_identity
+        name: Verify the selected deployment archive identity
+        env:
+          EXPECTED_IMAGE_DIGEST: ${{ needs.image.outputs.web_digest }}
+        run: |
+          set -Eeuo pipefail
+          archive_dir="$RUNNER_TEMP/openvac-web-release"
+          archive="$archive_dir/openvac-web-release.tar.zst"
+          archive_checksum="$archive.sha256"
+          archive_digest="$archive_dir/openvac-web-release.digest"
+          archive_digest_checksum="$archive_digest.sha256"
+          test -f "$archive" && test ! -L "$archive"
+          test -f "$archive_checksum" && test ! -L "$archive_checksum"
+          test -f "$archive_digest" && test ! -L "$archive_digest"
+          test -f "$archive_digest_checksum" && test ! -L "$archive_digest_checksum"
+          (
+            cd "$archive_dir"
+            sha256sum --check "$(basename "$archive_checksum")"
+            sha256sum --check "$(basename "$archive_digest_checksum")"
+          )
+          packaged_digest="$(cat "$archive_digest")"
+          case "$packaged_digest" in
+            sha256:*) packaged_hex="${packaged_digest#sha256:}" ;;
+            *) exit 1 ;;
+          esac
+          case "$packaged_hex" in ""|*[!0-9a-f]*) exit 1 ;; esac
+          [ "${#packaged_hex}" -eq 64 ] || exit 1
+          if [ -n "$EXPECTED_IMAGE_DIGEST" ] &&
+            [ "$packaged_digest" != "$EXPECTED_IMAGE_DIGEST" ]; then
+            echo "Deployment archive digest does not match the image job output." >&2
+            exit 1
+          fi
+          printf 'digest=%s\n' "$packaged_digest" >>"$GITHUB_OUTPUT"
       - name: Configure SSH
         env:
           ECS_SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
@@ -639,7 +695,7 @@ jobs:
           RELEASE_SHA: ${{ inputs.commit_sha }}
           ECS_HOST: ${{ secrets.ECS_HOST }}
           ECS_USER: ${{ secrets.ECS_USER }}
-          WEB_IMAGE_DIGEST: ${{ needs.image.outputs.web_digest }}
+          WEB_IMAGE_DIGEST: ${{ steps.deployment_archive_identity.outputs.digest }}
           KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256: ${{ secrets.KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256 }}
           DASHSCOPE_WORKSPACE_ID: ${{ secrets.DASHSCOPE_WORKSPACE_ID }}
         run: |
@@ -955,7 +1011,7 @@ jobs:
         name: Build and re-verify the complete Agent V3 acceptance record
         env:
           RELEASE_SHA: ${{ inputs.commit_sha }}
-          WEB_IMAGE_DIGEST: ${{ needs.image.outputs.web_digest }}
+          WEB_IMAGE_DIGEST: ${{ steps.deployment_archive_identity.outputs.digest }}
         run: |
           set -Eeuo pipefail
           acceptance_dir="$RUNNER_TEMP/openvac-agent-v3-acceptance"
