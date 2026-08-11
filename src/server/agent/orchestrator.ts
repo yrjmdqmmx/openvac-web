@@ -161,6 +161,8 @@ export class AgentRunOrchestrator {
   private toolRounds = 0;
   private retries = 0;
   private repairs = 0;
+  private artifactArgumentRepairs = 0;
+  private artifactArgumentRepairPending = false;
   private toolSequence = 0;
   private webSearched = false;
   private webSearchFailure:
@@ -182,7 +184,7 @@ export class AgentRunOrchestrator {
       toolCalls: this.toolCalls,
       modelRequests: this.modelRequests,
       retries: this.retries,
-      repairs: this.repairs
+      repairs: this.repairs + this.artifactArgumentRepairs
     };
   }
 
@@ -392,18 +394,47 @@ export class AgentRunOrchestrator {
           false
         );
       }
+      const artifactCallIndex = executionCalls.findIndex(
+        (call) => call.name === "create_artifact"
+      );
+      if (artifactCallIndex >= 0) {
+        const artifactCall = executionCalls[artifactCallIndex]!;
+        const preflight = this.tools.preflight(artifactCall);
+        if (!preflight.ok) {
+          this.artifactArgumentRepairPending = false;
+          if (
+            shouldRetryArtifactArguments(
+              preflight.result.errorCode,
+              this.artifactArgumentRepairs,
+              Buffer.byteLength(artifactCall.arguments, "utf8")
+            )
+          ) {
+            this.artifactArgumentRepairs += 1;
+            this.artifactArgumentRepairPending = true;
+            currentInput = [
+              ...currentInput,
+              ...result.finish.continuationItems,
+              preflight.result.outputItem
+            ];
+            continue;
+          }
+          throw new AgentRuntimeError(
+            safeArtifactFailureCode(preflight.result.errorCode),
+            "产物参数未通过安全校验。",
+            false
+          );
+        }
+      }
       this.toolRounds += 1;
       const outputs = await this.executeToolCalls(
         input.run,
         executionCalls,
         signal
       );
-      const artifactCallIndex = executionCalls.findIndex(
-        (call) => call.name === "create_artifact"
-      );
       if (artifactCallIndex >= 0) {
         const artifactOutput = outputs[artifactCallIndex];
         const artifact = artifactOutput?.artifacts[0];
+        this.artifactArgumentRepairPending = false;
         if (
           !artifactOutput?.ok ||
           artifactOutput.artifacts.length !== 1 ||
@@ -1202,7 +1233,8 @@ export class AgentRunOrchestrator {
       blockedCallableToolNames: new Set([
         ...this.attemptedNonRepeatableToolNames,
         ...this.serverBlockedCallableToolNames
-      ])
+      ]),
+      forceArtifactRepair: this.artifactArgumentRepairPending
     });
     const request: ResponsesStreamRequest = {
       instructions: undefined,
@@ -1375,7 +1407,8 @@ export function buildAgentV3InstructionsForRisk(riskLevel: RiskLevel): string {
   return [
     AGENT_V3_INSTRUCTIONS,
     `本轮服务端风险等级已固定为 ${riskLevel}；最终答案的 riskLevel 必须原样使用该值，不得由模型重新分类。`,
-    "如果复杂或中高风险回答没有可用证据或服务端确定性计算，不得生成无依据的 expert；应使用 clarification 或 safe_refusal。"
+    "如果复杂或中高风险回答没有可用证据或服务端确定性计算，不得生成无依据的 expert；应使用 clarification 或 safe_refusal。",
+    "调用 create_artifact 时，sections 与 tables 至少一个非空；CSV 必须包含非空 tables；每个 section 的 paragraphs 非空；每个 table 的 rows 非空、列名不重复且每行单元格数必须等于 columns 数。"
   ].join("\n");
 }
 
@@ -1724,6 +1757,7 @@ export function selectAnswerToolRequestPolicy(input: {
   question: string;
   allowTools: boolean;
   blockedCallableToolNames?: ReadonlySet<string>;
+  forceArtifactRepair?: boolean;
 }): {
   tools?: ResponsesTool[];
   toolChoice: ResponsesToolChoice;
@@ -1739,14 +1773,21 @@ export function selectAnswerToolRequestPolicy(input: {
     : [];
   const replayTools = selectContinuationTools(input.tools, input.modelInput);
   const selectedTools = mergeResponseTools(callableTools, replayTools);
+  const artifactRepairAvailable =
+    input.forceArtifactRepair === true &&
+    callableTools.some(
+      (tool) => tool.type === "function" && tool.name === "create_artifact"
+    );
   const toolChoice =
     input.allowTools && callableTools.length > 0
-      ? selectAnswerToolChoice(
-          input.question,
-          [...input.modelInput],
-          calculations,
-          callableTools
-        )
+      ? artifactRepairAvailable
+        ? { type: "function" as const, name: "create_artifact" }
+        : selectAnswerToolChoice(
+            input.question,
+            [...input.modelInput],
+            calculations,
+            callableTools
+          )
       : "none";
   const callableFunctionNames =
     !input.allowTools || toolChoice === "none"
@@ -2034,6 +2075,26 @@ const SAFE_ARTIFACT_FAILURE_CODES = new Set([
   "ARTIFACT_ARGUMENTS_JSON_INVALID",
   "INVALID_TOOL_ARGUMENTS"
 ]);
+
+const RETRYABLE_ARTIFACT_ARGUMENT_FAILURE_CODES = new Set([
+  "INVALID_TOOL_ARGUMENTS"
+]);
+const MAX_ARTIFACT_ARGUMENT_REPAIR_REPLAY_BYTES = 64 * 1024;
+
+export function shouldRetryArtifactArguments(
+  value: unknown,
+  priorRepairs: number,
+  argumentBytes: number
+): boolean {
+  return (
+    priorRepairs === 0 &&
+    Number.isSafeInteger(argumentBytes) &&
+    argumentBytes >= 0 &&
+    argumentBytes <= MAX_ARTIFACT_ARGUMENT_REPAIR_REPLAY_BYTES &&
+    typeof value === "string" &&
+    RETRYABLE_ARTIFACT_ARGUMENT_FAILURE_CODES.has(value)
+  );
+}
 
 export function safeArtifactFailureCode(value: unknown): string {
   if (value === "TOOL_TIMEOUT") return "ARTIFACT_GENERATION_TIMEOUT";

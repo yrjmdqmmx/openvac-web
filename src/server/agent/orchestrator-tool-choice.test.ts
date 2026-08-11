@@ -21,6 +21,7 @@ import {
   selectAnswerToolRoundLimit,
   selectAnswerTools,
   selectContinuationTools,
+  shouldRetryArtifactArguments,
   shouldBlockArtifactCreation
 } from "./orchestrator";
 
@@ -52,6 +53,27 @@ describe("Agent V3 deterministic calculator routing", () => {
     expect(safeArtifactFailureCode("secret request-id=private")).toBe(
       "ARTIFACT_CREATION_FAILED"
     );
+  });
+
+  it("retries only pre-storage artifact argument failures once", () => {
+    expect(
+      shouldRetryArtifactArguments("INVALID_TOOL_ARGUMENTS", 0, 1024)
+    ).toBe(true);
+    expect(shouldRetryArtifactArguments("INVALID_ARTIFACT_SPEC", 0, 1024)).toBe(
+      false
+    );
+    expect(
+      shouldRetryArtifactArguments("INVALID_TOOL_ARGUMENTS", 1, 1024)
+    ).toBe(false);
+    expect(
+      shouldRetryArtifactArguments("ARTIFACT_PERSIST_FAILED", 0, 1024)
+    ).toBe(false);
+    expect(
+      shouldRetryArtifactArguments("INVALID_TOOL_ARGUMENTS", 0, 64 * 1024 + 1)
+    ).toBe(false);
+    expect(
+      shouldRetryArtifactArguments("ARTIFACT_ARGUMENTS_JSON_INVALID", 0, 1024)
+    ).toBe(false);
   });
 
   it("reserves a five-minute runtime floor for explicit artifact requests", () => {
@@ -618,6 +640,14 @@ describe("Agent V3 deterministic calculator routing", () => {
     expect(
       selectAnswerToolRoundLimit(
         1,
+        artifactTools,
+        [],
+        [{ type: "text", text: "生成诊断报告" }]
+      )
+    ).toBe(1);
+    expect(
+      selectAnswerToolRoundLimit(
+        1,
         [],
         [calculation],
         [{ type: "attachment", attachmentId: crypto.randomUUID() }]
@@ -631,6 +661,48 @@ describe("Agent V3 deterministic calculator routing", () => {
         [{ type: "text", text: "只需要计算结果" }]
       )
     ).toBe(1);
+  });
+
+  it("forces one artifact repair call after a failed schema attempt", () => {
+    const artifactTools: ResponsesTool[] = [
+      {
+        type: "function",
+        name: "create_artifact",
+        description: "artifact",
+        parameters: { type: "object" }
+      }
+    ];
+    const modelInput: ResponsesInputItem[] = [
+      {
+        type: "function_call",
+        call_id: "artifact-invalid",
+        name: "create_artifact",
+        arguments: "{}"
+      },
+      {
+        type: "function_call_output",
+        call_id: "artifact-invalid",
+        output: JSON.stringify({
+          ok: false,
+          error: "INVALID_TOOL_ARGUMENTS",
+          missingInputs: ["tables.0.rows"]
+        })
+      }
+    ];
+
+    expect(
+      selectAnswerToolRequestPolicy({
+        tools: artifactTools,
+        calculations: [],
+        modelInput,
+        question: "生成中文诊断报告并导出 CSV。",
+        allowTools: true,
+        forceArtifactRepair: true
+      })
+    ).toMatchObject({
+      toolChoice: { type: "function", name: "create_artifact" },
+      callableFunctionNames: ["create_artifact"]
+    });
   });
 
   it("keeps automatic selection when required context or intent is absent", () => {

@@ -87,6 +87,9 @@ export type ToolExecutionResult = {
   missingInputs: string[];
 };
 
+export type ToolArgumentPreflight =
+  { ok: true; raw: unknown } | { ok: false; result: ToolExecutionResult };
+
 export type ToolRegistryOptions = {
   userId: string;
   conversationId: string;
@@ -205,36 +208,15 @@ export class ToolRegistry {
     name: string;
     arguments: string;
   }): Promise<ToolExecutionResult> {
-    const isArtifactCall = input.name === "create_artifact";
-    const argumentLimit = isArtifactCall
-      ? MAX_ARTIFACT_ARGUMENT_BYTES
-      : MAX_ARGUMENT_BYTES;
-    if (Buffer.byteLength(input.arguments, "utf8") > argumentLimit) {
-      return this.output(input.callId, {
-        ok: false,
-        error: isArtifactCall
-          ? "ARTIFACT_ARGUMENTS_TOO_LARGE"
-          : "TOOL_ARGUMENTS_TOO_LARGE"
-      });
-    }
-    let raw: unknown;
-    try {
-      raw = JSON.parse(input.arguments);
-    } catch {
-      return this.output(input.callId, {
-        ok: false,
-        error: isArtifactCall
-          ? "ARTIFACT_ARGUMENTS_JSON_INVALID"
-          : "INVALID_TOOL_ARGUMENTS_JSON"
-      });
-    }
+    const preflight = this.preflight(input);
+    if (!preflight.ok) return preflight.result;
 
     const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
     const signal = this.options?.signal
       ? AbortSignal.any([this.options.signal, timeoutSignal])
       : timeoutSignal;
     return withTimeout(
-      this.executeValidated(input.callId, input.name, raw, signal),
+      this.executeValidated(input.callId, input.name, preflight.raw, signal),
       this.timeoutMs
     ).catch(() =>
       this.output(input.callId, {
@@ -242,6 +224,62 @@ export class ToolRegistry {
         error: "TOOL_TIMEOUT"
       })
     );
+  }
+
+  preflight(input: {
+    callId: string;
+    name: string;
+    arguments: string;
+  }): ToolArgumentPreflight {
+    const isArtifactCall = input.name === "create_artifact";
+    const argumentLimit = isArtifactCall
+      ? MAX_ARTIFACT_ARGUMENT_BYTES
+      : MAX_ARGUMENT_BYTES;
+    if (Buffer.byteLength(input.arguments, "utf8") > argumentLimit) {
+      return {
+        ok: false,
+        result: this.output(input.callId, {
+          ok: false,
+          error: isArtifactCall
+            ? "ARTIFACT_ARGUMENTS_TOO_LARGE"
+            : "TOOL_ARGUMENTS_TOO_LARGE"
+        })
+      };
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(input.arguments);
+    } catch {
+      return {
+        ok: false,
+        result: this.output(input.callId, {
+          ok: false,
+          error: isArtifactCall
+            ? "ARTIFACT_ARGUMENTS_JSON_INVALID"
+            : "INVALID_TOOL_ARGUMENTS_JSON"
+        })
+      };
+    }
+    if (isArtifactCall) {
+      const parsed = createArtifactSchema.safeParse(raw);
+      if (!parsed.success) {
+        return { ok: false, result: this.invalid(input.callId, parsed.error) };
+      }
+      if (this.options) {
+        const candidate: ArtifactSpec = {
+          ...parsed.data,
+          sourceTurnId: this.options.turnId
+        };
+        const validated = artifactSpecSchema.safeParse(candidate);
+        if (!validated.success) {
+          return {
+            ok: false,
+            result: this.invalid(input.callId, validated.error)
+          };
+        }
+      }
+    }
+    return { ok: true, raw };
   }
 
   private async executeValidated(
@@ -676,13 +714,15 @@ function attachmentDefinitions(): ResponsesFunctionTool[] {
 function createArtifactDefinition(): ResponsesFunctionTool {
   const textArray = {
     type: "array",
+    minItems: 1,
     maxItems: 100,
-    items: { type: "string" }
+    items: { type: "string", minLength: 1, maxLength: 10_000 }
   };
   return {
     type: "function",
     name: "create_artifact",
-    description: "仅按用户本轮明确要求创建报告、清单或参数表产物。",
+    description:
+      "仅按用户本轮明确要求创建报告、清单或参数表产物。sections 与 tables 至少一个非空；选择 CSV 时必须提供至少一个非空表格，且每行单元格数必须等于列数。",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -736,20 +776,23 @@ function createArtifactDefinition(): ResponsesFunctionTool {
             additionalProperties: false,
             required: ["columns", "rows"],
             properties: {
-              title: { type: "string", maxLength: 240 },
+              title: { type: "string", minLength: 1, maxLength: 240 },
               columns: {
                 type: "array",
                 minItems: 1,
                 maxItems: 32,
-                items: { type: "string" }
+                uniqueItems: true,
+                items: { type: "string", minLength: 1, maxLength: 240 }
               },
               rows: {
                 type: "array",
+                minItems: 1,
                 maxItems: 2_000,
                 items: {
                   type: "array",
+                  minItems: 1,
                   maxItems: 32,
-                  items: { type: "string" }
+                  items: { type: "string", maxLength: 10_000 }
                 }
               }
             }
