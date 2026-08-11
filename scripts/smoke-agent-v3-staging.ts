@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { and, asc, eq } from "drizzle-orm";
 import sharp from "sharp";
+import { ZodError } from "zod";
 
 import {
   ANSWER_V3_CASE_VERSION,
@@ -87,6 +88,7 @@ const SMOKE_DIAGNOSTIC_STAGES = [
   "artifact_validation",
   "tool_validation",
   "case_cleanup",
+  "runtime_evidence_validation",
   "principal_cleanup",
   "report_finalize",
   "report_write"
@@ -133,6 +135,65 @@ type SmokeDiagnosticState = {
   parseStatus?: string;
 };
 
+const RUNTIME_EVIDENCE_TOP_LEVEL_FAILURE_CODES = {
+  schemaVersion: "RUNTIME_EVIDENCE_SCHEMA_VERSION_INVALID",
+  caseVersion: "RUNTIME_EVIDENCE_CASE_VERSION_INVALID",
+  gitSha: "RUNTIME_EVIDENCE_GIT_SHA_INVALID",
+  imageDigest: "RUNTIME_EVIDENCE_IMAGE_DIGEST_INVALID",
+  generatedAt: "RUNTIME_EVIDENCE_GENERATED_AT_INVALID",
+  source: "RUNTIME_EVIDENCE_SOURCE_INVALID",
+  visionBenchmark: "RUNTIME_EVIDENCE_VISION_BENCHMARK_INVALID",
+  cases: "RUNTIME_EVIDENCE_CASES_INVALID"
+} as const;
+
+const RUNTIME_EVIDENCE_CASE_FAILURE_CODES = {
+  caseId: "RUNTIME_CASE_ID_INVALID",
+  runId: "RUNTIME_CASE_RUN_ID_INVALID",
+  provider: "RUNTIME_CASE_PROVIDER_INVALID",
+  model: "RUNTIME_CASE_MODEL_INVALID",
+  answer: "RUNTIME_CASE_ANSWER_INVALID",
+  verifiedLinks: "RUNTIME_CASE_VERIFIED_LINKS_INVALID",
+  linkAudit: "RUNTIME_CASE_LINK_AUDIT_INVALID",
+  browserEvents: "RUNTIME_CASE_BROWSER_EVENTS_INVALID",
+  toolAudit: "RUNTIME_CASE_TOOL_AUDIT_INVALID",
+  authorizationAudit: "RUNTIME_CASE_AUTHORIZATION_AUDIT_INVALID",
+  authorizationOutcome: "RUNTIME_CASE_AUTHORIZATION_OUTCOME_INVALID",
+  observedFacts: "RUNTIME_CASE_OBSERVED_FACTS_INVALID",
+  artifactSpec: "RUNTIME_CASE_ARTIFACT_SPEC_INVALID",
+  provenance: "RUNTIME_CASE_PROVENANCE_INVALID"
+} as const;
+
+const RUNTIME_EVIDENCE_NESTED_FAILURE_CODES = {
+  "browserEvents.type": "RUNTIME_BROWSER_EVENT_TYPE_INVALID",
+  "browserEvents.runId": "RUNTIME_BROWSER_EVENT_RUN_ID_INVALID",
+  "browserEvents.sequence": "RUNTIME_BROWSER_EVENT_SEQUENCE_INVALID",
+  "toolAudit.callId": "RUNTIME_TOOL_CALL_ID_INVALID",
+  "toolAudit.runId": "RUNTIME_TOOL_RUN_ID_INVALID",
+  "toolAudit.name": "RUNTIME_TOOL_NAME_INVALID",
+  "toolAudit.permission": "RUNTIME_TOOL_PERMISSION_INVALID",
+  "toolAudit.executed": "RUNTIME_TOOL_EXECUTED_INVALID",
+  "toolAudit.status": "RUNTIME_TOOL_STATUS_INVALID",
+  "toolAudit.citationIds": "RUNTIME_TOOL_CITATION_IDS_INVALID",
+  "toolAudit.resultDigest": "RUNTIME_TOOL_RESULT_DIGEST_INVALID",
+  "toolAudit.source": "RUNTIME_TOOL_SOURCE_INVALID",
+  "authorizationAudit.name": "RUNTIME_AUTH_NAME_INVALID",
+  "authorizationAudit.runId": "RUNTIME_AUTH_RUN_ID_INVALID",
+  "authorizationAudit.clientRequestId": "RUNTIME_AUTH_REQUEST_ID_INVALID",
+  "authorizationAudit.permission": "RUNTIME_AUTH_PERMISSION_INVALID",
+  "authorizationAudit.executed": "RUNTIME_AUTH_EXECUTED_INVALID",
+  "authorizationAudit.denialReason": "RUNTIME_AUTH_DENIAL_REASON_INVALID",
+  "authorizationAudit.source": "RUNTIME_AUTH_SOURCE_INVALID",
+  "authorizationOutcome.deniedClientRequestId":
+    "RUNTIME_AUTH_OUTCOME_REQUEST_ID_INVALID",
+  "authorizationOutcome.agentToolCallQueryRunId":
+    "RUNTIME_AUTH_OUTCOME_RUN_ID_INVALID",
+  "provenance.runId": "RUNTIME_PROVENANCE_RUN_ID_INVALID",
+  "provenance.chatRequestId": "RUNTIME_PROVENANCE_REQUEST_ID_INVALID",
+  "provenance.conversationId": "RUNTIME_PROVENANCE_CONVERSATION_ID_INVALID",
+  "provenance.turnId": "RUNTIME_PROVENANCE_TURN_ID_INVALID",
+  "provenance.assistantMessageId": "RUNTIME_PROVENANCE_MESSAGE_ID_INVALID"
+} as const;
+
 let smokeDiagnosticState: SmokeDiagnosticState = { stage: "bootstrap" };
 let smokeFailureState: SmokeDiagnosticState | undefined;
 
@@ -145,6 +206,64 @@ function markSmokeDiagnostic(
 
 function captureSmokeFailure(): void {
   smokeFailureState ??= smokeDiagnosticState;
+}
+
+export function runtimeEvidenceValidationFailureDiagnostic(
+  error: unknown,
+  cases: Array<Record<string, unknown>>
+): SmokeDiagnosticState {
+  const fallback: SmokeDiagnosticState = {
+    stage: "runtime_evidence_validation",
+    code: "RUNTIME_EVIDENCE_INVALID"
+  };
+  if (!(error instanceof ZodError)) return fallback;
+
+  const path = error.issues[0]?.path;
+  if (!path?.length) return fallback;
+  const topLevel = path[0];
+  if (topLevel !== "cases") {
+    const code =
+      typeof topLevel === "string"
+        ? RUNTIME_EVIDENCE_TOP_LEVEL_FAILURE_CODES[
+            topLevel as keyof typeof RUNTIME_EVIDENCE_TOP_LEVEL_FAILURE_CODES
+          ]
+        : undefined;
+    return { ...fallback, ...(code ? { code } : {}) };
+  }
+
+  const caseIndex = path[1];
+  const caseEvidence =
+    typeof caseIndex === "number" && Number.isSafeInteger(caseIndex)
+      ? cases[caseIndex]
+      : undefined;
+  const caseId =
+    typeof caseEvidence?.caseId === "string" &&
+    SMOKE_CASE_IDS.has(caseEvidence.caseId)
+      ? caseEvidence.caseId
+      : undefined;
+  const caseField = typeof path[2] === "string" ? path[2] : undefined;
+  const nestedField = path
+    .slice(3)
+    .find((segment): segment is string => typeof segment === "string");
+  const nestedKey =
+    caseField && nestedField ? `${caseField}.${nestedField}` : undefined;
+  const code =
+    (nestedKey
+      ? RUNTIME_EVIDENCE_NESTED_FAILURE_CODES[
+          nestedKey as keyof typeof RUNTIME_EVIDENCE_NESTED_FAILURE_CODES
+        ]
+      : undefined) ??
+    (caseField
+      ? RUNTIME_EVIDENCE_CASE_FAILURE_CODES[
+          caseField as keyof typeof RUNTIME_EVIDENCE_CASE_FAILURE_CODES
+        ]
+      : undefined) ??
+    "RUNTIME_CASE_INVALID";
+  return {
+    stage: "runtime_evidence_validation",
+    ...(caseId ? { caseId } : {}),
+    code
+  };
 }
 
 export function publicSmokeFailureDiagnostic(
@@ -477,7 +596,7 @@ async function captureRuntimeEvidence(input: {
       await deleteConversation(input, conversationId).catch(() => undefined);
     }
   }
-  return runtimeEvidenceSchema.parse({
+  const unvalidatedEvidence = {
     schemaVersion: "openvac.answer-v3-runtime-evidence.v1",
     caseVersion: ANSWER_V3_CASE_VERSION,
     gitSha: input.gitSha,
@@ -486,7 +605,22 @@ async function captureRuntimeEvidence(input: {
     source: { environment: "staging", baseUrl: input.baseUrl.origin },
     visionBenchmark: input.visionBenchmark,
     cases
+  };
+  markSmokeDiagnostic("runtime_evidence_validation", {
+    code: "RUNTIME_EVIDENCE_INVALID"
   });
+  const validation = runtimeEvidenceSchema.safeParse(unvalidatedEvidence);
+  if (!validation.success) {
+    const diagnostic = runtimeEvidenceValidationFailureDiagnostic(
+      validation.error,
+      cases
+    );
+    const { stage, ...details } = diagnostic;
+    markSmokeDiagnostic(stage, details);
+    captureSmokeFailure();
+    throw validation.error;
+  }
+  return validation.data;
 }
 
 async function loadVisionBenchmark(
