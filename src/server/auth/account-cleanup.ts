@@ -29,6 +29,44 @@ export function assertUserCanSelfDelete(
   }
 }
 
+const deletedUserCleanupRetryDelaysMs = [100, 250] as const;
+
+type DeletedUserCleanupRetryOptions = {
+  retryDelaysMs?: readonly number[];
+  sleep?: (milliseconds: number) => Promise<void>;
+};
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+/**
+ * Retry the post-delete database sweep a bounded number of times. The sweep is
+ * deliberately idempotent: it only anonymizes matching audit fields and
+ * deletes an account-keyed quota bucket that may already be absent.
+ */
+export async function runDeletedUserDatabaseCleanupWithRetry(
+  operation: () => Promise<void>,
+  options: DeletedUserCleanupRetryOptions = {}
+): Promise<void> {
+  const retryDelaysMs =
+    options.retryDelaysMs ?? deletedUserCleanupRetryDelaysMs;
+  const wait = options.sleep ?? sleep;
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await operation();
+      return;
+    } catch (error) {
+      const retryDelayMs = retryDelaysMs[attempt];
+      if (retryDelayMs === undefined) {
+        throw error;
+      }
+      await wait(retryDelayMs);
+    }
+  }
+}
+
 function auditReferencesUser(userId: string) {
   return or(
     eq(auditLogs.actorUserId, userId),
@@ -166,32 +204,37 @@ export async function prepareUserDeletion(userId: string): Promise<void> {
 }
 
 export async function cleanupDeletedUser(userId: string): Promise<void> {
-  await db.transaction(async (transaction) => {
-    // Better Auth runs afterDelete outside the beforeDelete transaction. Scan
-    // once more after the actual user deletion so a late row can never retain
-    // request correlation or free-form personal data.
-    await transaction
-      .update(auditLogs)
-      .set({
-        actorUserId: sql`case
-          when ${auditLogs.actorUserId} = ${userId} then null
-          else ${auditLogs.actorUserId}
-        end`,
-        targetId: anonymizedAuditTargetId(userId),
-        requestId: null,
-        ipAddress: null,
-        userAgent: null,
-        before: null,
-        after: null,
-        metadata: {}
-      })
-      .where(auditReferencesUser(userId));
+  await runDeletedUserDatabaseCleanupWithRetry(async () => {
+    await db.transaction(async (transaction) => {
+      // Better Auth runs afterDelete outside the beforeDelete transaction. Scan
+      // once more after the actual user deletion so a late row can never retain
+      // request correlation or free-form personal data.
+      await transaction
+        .update(auditLogs)
+        .set({
+          actorUserId: sql`case
+            when ${auditLogs.actorUserId} = ${userId} then null
+            else ${auditLogs.actorUserId}
+          end`,
+          targetId: anonymizedAuditTargetId(userId),
+          requestId: null,
+          ipAddress: null,
+          userAgent: null,
+          before: null,
+          after: null,
+          metadata: {}
+        })
+        .where(auditReferencesUser(userId));
 
-    await transaction
-      .delete(quotaBucket)
-      .where(
-        and(eq(quotaBucket.scopeType, "user"), eq(quotaBucket.scopeKey, userId))
-      );
+      await transaction
+        .delete(quotaBucket)
+        .where(
+          and(
+            eq(quotaBucket.scopeType, "user"),
+            eq(quotaBucket.scopeKey, userId)
+          )
+        );
+    });
   });
 
   // The private avatar key is derived from the deleted account identifier, so
