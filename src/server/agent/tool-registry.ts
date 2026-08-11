@@ -838,6 +838,14 @@ function toolErrorCode(error: unknown): string {
   if (
     error &&
     typeof error === "object" &&
+    "name" in error &&
+    (error.name === "AbortError" || error.name === "TimeoutError")
+  ) {
+    return "TOOL_TIMEOUT";
+  }
+  if (
+    error &&
+    typeof error === "object" &&
     "code" in error &&
     typeof error.code === "string"
   ) {

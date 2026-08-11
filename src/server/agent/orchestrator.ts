@@ -89,6 +89,7 @@ import {
 const MAX_TOOL_CALLS = 8;
 const MAX_PARALLEL_TOOLS = 2;
 const MAX_MODEL_REQUESTS = 6;
+const EXPLICIT_ARTIFACT_RUN_TIMEOUT_FLOOR_MS = 300_000;
 const NON_REPEATABLE_TOOL_NAMES = new Set(["create_artifact"]);
 
 export type OrchestratorEvent =
@@ -198,7 +199,10 @@ export class AgentRunOrchestrator {
   }): Promise<OrchestratorResult> {
     const startedAt = Date.now();
     const budgetProfile = agentRunBudgetProfile(input.requestedMode);
-    const modeTimeoutMs = effectiveAgentRunTimeoutMs(input.resolvedMode);
+    const modeTimeoutMs = selectAgentRunTimeoutMs(
+      input.resolvedMode,
+      input.run.question
+    );
     const timeoutSignal = AbortSignal.timeout(modeTimeoutMs);
     const signal = AbortSignal.any([input.signal, timeoutSignal]);
 
@@ -2025,6 +2029,17 @@ export function safeArtifactFailureCode(value: unknown): string {
   return typeof value === "string" && SAFE_ARTIFACT_FAILURE_CODES.has(value)
     ? value
     : "ARTIFACT_CREATION_FAILED";
+}
+
+export function selectAgentRunTimeoutMs(
+  resolvedMode: ResolvedAgentMode,
+  question: string,
+  environment: Record<string, string | undefined> = process.env
+): number {
+  const modeTimeoutMs = effectiveAgentRunTimeoutMs(resolvedMode, environment);
+  return hasExplicitArtifactIntent(question)
+    ? Math.max(modeTimeoutMs, EXPLICIT_ARTIFACT_RUN_TIMEOUT_FLOOR_MS)
+    : modeTimeoutMs;
 }
 
 export class AgentRuntimeError extends Error {
