@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   assertUserCanSelfDelete,
+  cleanupDeletedUserAvatarBestEffort,
   DeletedUserDatabaseCleanupError,
   runDeletedUserDatabaseCleanupWithRetry
 } from "./account-cleanup";
@@ -17,6 +18,32 @@ describe("account deletion policy", () => {
 
   it("allows a regular account to continue through deletion cleanup", () => {
     expect(() => assertUserCanSelfDelete([])).not.toThrow();
+  });
+});
+
+describe("deleted-user avatar cleanup", () => {
+  it("contains synchronous storage construction failures", async () => {
+    await expect(
+      cleanupDeletedUserAvatarBestEffort("deleted-user", {
+        getStorage: () => {
+          throw new Error("storage construction failed");
+        }
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("contains asynchronous object deletion failures", async () => {
+    const deletePrivate = vi.fn().mockRejectedValue(new Error("delete failed"));
+
+    await expect(
+      cleanupDeletedUserAvatarBestEffort("deleted-user", {
+        getStorage: () => ({ deletePrivate }),
+        objectKey: () => "account-avatars/test/avatar.webp"
+      })
+    ).resolves.toBeUndefined();
+    expect(deletePrivate).toHaveBeenCalledExactlyOnceWith(
+      "account-avatars/test/avatar.webp"
+    );
   });
 });
 
