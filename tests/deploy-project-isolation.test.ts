@@ -27,7 +27,7 @@ describe("web-only deployment and R0 rollback compatibility", () => {
       "web_digest: ${{ steps.select_image.outputs.digest }}"
     );
     expect(release).toContain(
-      "WEB_IMAGE_DIGEST: ${{ needs.image.outputs.web_digest }}"
+      "WEB_IMAGE_DIGEST: ${{ steps.deployment_archive_identity.outputs.digest }}"
     );
     expect(release).toContain("openvac-web-release.tar.zst");
     expect(release).toContain("openvac-web-release.digest");
@@ -171,6 +171,32 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     );
     expect(release).toContain(
       "if: inputs.target == 'staging' && inputs.reuse_run_id != ''"
+    );
+  });
+
+  it("reuses the latest available same-run archive for failed-job reruns", () => {
+    expect(release).toContain("actions: read");
+    expect(release).toContain(
+      '"$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts"'
+    );
+    expect(release).toContain("node deploy/select-release-archive.mjs");
+    expect(release).toContain('"$artifacts_response" "$RUN_ID" "$RUN_ATTEMPT"');
+    expect(release).toContain(
+      "name: ${{ steps.deployment_archive.outputs.name }}"
+    );
+    expect(release).toContain(
+      "EXPECTED_IMAGE_DIGEST: ${{ needs.image.outputs.web_digest }}"
+    );
+    expect(
+      release.match(
+        /WEB_IMAGE_DIGEST: \$\{\{ steps\.deployment_archive_identity\.outputs\.digest \}\}/g
+      )
+    ).toHaveLength(2);
+    expect(release).toContain(
+      'if [ -n "$EXPECTED_IMAGE_DIGEST" ] &&\n            [ "$packaged_digest" != "$EXPECTED_IMAGE_DIGEST" ]; then'
+    );
+    expect(release).not.toContain(
+      "name: openvac-web-release-${{ github.run_id }}-${{ github.run_attempt }}\n          path: ${{ runner.temp }}/openvac-web-release"
     );
   });
 
