@@ -98,6 +98,83 @@ describe("ToolRegistry V3 exposure", () => {
     expect(JSON.stringify(result)).not.toMatch(/signed|signature|secret/iu);
   });
 
+  it("accepts a bounded parameter table above the generic tool argument limit", async () => {
+    const storage: ArtifactStorage & { create: ReturnType<typeof vi.fn> } = {
+      create: vi.fn(async (input) => ({
+        artifactId,
+        userId: input.userId,
+        conversationId: input.conversationId,
+        sourceTurnId: input.turnId,
+        kind: input.spec.kind,
+        title: input.spec.title,
+        formats: input.spec.formats,
+        status: "ready" as const
+      }))
+    };
+    const scoped = registry("请生成泵组选型参数表并导出 CSV", storage);
+    const argumentsJson = JSON.stringify({
+      schemaVersion: "openvac.artifact.v1",
+      kind: "parameter_table",
+      title: "泵组选型参数表",
+      formats: ["csv"],
+      summary: "参数和假设",
+      sections: [],
+      tables: [
+        {
+          columns: ["参数", "说明"],
+          rows: Array.from({ length: 200 }, (_, index) => [
+            `参数 ${index + 1}`,
+            "泵".repeat(250)
+          ])
+        }
+      ]
+    });
+    expect(Buffer.byteLength(argumentsJson, "utf8")).toBeGreaterThan(32 * 1024);
+    const escapedArgumentsJson = argumentsJson.replaceAll("泵", "\\u6cf5");
+    expect(Buffer.byteLength(escapedArgumentsJson, "utf8")).toBeGreaterThan(
+      256 * 1024
+    );
+    expect(
+      Buffer.byteLength(
+        JSON.stringify(JSON.parse(escapedArgumentsJson)),
+        "utf8"
+      )
+    ).toBeLessThan(256 * 1024);
+
+    const result = await scoped.execute({
+      callId: "call-large-parameter-table",
+      name: "create_artifact",
+      arguments: escapedArgumentsJson
+    });
+
+    expect(result.ok).toBe(true);
+    expect(storage.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns artifact-specific codes for malformed or oversized arguments", async () => {
+    const scoped = registry("请生成泵组选型参数表并导出 CSV");
+    await expect(
+      scoped.execute({
+        callId: "call-malformed-artifact",
+        name: "create_artifact",
+        arguments: "{"
+      })
+    ).resolves.toMatchObject({
+      ok: false,
+      errorCode: "ARTIFACT_ARGUMENTS_JSON_INVALID"
+    });
+    await expect(
+      scoped.execute({
+        callId: "call-oversized-artifact",
+        name: "create_artifact",
+        arguments: "x".repeat(2 * 1024 * 1024 + 1)
+      })
+    ).resolves.toMatchObject({
+      ok: false,
+      errorCode: "ARTIFACT_ARGUMENTS_TOO_LARGE"
+    });
+  });
+
   it("classifies an aborted artifact execution as a bounded timeout", async () => {
     const controller = new AbortController();
     controller.abort(new DOMException("run timeout", "TimeoutError"));

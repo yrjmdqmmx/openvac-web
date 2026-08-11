@@ -10,7 +10,7 @@ import type {
 } from "@/types/chat-v3";
 
 const MAX_QUESTION_CHARACTERS = 16_000;
-const MAX_ARTIFACT_SPEC_BYTES = 256 * 1024;
+export const MAX_ARTIFACT_SPEC_BYTES = 256 * 1024;
 const UNSAFE_ARTIFACT_TEXT =
   /(?:https?:\/\/|www\.|\b(?:provider|tool_call|function_call|normalizedInputs|rawArguments|formulaId|formulaVersion|system\s*prompt)\b|系统提示|内部提示|(?:x-amz|x-oss)-[a-z-]*signature|ossaccesskeyid|(?:signature|expires)=[^\s&]+)/iu;
 
