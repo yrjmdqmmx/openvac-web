@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { CalculationResult, Citation } from "@/types/chat";
-import type { AnswerV3 } from "@/types/chat-v3";
+import type { AnswerV3, VerifiedLinkPart } from "@/types/chat-v3";
 import { QuotaExceededError } from "@/server/quota";
 import {
   ProviderError,
@@ -213,6 +213,195 @@ describe("Agent V3 orchestrator output boundary", () => {
     expect(
       webSearchQuotaPolicy(new Error("database unavailable"), "auto")
     ).toBeUndefined();
+  });
+});
+
+describe("Agent V3 verified link selection repair", () => {
+  it("lets the one repair select only an existing allowlisted link", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const capturedInputs: ResponsesInputItem[][] = [];
+    const request = vi.fn(async (...args: unknown[]) => {
+      capturedInputs.push(args[1] as ResponsesInputItem[]);
+      return {
+        outputText: JSON.stringify(subject.answer(["W2"])),
+        calls: [],
+        finish: {
+          type: "finish" as const,
+          status: "completed" as const,
+          responseId: "response-link-repair",
+          outputText: JSON.stringify(subject.answer(["W2"])),
+          continuationItems: []
+        },
+        callableFunctionNames: new Set<string>()
+      };
+    });
+    subject.invoke.requestWithOneRetry = request;
+
+    await expect(
+      subject.invoke.repair(
+        { ...subject.input, outputText: JSON.stringify(subject.answer([])) },
+        ["回答必须选择至少一个已验证链接。"]
+      )
+    ).resolves.toContain('"usedLinkIds":["W2"]');
+
+    const repairInput = capturedInputs[0] ?? [];
+    const message = repairInput[0];
+    if (message?.type !== "message")
+      throw new Error("Expected repair message.");
+    if (typeof message.content !== "string") {
+      throw new Error("Expected string repair content.");
+    }
+    const contract = JSON.parse(message.content) as {
+      task: string;
+      minimumLinkCount: number;
+      allowedLinkIds: string[];
+      allowedLinkBindings: Array<{
+        linkId: string;
+        label: string;
+        evidenceIds: string[];
+      }>;
+      repairRules: string[];
+    };
+    expect(contract.minimumLinkCount).toBe(1);
+    expect(contract.allowedLinkIds).toEqual(["W2"]);
+    expect(contract.allowedLinkBindings).toEqual([
+      {
+        linkId: "W2",
+        label: "Leybold 厂家手册",
+        evidenceIds: ["E1"]
+      }
+    ]);
+    expect(contract.task).toContain("outside allowedLinkIds");
+    expect(contract.repairRules.join(" ")).toContain("at most once");
+  });
+
+  it.each(["missing", "duplicate"] as const)(
+    "repairs a %s requested verified-link selection exactly once",
+    async (failure) => {
+      const subject = verifiedLinkRepairSubject();
+      const candidate =
+        failure === "missing"
+          ? subject.answer([])
+          : subject.answer(["W2", "W2"]);
+      subject.invoke.repair = vi.fn(async () =>
+        JSON.stringify(subject.answer(["W2"]))
+      );
+
+      await expect(
+        subject.invoke.validateOrRepair({
+          ...subject.input,
+          currentInput: [],
+          outputText: JSON.stringify(candidate)
+        })
+      ).resolves.toMatchObject({ usedLinkIds: ["W2"] });
+
+      expect(subject.invoke.repair).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it("fails closed before persistence when the one repair still omits the requested link", async () => {
+    const subject = verifiedLinkRepairSubject();
+    subject.invoke.repair = vi.fn(async () =>
+      JSON.stringify(subject.answer([]))
+    );
+
+    await expect(
+      subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify(subject.answer([]))
+      })
+    ).rejects.toMatchObject({
+      code: "ANSWER_VALIDATION_FAILED",
+      retryable: false
+    });
+
+    expect(subject.invoke.repair).toHaveBeenCalledTimes(1);
+    expect(subject.store.complete).not.toHaveBeenCalled();
+  });
+
+  it("rejects a link repair that changes candidate facts or citations", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const changed = subject.answer(["W2"]);
+    const paragraph = changed.blocks[0];
+    if (paragraph?.type !== "paragraph") throw new Error("Expected paragraph.");
+    paragraph.text = "被 repair 改写的事实。";
+    subject.invoke.repair = vi.fn(async () => JSON.stringify(changed));
+
+    await expect(
+      subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify(subject.answer([]))
+      })
+    ).rejects.toMatchObject({ code: "ANSWER_VALIDATION_FAILED" });
+  });
+
+  it("rejects an allowlisted link paired with a non-canonical label", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const changed = subject.answer(["W2"]);
+    const link = changed.blocks.find(
+      (block) => block.type === "link_reference"
+    );
+    if (!link || link.type !== "link_reference") {
+      throw new Error("Expected link reference.");
+    }
+    link.label = "未经服务端绑定的标签";
+    subject.invoke.repair = vi.fn(async () => JSON.stringify(changed));
+
+    await expect(
+      subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify(subject.answer([]))
+      })
+    ).rejects.toMatchObject({ code: "ANSWER_VALIDATION_FAILED" });
+  });
+
+  it("runs initial and one invalid repair without completed persistence", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const responses = [subject.answer([]), subject.answer([])];
+    subject.invoke.requestWithOneRetry = vi.fn(async () =>
+      answerModelResponse(responses.shift() ?? subject.answer([]))
+    );
+
+    await expect(subject.orchestrator.run(subject.input)).rejects.toMatchObject(
+      {
+        code: "ANSWER_VALIDATION_FAILED",
+        retryable: false
+      }
+    );
+
+    expect(subject.invoke.requestWithOneRetry).toHaveBeenCalledTimes(2);
+    expect(subject.store.complete).not.toHaveBeenCalled();
+  });
+
+  it("revalidates a deterministic calculation fallback before persistence", async () => {
+    const subject = verifiedLinkRepairSubject();
+    subject.invoke.calculations.set("calc_1", {
+      id: "calc_1",
+      tool: "calculate_throughput",
+      formulaId: "Q=pS",
+      formulaVersion: "1.0.0",
+      normalizedInputs: { pressurePa: 10, speedM3S: 0.1 },
+      result: { value: 1, unit: "Pa*m3/s" },
+      assumptions: ["压力与抽速取同一工作点的稳态值。"],
+      warnings: [],
+      sourceIds: []
+    });
+    subject.invoke.requestWithOneRetry = vi.fn(async () =>
+      answerModelResponse(subject.answer([]))
+    );
+
+    await expect(subject.orchestrator.run(subject.input)).rejects.toMatchObject(
+      {
+        code: "ANSWER_VALIDATION_FAILED",
+        retryable: false
+      }
+    );
+
+    expect(subject.invoke.requestWithOneRetry).toHaveBeenCalledTimes(1);
+    expect(subject.store.complete).not.toHaveBeenCalled();
   });
 });
 
@@ -1028,6 +1217,148 @@ function artifactRequestSubject() {
   });
   const input = artifactRunInput(run);
   return { invoke, input };
+}
+
+function verifiedLinkRepairSubject() {
+  const store = {
+    complete: vi.fn(async () => ({ content: "saved", meta: {} }))
+  };
+  const provider = {
+    id: "deepseek-responses",
+    model: "deepseek-v4-flash",
+    capabilities: {}
+  } as unknown as ResponsesProvider;
+  const orchestrator = new AgentRunOrchestrator(
+    provider,
+    store as unknown as RunStore,
+    () => undefined
+  );
+  const run = {
+    runId: "00000000-0000-4000-8000-000000000401",
+    conversationId: "00000000-0000-4000-8000-000000000402",
+    userMessageId: "00000000-0000-4000-8000-000000000403",
+    assistantMessageId: "00000000-0000-4000-8000-000000000404",
+    turnId: "00000000-0000-4000-8000-000000000405",
+    answerVersion: 1,
+    question: "请给出 Leybold 官方已验证链接。",
+    inputParts: [],
+    action: "initial" as const
+  };
+  const input = {
+    userId: "user-1",
+    userPartition: "partition-1",
+    clientRequestId: "00000000-0000-4000-8000-000000000406",
+    run,
+    requestedMode: "auto" as const,
+    resolvedMode: "fast" as const,
+    webMode: "always" as const,
+    riskLevel: "medium" as const,
+    signal: new AbortController().signal
+  };
+  const invoke = orchestrator as unknown as {
+    contextBuilder: {
+      build(): Promise<{
+        input: ResponsesInputItem[];
+        disclosure: Record<string, unknown>;
+      }>;
+    };
+    evidence: EvidenceRegistry;
+    verifiedLinks: Map<string, VerifiedLinkPart>;
+    calculations: Map<string, CalculationResult>;
+    proactiveKnowledgeSearch(): Promise<void>;
+    proactiveAttachmentEvidence(): Promise<void>;
+    proactiveWebSearch(): Promise<void>;
+    repair(
+      request: typeof input & { outputText: string },
+      errors: string[]
+    ): Promise<string>;
+    requestWithOneRetry: ReturnType<typeof vi.fn>;
+    validateOrRepair(request: {
+      userId: string;
+      userPartition: string;
+      clientRequestId: string;
+      run: typeof run;
+      requestedMode: "auto";
+      resolvedMode: "fast";
+      webMode: "always";
+      riskLevel: "medium";
+      currentInput: ResponsesInputItem[];
+      outputText: string;
+      signal: AbortSignal;
+    }): Promise<AnswerV3 | undefined>;
+  };
+  invoke.contextBuilder = {
+    build: async () => ({ input: [], disclosure: {} })
+  };
+  invoke.proactiveKnowledgeSearch = vi.fn(async () => undefined);
+  invoke.proactiveAttachmentEvidence = vi.fn(async () => undefined);
+  invoke.proactiveWebSearch = vi.fn(async () => undefined);
+  const evidenceId = invoke.evidence.add(
+    {
+      citation: {
+        sourceId: "leybold-runtime-source",
+        title: "Leybold foreline pressure guidance",
+        publisher: "Leybold",
+        url: "https://www.leybold.com/manual",
+        fetchedAt: new Date("2026-08-11T00:00:00.000Z"),
+        licenseClass: "open"
+      },
+      excerpt: "前级压力需要按具体型号核对。"
+    },
+    {
+      trustTier: "tier_a",
+      reviewStatus: "runtime_verified",
+      runtimeValidated: true
+    }
+  );
+  if (evidenceId !== "E1") throw new Error("Expected E1 test evidence.");
+  invoke.evidence.bindVerifiedLink("E1", "W2", "www.leybold.com");
+  invoke.verifiedLinks.set("W2", {
+    type: "verified_link",
+    linkId: "W2",
+    url: "https://www.leybold.com/manual",
+    label: "Leybold 厂家手册",
+    hostname: "www.leybold.com",
+    status: "verified",
+    evidenceIds: ["E1"]
+  });
+  const answer = (linkIds: string[]): AnswerV3 => ({
+    schemaVersion: "openvac.answer.v3",
+    answerKind: "expert",
+    riskLevel: "medium",
+    blocks: [
+      {
+        type: "paragraph",
+        text: "前级压力需要按具体型号核对。",
+        evidenceIds: ["E1"]
+      },
+      ...linkIds.map((linkId) => ({
+        type: "link_reference" as const,
+        linkId,
+        label: "Leybold 厂家手册"
+      }))
+    ],
+    missingInputs: [],
+    usedEvidenceIds: ["E1"],
+    usedLinkIds: linkIds
+  });
+  return { orchestrator, invoke, input, answer, store };
+}
+
+function answerModelResponse(answer: AnswerV3) {
+  const outputText = JSON.stringify(answer);
+  return {
+    outputText,
+    calls: [],
+    finish: {
+      type: "finish" as const,
+      status: "completed" as const,
+      responseId: "response-answer",
+      outputText,
+      continuationItems: []
+    },
+    callableFunctionNames: new Set<string>()
+  };
 }
 
 function artifactRunInput(run: {

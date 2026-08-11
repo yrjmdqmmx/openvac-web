@@ -13,6 +13,7 @@ import {
   answerV3Blocks,
   collectAnswerV3References,
   renderAnswerV3,
+  requestsVerifiedLinkSelection,
   requiresExpertAnswer,
   safeParseAnswerV3,
   validateAnswerV3
@@ -245,6 +246,106 @@ describe("Answer V3", () => {
         ...common,
         knownLinkBindings: [{ linkId: "W1", evidenceIds: ["E1", "E2"] }]
       }).valid
+    ).toBe(true);
+  });
+
+  it("requires one unique allowlisted link when link selection is mandatory", () => {
+    const paragraph = {
+      type: "paragraph" as const,
+      text: "前级压力需要按具体型号核对。",
+      evidenceIds: ["E1"]
+    };
+    const link = {
+      type: "link_reference" as const,
+      linkId: "W2",
+      label: "厂家手册"
+    };
+    const common = {
+      riskLevel: "medium" as const,
+      question: "请给出已验证链接。",
+      minimumLinkCount: 1 as const,
+      knownEvidenceIds: ["E1"],
+      knownLinkIds: ["W2"],
+      knownLinkBindings: [
+        { linkId: "W2", label: "厂家手册", evidenceIds: ["E1"] }
+      ]
+    };
+    const answer: AnswerV3 = {
+      schemaVersion: "openvac.answer.v3",
+      answerKind: "expert",
+      riskLevel: "medium",
+      blocks: [paragraph],
+      missingInputs: [],
+      usedEvidenceIds: ["E1"],
+      usedLinkIds: []
+    };
+
+    expect(validateAnswerV3({ ...common, value: answer }).valid).toBe(false);
+    const duplicated: AnswerV3 = {
+      ...answer,
+      blocks: [paragraph, link, { ...link }],
+      usedLinkIds: ["W2", "W2"]
+    };
+    const duplicateResult = validateAnswerV3({
+      ...common,
+      value: duplicated
+    });
+    expect(duplicateResult.valid).toBe(false);
+    if (!duplicateResult.valid) {
+      expect(duplicateResult.errors.join(" ")).toContain("不得重复");
+    }
+    expect(
+      validateAnswerV3({
+        ...common,
+        value: { ...answer, blocks: [paragraph, link], usedLinkIds: ["W2"] }
+      }).valid
+    ).toBe(true);
+    expect(
+      validateAnswerV3({
+        ...common,
+        value: {
+          ...answer,
+          blocks: [paragraph, { ...link, label: "模型伪造标签" }],
+          usedLinkIds: ["W2"]
+        }
+      }).valid
+    ).toBe(false);
+  });
+
+  it("recognizes explicit link requests without treating ordinary web text as one", () => {
+    expect(requestsVerifiedLinkSelection("请给出已验证链接")).toBe(true);
+    expect(
+      requestsVerifiedLinkSelection("Please provide the official URL.")
+    ).toBe(true);
+    expect(requestsVerifiedLinkSelection("解释前级压力。")).toBe(false);
+    expect(requestsVerifiedLinkSelection("不要提供链接。")).toBe(false);
+    expect(requestsVerifiedLinkSelection("无需网址，只解释原理。")).toBe(false);
+    expect(requestsVerifiedLinkSelection("不需要提供任何链接。")).toBe(false);
+    expect(requestsVerifiedLinkSelection("无需提供任何网址。")).toBe(false);
+    expect(requestsVerifiedLinkSelection("不必提供链接。")).toBe(false);
+    expect(requestsVerifiedLinkSelection("URL 参数是什么意思？")).toBe(false);
+    expect(requestsVerifiedLinkSelection("Do not include a URL.")).toBe(false);
+    expect(requestsVerifiedLinkSelection("Please provide no URL.")).toBe(false);
+    expect(requestsVerifiedLinkSelection("Please don’t include a URL.")).toBe(
+      false
+    );
+    expect(requestsVerifiedLinkSelection("请提供官方 URL。")).toBe(true);
+    expect(requestsVerifiedLinkSelection("请给出 URL。")).toBe(true);
+    expect(requestsVerifiedLinkSelection("请不要提供官方 URL。")).toBe(false);
+    expect(requestsVerifiedLinkSelection("不必提供官方 URL。")).toBe(false);
+    expect(
+      requestsVerifiedLinkSelection("Please provide no official URL.")
+    ).toBe(false);
+    expect(
+      requestsVerifiedLinkSelection("Please don't provide the official URL.")
+    ).toBe(false);
+    expect(requestsVerifiedLinkSelection("不要解释，只给出官方链接。")).toBe(
+      true
+    );
+    expect(
+      requestsVerifiedLinkSelection(
+        "Without commentary, provide the official URL."
+      )
     ).toBe(true);
   });
 
