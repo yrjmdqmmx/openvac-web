@@ -15,6 +15,7 @@ import {
   safeArtifactFailureCode,
   safeModelInvocationErrorMessage,
   safeProviderTerminalErrorCode,
+  selectAgentRunTimeoutMs,
   selectAnswerToolRequestPolicy,
   selectAnswerToolChoice,
   selectAnswerToolRoundLimit,
@@ -45,6 +46,27 @@ describe("Agent V3 deterministic calculator routing", () => {
     expect(safeArtifactFailureCode("secret request-id=private")).toBe(
       "ARTIFACT_CREATION_FAILED"
     );
+  });
+
+  it("reserves a five-minute runtime floor for explicit artifact requests", () => {
+    const environment = {
+      AGENT_DEEP_TIMEOUT_MS: "180000"
+    };
+    expect(
+      selectAgentRunTimeoutMs(
+        "deep",
+        "生成中文诊断报告并导出 MD、DOCX、PDF 和 CSV。",
+        environment
+      )
+    ).toBe(300_000);
+    expect(
+      selectAgentRunTimeoutMs("deep", "解释真空系统诊断步骤。", environment)
+    ).toBe(180_000);
+    expect(
+      selectAgentRunTimeoutMs("deep", "生成中文诊断报告并导出 PDF。", {
+        AGENT_DEEP_TIMEOUT_MS: "360000"
+      })
+    ).toBe(360_000);
   });
 
   it("never persists provider response text as an invocation error", () => {

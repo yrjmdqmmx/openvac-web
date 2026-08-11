@@ -98,6 +98,39 @@ describe("ToolRegistry V3 exposure", () => {
     expect(JSON.stringify(result)).not.toMatch(/signed|signature|secret/iu);
   });
 
+  it("classifies an aborted artifact execution as a bounded timeout", async () => {
+    const controller = new AbortController();
+    controller.abort(new DOMException("run timeout", "TimeoutError"));
+    const storage: ArtifactStorage = {
+      create: vi.fn(async (input) => {
+        input.signal?.throwIfAborted();
+        throw new Error("unreachable");
+      })
+    };
+    const scoped = registry(
+      "请生成一份诊断报告并导出 PDF",
+      storage,
+      controller.signal
+    );
+
+    const result = await scoped.execute({
+      callId: "call-artifact-timeout",
+      name: "create_artifact",
+      arguments: JSON.stringify({
+        schemaVersion: "openvac.artifact.v1",
+        kind: "diagnosis_report",
+        title: "真空系统诊断",
+        formats: ["pdf"],
+        summary: "诊断摘要",
+        sections: [{ heading: "现象", paragraphs: ["抽速不足"] }],
+        tables: []
+      })
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.errorCode).toBe("TOOL_TIMEOUT");
+  });
+
   it("passes the tool signal into knowledge retrieval", async () => {
     toolRegistryMocks.collectLocalEvidence.mockResolvedValueOnce({
       evidence: [],
