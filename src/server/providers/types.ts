@@ -127,7 +127,11 @@ export type ResponsesTextFormat =
     };
 
 export type ResponsesSafeInvocationPhase =
-  "artifact_fresh_json_repair" | "artifact_continuation_repair";
+  | "artifact_fresh_json_repair"
+  | "artifact_continuation_repair"
+  | "answer_fresh_json_repair";
+
+export const FRESH_ANSWER_JSON_MAX_OUTPUT_TOKENS = 8_192;
 
 export interface ResponsesStreamRequest {
   instructions?: string;

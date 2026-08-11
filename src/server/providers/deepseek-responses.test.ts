@@ -599,6 +599,240 @@ describe("DeepSeekResponsesProvider", () => {
     });
   });
 
+  it("routes a fresh answer repair through tool-free Chat JSON mode", async () => {
+    let sentUrl = "";
+    let sentRedirect: RequestRedirect | undefined;
+    let sentBody: Record<string, unknown> = {};
+    const outputText = JSON.stringify({
+      schemaVersion: "openvac.answer.v3",
+      answerKind: "expert",
+      riskLevel: "medium",
+      blocks: [
+        { type: "paragraph", text: "核对具体型号。", evidenceIds: ["E1"] }
+      ],
+      missingInputs: [],
+      usedEvidenceIds: ["E1"],
+      usedLinkIds: []
+    });
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        sentUrl = String(url);
+        sentRedirect = init?.redirect;
+        sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(
+          JSON.stringify({
+            id: "chatcmpl-fresh-answer-json",
+            choices: [
+              {
+                finish_reason: "stop",
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: outputText
+                }
+              }
+            ],
+            usage: {
+              prompt_tokens: 500,
+              completion_tokens: 120,
+              completion_tokens_details: { reasoning_tokens: 0 },
+              total_tokens: 620
+            }
+          }),
+          { headers: { "x-request-id": "fresh-answer-provider-request" } }
+        );
+      })
+    });
+
+    const events = await collect(provider.stream(freshAnswerJsonRequest()));
+
+    expect(sentUrl).toBe("https://api.deepseek.com/chat/completions");
+    expect(sentRedirect).toBe("error");
+    expect(sentBody).toMatchObject({
+      model: "deepseek-v4-flash",
+      messages: [
+        { role: "system", content: "Return one valid JSON object." },
+        { role: "user", content: "clean user context" },
+        { role: "assistant", content: "clean canonical history" }
+      ],
+      response_format: { type: "json_object" },
+      thinking: { type: "disabled" },
+      max_tokens: 8_192,
+      user_id: "ov1_safe-user",
+      stream: false
+    });
+    expect(sentBody).not.toHaveProperty("tools");
+    expect(sentBody).not.toHaveProperty("tool_choice");
+    expect(JSON.stringify(sentBody)).not.toMatch(
+      /previous_response_id|function_call|function_call_output|reasoning/iu
+    );
+    expect(events).toContainEqual({ type: "text-delta", text: outputText });
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      status: "completed",
+      responseId: "chatcmpl-fresh-answer-json",
+      outputText,
+      continuationItems: [],
+      providerRequestId: "fresh-answer-provider-request",
+      usage: {
+        inputTokens: 500,
+        outputTokens: 120,
+        reasoningTokens: 0,
+        totalTokens: 620
+      }
+    });
+  });
+
+  it("rejects non-message continuation input before fresh answer transport", async () => {
+    const fetchMock = vi.fn();
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: fetchMock
+    });
+    const request = freshAnswerJsonRequest();
+    if (!Array.isArray(request.input)) {
+      throw new Error("Expected array input.");
+    }
+    request.input = [
+      ...request.input,
+      {
+        type: "function_call",
+        call_id: "private-call-id",
+        name: "web_search",
+        arguments: "{}"
+      },
+      {
+        type: "function_call_output",
+        call_id: "private-call-id",
+        output: "private-output"
+      }
+    ];
+
+    await expect(collect(provider.stream(request))).rejects.toThrow(
+      "non-message continuation item"
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "output token budget",
+      mutate: (request: ResponsesStreamRequest) => {
+        request.maxOutputTokens = 4_096;
+      }
+    },
+    {
+      name: "schema name",
+      mutate: (request: ResponsesStreamRequest) => {
+        if (request.textFormat?.type === "json_schema") {
+          request.textFormat.name = "untrusted_answer_schema";
+        }
+      }
+    },
+    {
+      name: "strict schema flag",
+      mutate: (request: ResponsesStreamRequest) => {
+        if (request.textFormat?.type === "json_schema") {
+          request.textFormat.strict = false;
+        }
+      }
+    },
+    {
+      name: "schema properties",
+      mutate: (request: ResponsesStreamRequest) => {
+        if (request.textFormat?.type === "json_schema") {
+          const properties = request.textFormat.schema.properties as Record<
+            string,
+            unknown
+          >;
+          delete properties.blocks;
+        }
+      }
+    }
+  ])(
+    "rejects a mismatched fresh answer $name before transport",
+    async ({ mutate }) => {
+      const fetchMock = vi.fn();
+      const provider = new DeepSeekResponsesProvider({
+        apiKey: "test-key",
+        fetch: fetchMock
+      });
+      const request = freshAnswerJsonRequest();
+      mutate(request);
+
+      await expect(collect(provider.stream(request))).rejects.toThrow(
+        "fixed AnswerV3 boundary"
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it("returns malformed JSON content as a completed semantic failure candidate", async () => {
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              id: "chatcmpl-fresh-answer-invalid-json",
+              choices: [
+                {
+                  finish_reason: "stop",
+                  index: 0,
+                  message: { role: "assistant", content: "{invalid-again" }
+                }
+              ]
+            })
+          )
+      )
+    });
+
+    const events = await collect(provider.stream(freshAnswerJsonRequest()));
+
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      status: "completed",
+      outputText: "{invalid-again",
+      continuationItems: []
+    });
+  });
+
+  it("rejects a forbidden tool call from fresh answer JSON mode", async () => {
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              id: "chatcmpl-fresh-answer-tool-call",
+              choices: [
+                {
+                  finish_reason: "stop",
+                  index: 0,
+                  message: {
+                    role: "assistant",
+                    content: "",
+                    tool_calls: [
+                      {
+                        id: "forbidden-call",
+                        type: "function",
+                        function: { name: "web_search", arguments: "{}" }
+                      }
+                    ]
+                  }
+                }
+              ]
+            })
+          )
+      )
+    });
+
+    await expect(
+      collect(provider.stream(freshAnswerJsonRequest()))
+    ).rejects.toMatchObject({ retryable: false });
+  });
+
   it("uses one sanitized paired continuation with the strict beta contract", async () => {
     let sentBody: Record<string, unknown> = {};
     const provider = new DeepSeekResponsesProvider({
@@ -2127,6 +2361,54 @@ function strictArtifactRepairRequest(): ResponsesStreamRequest {
     toolChoice: { type: "function", name: "create_artifact" },
     maxOutputTokens: 8_192,
     safeInvocationPhase: "artifact_fresh_json_repair",
+    user: "ov1_safe-user"
+  };
+}
+
+function freshAnswerJsonRequest(): ResponsesStreamRequest {
+  return {
+    instructions: "Return one valid JSON object.",
+    input: [
+      { type: "message", role: "user", content: "clean user context" },
+      {
+        type: "message",
+        role: "assistant",
+        content: "clean canonical history"
+      }
+    ],
+    toolChoice: "none",
+    textFormat: {
+      type: "json_schema",
+      name: "openvac_answer_v3",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "schemaVersion",
+          "answerKind",
+          "riskLevel",
+          "blocks",
+          "missingInputs",
+          "usedEvidenceIds",
+          "usedLinkIds"
+        ],
+        properties: {
+          schemaVersion: {
+            type: "string",
+            const: "openvac.answer.v3"
+          },
+          answerKind: { type: "string" },
+          riskLevel: { type: "string", const: "medium" },
+          blocks: { type: "array" },
+          missingInputs: { type: "array" },
+          usedEvidenceIds: { type: "array" },
+          usedLinkIds: { type: "array" }
+        }
+      },
+      strict: true
+    },
+    maxOutputTokens: 8_192,
+    safeInvocationPhase: "answer_fresh_json_repair",
     user: "ov1_safe-user"
   };
 }

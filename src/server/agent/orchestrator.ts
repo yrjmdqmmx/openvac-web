@@ -7,6 +7,7 @@ import {
   type InvocationHandle
 } from "@/server/operations/model-runtime";
 import {
+  FRESH_ANSWER_JSON_MAX_OUTPUT_TOKENS,
   ProviderError,
   type ResponsesInputItem,
   type ResponsesProvider,
@@ -101,6 +102,8 @@ const MAX_MODEL_REQUESTS = 6;
 const EXPLICIT_ARTIFACT_RUN_TIMEOUT_FLOOR_MS = 300_000;
 const NON_REPEATABLE_TOOL_NAMES = new Set(["create_artifact"]);
 export const MAX_ARTIFACT_PROVIDER_OUTPUT_TOKENS = 8_192;
+export const MAX_FRESH_ANSWER_JSON_OUTPUT_TOKENS =
+  FRESH_ANSWER_JSON_MAX_OUTPUT_TOKENS;
 const FRESH_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION =
   "上一次 create_artifact 参数不是合法 JSON。重新生成一个简洁、完整、符合 provider envelope 的单一 create_artifact 调用；不得复述、猜测或引用上一次调用的参数。";
 const CONTINUATION_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION =
@@ -108,6 +111,7 @@ const CONTINUATION_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION =
 
 export type ArtifactArgumentRecoveryMode =
   "fresh_json_invalid" | "continuation_invalid_arguments";
+export type AnswerJsonRecoveryMode = "fresh_json_invalid";
 
 export type OrchestratorEvent =
   | { type: "stage"; stage: AgentStage; label: string }
@@ -552,7 +556,10 @@ export class AgentRunOrchestrator {
     this.stage("validating_answer", "正在校验结构、引用与安全边界…");
     let answer = await this.validateOrRepair({
       ...input,
-      currentInput,
+      // This snapshot predates every model-authored tool continuation. Fresh
+      // JSON regeneration must never recover context by filtering a later
+      // continuation-bearing input.
+      currentInput: originalContextInput,
       outputText,
       signal
     });
@@ -1045,27 +1052,32 @@ export class AgentRunOrchestrator {
     const minimumLinkCount = this.minimumRequiredLinkCount(input.run.question);
     const validate = (value: unknown) =>
       this.validateAnswerCandidate(input, value, minimumLinkCount);
-    const parsedCandidate = safeJson(input.outputText);
-    let answerValidationStage: AnswerValidationStage | undefined =
-      minimumLinkCount === 1
-        ? parsedCandidate === undefined
-          ? "json_parse"
-          : "schema"
-        : undefined;
-    let validated = validate(parsedCandidate);
-    if (!validated.valid) {
+    const validateWithDeterministicLinkProjection = (
+      candidate: unknown,
+      allowUntrustedRawLinkRecovery: boolean
+    ) => {
+      let stage: AnswerValidationStage | undefined =
+        minimumLinkCount === 1
+          ? candidate === undefined
+            ? "json_parse"
+            : "schema"
+          : undefined;
+      let result = validate(candidate);
+      if (result.valid) return { validated: result, stage };
       const linklessCandidate =
         minimumLinkCount === 1
-          ? validated.answer
-            ? withoutVerifiedLinkSelection(validated.answer)
-            : withoutUntrustedVerifiedLinkSelection(parsedCandidate)
+          ? result.answer
+            ? withoutVerifiedLinkSelection(result.answer)
+            : allowUntrustedRawLinkRecovery
+              ? withoutUntrustedVerifiedLinkSelection(candidate)
+              : undefined
           : undefined;
       const linklessValidation =
         linklessCandidate && this.verifiedLinks.size > 0
           ? this.validateAnswerCandidate(input, linklessCandidate, 0)
           : undefined;
       if (linklessValidation && !linklessValidation.valid) {
-        answerValidationStage = "linkless";
+        stage = "linkless";
       }
       const projectionSource = linklessValidation?.valid
         ? linklessValidation.answer
@@ -1077,7 +1089,7 @@ export class AgentRunOrchestrator {
           )
         : undefined;
       if (projectionSource) {
-        answerValidationStage = deterministicLinkRepair ? "final" : "binding";
+        stage = deterministicLinkRepair ? "final" : "binding";
       }
       const deterministicValidation = deterministicLinkRepair
         ? validate(deterministicLinkRepair)
@@ -1091,10 +1103,34 @@ export class AgentRunOrchestrator {
           this.verifiedLinks
         )
       ) {
-        validated = deterministicValidation;
+        result = deterministicValidation;
       }
+      return { validated: result, stage };
+    };
+    const parsedCandidate = safeJson(input.outputText);
+    let { validated, stage: answerValidationStage } =
+      validateWithDeterministicLinkProjection(parsedCandidate, true);
+    let freshJsonRegenerationAttempted = false;
+    if (
+      !validated.valid &&
+      minimumLinkCount === 1 &&
+      parsedCandidate === undefined
+    ) {
+      const regenerated = await this.regenerateInvalidAnswerJson(input);
+      freshJsonRegenerationAttempted = true;
+      const parsedRegeneration = safeJson(regenerated);
+      ({ validated, stage: answerValidationStage } =
+        validateWithDeterministicLinkProjection(parsedRegeneration, false));
     }
     if (!validated.valid) {
+      if (freshJsonRegenerationAttempted) {
+        throw new AgentRuntimeError(
+          "ANSWER_VALIDATION_FAILED",
+          "重新生成的回答仍未通过安全校验。",
+          false,
+          answerValidationStage ?? "final"
+        );
+      }
       // Local calculation results have already passed strict schema and
       // applicability validation. Prefer the server-owned representation over
       // spending the remaining automatic-run budget on repairing model JSON.
@@ -1183,6 +1219,44 @@ export class AgentRunOrchestrator {
       input.riskLevel,
       "请补充设备型号、工况、单位和希望确认的具体问题。"
     );
+  }
+
+  private async regenerateInvalidAnswerJson(input: {
+    userId: string;
+    userPartition: string;
+    clientRequestId: string;
+    run: CreatedRun;
+    requestedMode: RequestedAgentMode;
+    resolvedMode: ResolvedAgentMode;
+    riskLevel: RiskLevel;
+    currentInput: ResponsesInputItem[];
+    signal: AbortSignal;
+  }): Promise<string> {
+    if (this.repairs >= 1) return "";
+    input.signal.throwIfAborted();
+    const freshInput = buildFreshAnswerJsonInput(input.currentInput);
+    if (freshInput.length === 0) return "";
+    this.repairs += 1;
+    const invocationInput = {
+      userId: input.userId,
+      userPartition: input.userPartition,
+      clientRequestId: input.clientRequestId,
+      run: input.run,
+      requestedMode: input.requestedMode,
+      resolvedMode: input.resolvedMode,
+      riskLevel: input.riskLevel
+    };
+    const result = await this.requestWithOneRetry(
+      invocationInput,
+      freshInput,
+      input.signal,
+      "answer_fresh_json_repair",
+      false,
+      undefined,
+      "fresh_json_invalid"
+    );
+    if (result.finish.status !== "completed") return "";
+    return result.finish.outputText || result.outputText;
   }
 
   private async repair(
@@ -1338,7 +1412,8 @@ export class AgentRunOrchestrator {
     signal: AbortSignal,
     phase: string,
     allowTools: boolean,
-    artifactRecoveryMode?: ArtifactArgumentRecoveryMode
+    artifactRecoveryMode?: ArtifactArgumentRecoveryMode,
+    answerJsonRecoveryMode?: AnswerJsonRecoveryMode
   ): Promise<CollectedModelResponse> {
     try {
       return await this.collectModelResponse(
@@ -1347,7 +1422,8 @@ export class AgentRunOrchestrator {
         signal,
         phase,
         allowTools,
-        artifactRecoveryMode
+        artifactRecoveryMode,
+        answerJsonRecoveryMode
       );
     } catch (error) {
       if (!(error instanceof ProviderError) || !error.retryable) throw error;
@@ -1359,7 +1435,8 @@ export class AgentRunOrchestrator {
         signal,
         `${phase}_retry`,
         allowTools,
-        artifactRecoveryMode
+        artifactRecoveryMode,
+        answerJsonRecoveryMode
       );
     }
   }
@@ -1378,7 +1455,8 @@ export class AgentRunOrchestrator {
     signal: AbortSignal,
     phase: string,
     allowTools: boolean,
-    artifactRecoveryMode?: ArtifactArgumentRecoveryMode
+    artifactRecoveryMode?: ArtifactArgumentRecoveryMode,
+    answerJsonRecoveryMode?: AnswerJsonRecoveryMode
   ): Promise<CollectedModelResponse> {
     let outputText = "";
     const calls: CollectedModelResponse["calls"] = [];
@@ -1418,24 +1496,41 @@ export class AgentRunOrchestrator {
         schema: answerV3JsonSchemaForRisk(input.riskLevel),
         strict: true
       },
-      maxOutputTokens: forcesArtifact
-        ? MAX_ARTIFACT_PROVIDER_OUTPUT_TOKENS
-        : readPositiveInteger(
-            budgetProfile.outputTokenEnvironmentName,
-            budgetProfile.outputTokenFallback
-          ),
+      maxOutputTokens:
+        answerJsonRecoveryMode === "fresh_json_invalid"
+          ? MAX_FRESH_ANSWER_JSON_OUTPUT_TOKENS
+          : forcesArtifact
+            ? MAX_ARTIFACT_PROVIDER_OUTPUT_TOKENS
+            : readPositiveInteger(
+                budgetProfile.outputTokenEnvironmentName,
+                budgetProfile.outputTokenFallback
+              ),
       ...(artifactRecoveryMode === "fresh_json_invalid"
         ? { safeInvocationPhase: "artifact_fresh_json_repair" as const }
         : artifactRecoveryMode === "continuation_invalid_arguments"
           ? { safeInvocationPhase: "artifact_continuation_repair" as const }
-          : {}),
+          : answerJsonRecoveryMode === "fresh_json_invalid"
+            ? { safeInvocationPhase: "answer_fresh_json_repair" as const }
+            : {}),
       user: input.userPartition,
       signal
     };
     // Instructions are kept out of untrusted input and applied on every call.
+    const allowedLinkEvidenceIds =
+      answerJsonRecoveryMode === "fresh_json_invalid"
+        ? [
+            ...new Set(
+              [...this.verifiedLinks.values()].flatMap(
+                (link) => link.evidenceIds ?? []
+              )
+            )
+          ]
+        : [];
     request.instructions = buildAgentV3InstructionsForRisk(
       input.riskLevel,
-      artifactRecoveryMode
+      artifactRecoveryMode,
+      answerJsonRecoveryMode,
+      allowedLinkEvidenceIds
     );
     const inputBudget = budgetProfile.inputTokenBudget;
     const estimatedInputTokens = estimateTokens(
@@ -1509,7 +1604,12 @@ export class AgentRunOrchestrator {
         evidenceSourceIds: this.evidence.list().map((entry) => entry.id),
         webSearched: phase === "web_discovery",
         agentRunId: input.run.runId,
-        protocol: request.safeInvocationPhase ? "chat" : "responses",
+        protocol:
+          request.safeInvocationPhase === "artifact_fresh_json_repair" ||
+          request.safeInvocationPhase === "artifact_continuation_repair" ||
+          request.safeInvocationPhase === "answer_fresh_json_repair"
+            ? "chat"
+            : "responses",
         phase,
         attempt: this.modelRequests,
         retryOfId: phase.endsWith("_retry")
@@ -1580,7 +1680,9 @@ export class AgentRunOrchestrator {
 
 export function buildAgentV3InstructionsForRisk(
   riskLevel: RiskLevel,
-  artifactRecoveryMode?: ArtifactArgumentRecoveryMode
+  artifactRecoveryMode?: ArtifactArgumentRecoveryMode,
+  answerJsonRecoveryMode?: AnswerJsonRecoveryMode,
+  allowedLinkEvidenceIds: readonly string[] = []
 ): string {
   return [
     AGENT_V3_INSTRUCTIONS,
@@ -1592,7 +1694,40 @@ export function buildAgentV3InstructionsForRisk(
       ? [FRESH_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION]
       : artifactRecoveryMode === "continuation_invalid_arguments"
         ? [CONTINUATION_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION]
-        : [])
+        : []),
+    ...(answerJsonRecoveryMode === "fresh_json_invalid"
+      ? [freshAnswerJsonRepairInstruction(riskLevel, allowedLinkEvidenceIds)]
+      : [])
+  ].join("\n");
+}
+
+function freshAnswerJsonRepairInstruction(
+  riskLevel: RiskLevel,
+  allowedLinkEvidenceIds: readonly string[]
+): string {
+  const exampleEvidenceId = allowedLinkEvidenceIds[0] ?? "E1";
+  const example = {
+    schemaVersion: "openvac.answer.v3",
+    answerKind: "expert",
+    riskLevel,
+    blocks: [
+      {
+        type: "paragraph",
+        text: "基于已验证证据给出简洁结论。",
+        evidenceIds: [exampleEvidenceId]
+      }
+    ],
+    missingInputs: [],
+    usedEvidenceIds: [exampleEvidenceId],
+    usedLinkIds: []
+  };
+  return [
+    "上一次最终答案不是合法 JSON。仅根据本次原始输入和已验证证据，重新生成一个简洁、完整的 openvac.answer.v3 JSON 对象；不得引用、复述或猜测上一次输出，不得调用任何工具。",
+    "顶层必须且只能包含 schemaVersion、answerKind、riskLevel、blocks、missingInputs、usedEvidenceIds、usedLinkIds。schemaVersion 必须为 openvac.answer.v3，riskLevel 必须使用本轮固定值。",
+    "本 fresh 路径只使用 paragraph block；每个 block 必须且只能包含 type、text、evidenceIds。evidenceIds 与 usedEvidenceIds 必须引用当前上下文中真实存在的 E 编号，并保持完全一致。",
+    `本轮允许用于 canonical link 投影的 evidenceId 仅为：${JSON.stringify(allowedLinkEvidenceIds)}。必须从当前上下文和该集合的交集中选择至少一个；不得猜测其他编号。`,
+    "不得生成 link_reference；usedLinkIds 必须为空数组。服务端会依据段落实际引用的 evidence binding 投影唯一 canonical link。",
+    `JSON 格式示例（使用当前上下文中与请求链接绑定的真实 evidenceId）：${JSON.stringify(example)}`
   ].join("\n");
 }
 
@@ -1650,6 +1785,23 @@ function withoutUntrustedVerifiedLinkSelection(
     ),
     usedLinkIds: []
   };
+}
+
+function buildFreshAnswerJsonInput(
+  input: readonly ResponsesInputItem[]
+): ResponsesInputItem[] {
+  return input.flatMap((item) => {
+    if (item.type !== "message") return [];
+    const role = item.role;
+    const content = item.content;
+    if (
+      (role !== "user" && role !== "assistant") ||
+      typeof content !== "string"
+    ) {
+      return [];
+    }
+    return [{ type: "message", role, content }];
+  });
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
