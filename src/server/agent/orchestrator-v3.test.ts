@@ -276,7 +276,7 @@ describe("Agent V3 verified link selection repair", () => {
   });
 
   it.each(["missing", "duplicate"] as const)(
-    "repairs a %s requested verified-link selection exactly once",
+    "normalizes a %s requested verified-link selection without another model request",
     async (failure) => {
       const subject = verifiedLinkRepairSubject();
       const candidate =
@@ -287,20 +287,259 @@ describe("Agent V3 verified link selection repair", () => {
         JSON.stringify(subject.answer(["W2"]))
       );
 
+      const result = await subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify(candidate)
+      });
+
+      expect(result).toMatchObject({ usedLinkIds: ["W2"] });
+      expect(answerWithoutLinks(result)).toEqual(answerWithoutLinks(candidate));
+
+      expect(subject.invoke.repair).not.toHaveBeenCalled();
+    }
+  );
+
+  it("uses insertion order for a missing link and preserves an existing unique canonical ID", async () => {
+    const subject = verifiedLinkRepairSubject();
+    subject.invoke.verifiedLinks.set("W1", {
+      type: "verified_link",
+      linkId: "W1",
+      url: "https://www.leybold.com/manual-1",
+      label: "Leybold 厂家手册",
+      hostname: "www.leybold.com",
+      status: "verified",
+      evidenceIds: ["E1"]
+    });
+
+    await expect(
+      subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify(subject.answer([]))
+      })
+    ).resolves.toMatchObject({ usedLinkIds: ["W2"] });
+    await expect(
+      subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify(subject.answer(["W1", "W1"]))
+      })
+    ).resolves.toMatchObject({ usedLinkIds: ["W1"] });
+  });
+
+  it.each(["label", "declared_only"] as const)(
+    "canonicalizes a single evidence-bound %s link selection",
+    async (failure) => {
+      const subject = verifiedLinkRepairSubject();
+      const candidate =
+        failure === "label" ? subject.answer(["W2"]) : subject.answer([]);
+      if (failure === "label") {
+        const link = candidate.blocks.find(
+          (block) => block.type === "link_reference"
+        );
+        if (!link || link.type !== "link_reference") {
+          throw new Error("Expected link reference.");
+        }
+        link.label = "provider supplied label";
+      } else {
+        candidate.usedLinkIds = ["W2"];
+      }
+      subject.invoke.repair = vi.fn();
+
+      const result = await subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify(candidate)
+      });
+
+      expect(result?.blocks.at(-1)).toEqual({
+        type: "link_reference",
+        linkId: "W2",
+        label: "Leybold 厂家手册"
+      });
+      expect(result?.usedLinkIds).toEqual(["W2"]);
+      expect(answerWithoutLinks(result)).toEqual(answerWithoutLinks(candidate));
+      expect(subject.invoke.repair).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["block_only", "duplicate_blocks", "duplicate_declared"] as const)(
+    "normalizes an asymmetric %s selection without changing non-link JSON",
+    async (failure) => {
+      const subject = verifiedLinkRepairSubject();
+      const candidate =
+        failure === "duplicate_blocks"
+          ? subject.answer(["W2", "W2"])
+          : subject.answer(["W2"]);
+      candidate.usedLinkIds =
+        failure === "block_only"
+          ? []
+          : failure === "duplicate_declared"
+            ? ["W2", "W2"]
+            : ["W2"];
+      subject.invoke.repair = vi.fn();
+
+      const result = await subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify(candidate)
+      });
+
+      expect(result?.blocks.at(-1)).toEqual({
+        type: "link_reference",
+        linkId: "W2",
+        label: "Leybold 厂家手册"
+      });
+      expect(result?.usedLinkIds).toEqual(["W2"]);
+      expect(answerWithoutLinks(result)).toEqual(answerWithoutLinks(candidate));
+      expect(subject.invoke.repair).not.toHaveBeenCalled();
+    }
+  );
+
+  it("does not truncate a maximum-size answer to insert a link", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const candidate = subject.answer([]);
+    candidate.blocks.push(
+      ...Array.from({ length: 127 }, (_, index) => ({
+        type: "heading" as const,
+        level: 2 as const,
+        text: `Heading ${index}`
+      }))
+    );
+    subject.invoke.repair = vi.fn(async () =>
+      JSON.stringify(subject.answer([]))
+    );
+
+    await expect(
+      subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify(candidate)
+      })
+    ).rejects.toMatchObject({ code: "ANSWER_VALIDATION_FAILED" });
+    expect(subject.invoke.repair).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { name: "label_240", linkId: "W2", label: "L".repeat(240), valid: true },
+    { name: "label_241", linkId: "W2", label: "L".repeat(241), valid: false },
+    {
+      name: "link_id_160",
+      linkId: "W".repeat(160),
+      label: "manual",
+      valid: true
+    },
+    {
+      name: "link_id_161",
+      linkId: "W".repeat(161),
+      label: "manual",
+      valid: false
+    },
+    {
+      name: "unsafe_label",
+      linkId: "W2",
+      label: "https://example.com/manual",
+      valid: false
+    }
+  ])("enforces canonical projection boundary $name", async (boundary) => {
+    const subject = verifiedLinkRepairSubject();
+    subject.invoke.verifiedLinks.clear();
+    subject.invoke.verifiedLinks.set(boundary.linkId, {
+      type: "verified_link",
+      linkId: boundary.linkId,
+      url: "https://www.leybold.com/manual",
+      label: boundary.label,
+      hostname: "www.leybold.com",
+      status: "verified",
+      evidenceIds: ["E1"]
+    });
+    subject.invoke.repair = vi.fn(async () =>
+      JSON.stringify(subject.answer([]))
+    );
+    const action = subject.invoke.validateOrRepair({
+      ...subject.input,
+      currentInput: [],
+      outputText: JSON.stringify(subject.answer([]))
+    });
+
+    if (boundary.valid) {
+      await expect(action).resolves.toMatchObject({
+        usedLinkIds: [boundary.linkId]
+      });
+      expect(subject.invoke.repair).not.toHaveBeenCalled();
+    } else {
+      await expect(action).rejects.toMatchObject({
+        code: "ANSWER_VALIDATION_FAILED"
+      });
+      expect(subject.invoke.repair).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it.each(["unknown", "multiple", "non_link_invalid"] as const)(
+    "does not project an unsafe %s link candidate",
+    async (failure) => {
+      const subject = verifiedLinkRepairSubject();
+      subject.invoke.repair = vi.fn(async () =>
+        JSON.stringify(subject.answer([]))
+      );
+      const candidate = subject.answer([]);
+      if (failure === "unknown") {
+        candidate.blocks.push({
+          type: "link_reference",
+          linkId: "W9",
+          label: "unknown"
+        });
+        candidate.usedLinkIds = ["W9"];
+      } else if (failure === "multiple") {
+        subject.invoke.verifiedLinks.set("W3", {
+          type: "verified_link",
+          linkId: "W3",
+          url: "https://www.leybold.com/manual-3",
+          label: "Leybold 厂家手册",
+          hostname: "www.leybold.com",
+          status: "verified",
+          evidenceIds: ["E1"]
+        });
+        candidate.blocks.push(
+          {
+            type: "link_reference",
+            linkId: "W2",
+            label: "Leybold 厂家手册"
+          },
+          {
+            type: "link_reference",
+            linkId: "W3",
+            label: "Leybold 厂家手册"
+          }
+        );
+        candidate.usedLinkIds = ["W2"];
+      } else {
+        candidate.usedEvidenceIds = [];
+      }
+
       await expect(
         subject.invoke.validateOrRepair({
           ...subject.input,
           currentInput: [],
           outputText: JSON.stringify(candidate)
         })
-      ).resolves.toMatchObject({ usedLinkIds: ["W2"] });
-
+      ).rejects.toMatchObject({ code: "ANSWER_VALIDATION_FAILED" });
       expect(subject.invoke.repair).toHaveBeenCalledTimes(1);
     }
   );
 
-  it("fails closed before persistence when the one repair still omits the requested link", async () => {
+  it("does not select a verified link unless the candidate cites bound evidence", async () => {
     const subject = verifiedLinkRepairSubject();
+    subject.invoke.verifiedLinks.set("W2", {
+      type: "verified_link",
+      linkId: "W2",
+      url: "https://www.leybold.com/manual",
+      label: "Leybold 厂家手册",
+      hostname: "www.leybold.com",
+      status: "verified",
+      evidenceIds: ["E9"]
+    });
     subject.invoke.repair = vi.fn(async () =>
       JSON.stringify(subject.answer([]))
     );
@@ -311,10 +550,7 @@ describe("Agent V3 verified link selection repair", () => {
         currentInput: [],
         outputText: JSON.stringify(subject.answer([]))
       })
-    ).rejects.toMatchObject({
-      code: "ANSWER_VALIDATION_FAILED",
-      retryable: false
-    });
+    ).rejects.toMatchObject({ code: "ANSWER_VALIDATION_FAILED" });
 
     expect(subject.invoke.repair).toHaveBeenCalledTimes(1);
     expect(subject.store.complete).not.toHaveBeenCalled();
@@ -322,10 +558,13 @@ describe("Agent V3 verified link selection repair", () => {
 
   it("rejects a link repair that changes candidate facts or citations", async () => {
     const subject = verifiedLinkRepairSubject();
+    rebindVerifiedLinkToSecondEvidence(subject);
     const changed = subject.answer(["W2"]);
     const paragraph = changed.blocks[0];
     if (paragraph?.type !== "paragraph") throw new Error("Expected paragraph.");
     paragraph.text = "被 repair 改写的事实。";
+    paragraph.evidenceIds = ["E2"];
+    changed.usedEvidenceIds = ["E2"];
     subject.invoke.repair = vi.fn(async () => JSON.stringify(changed));
 
     await expect(
@@ -339,7 +578,12 @@ describe("Agent V3 verified link selection repair", () => {
 
   it("rejects an allowlisted link paired with a non-canonical label", async () => {
     const subject = verifiedLinkRepairSubject();
+    rebindVerifiedLinkToSecondEvidence(subject);
     const changed = subject.answer(["W2"]);
+    const paragraph = changed.blocks[0];
+    if (paragraph?.type !== "paragraph") throw new Error("Expected paragraph.");
+    paragraph.evidenceIds = ["E2"];
+    changed.usedEvidenceIds = ["E2"];
     const link = changed.blocks.find(
       (block) => block.type === "link_reference"
     );
@@ -358,12 +602,48 @@ describe("Agent V3 verified link selection repair", () => {
     ).rejects.toMatchObject({ code: "ANSWER_VALIDATION_FAILED" });
   });
 
-  it("runs initial and one invalid repair without completed persistence", async () => {
+  it("normalizes an initial missing link with one model request and one persistence", async () => {
     const subject = verifiedLinkRepairSubject();
+    subject.invoke.requestWithOneRetry = vi.fn(async () => {
+      subject.invoke.modelRequests += 1;
+      return answerModelResponse(subject.answer([]));
+    });
+
+    await expect(
+      subject.orchestrator.run(subject.input)
+    ).resolves.toMatchObject({
+      status: "completed",
+      answer: { usedLinkIds: ["W2"] }
+    });
+
+    expect(subject.invoke.requestWithOneRetry).toHaveBeenCalledTimes(1);
+    expect(subject.store.complete).toHaveBeenCalledTimes(1);
+    expect(subject.store.recordToolCall).not.toHaveBeenCalled();
+    expect(subject.orchestrator.counters).toEqual({
+      modelRequests: 1,
+      retries: 0,
+      repairs: 0,
+      toolRounds: 0,
+      toolCalls: 0
+    });
+  });
+
+  it("fails a full run after one invalid fallback repair without persistence or audit", async () => {
+    const subject = verifiedLinkRepairSubject();
+    subject.invoke.verifiedLinks.set("W2", {
+      type: "verified_link",
+      linkId: "W2",
+      url: "https://www.leybold.com/manual",
+      label: "Leybold 厂家手册",
+      hostname: "www.leybold.com",
+      status: "verified",
+      evidenceIds: ["E9"]
+    });
     const responses = [subject.answer([]), subject.answer([])];
-    subject.invoke.requestWithOneRetry = vi.fn(async () =>
-      answerModelResponse(responses.shift() ?? subject.answer([]))
-    );
+    subject.invoke.requestWithOneRetry = vi.fn(async () => {
+      subject.invoke.modelRequests += 1;
+      return answerModelResponse(responses.shift() ?? subject.answer([]));
+    });
 
     await expect(subject.orchestrator.run(subject.input)).rejects.toMatchObject(
       {
@@ -374,10 +654,55 @@ describe("Agent V3 verified link selection repair", () => {
 
     expect(subject.invoke.requestWithOneRetry).toHaveBeenCalledTimes(2);
     expect(subject.store.complete).not.toHaveBeenCalled();
+    expect(subject.store.recordToolCall).not.toHaveBeenCalled();
+    expect(subject.orchestrator.counters).toEqual({
+      modelRequests: 2,
+      retries: 0,
+      repairs: 1,
+      toolRounds: 0,
+      toolCalls: 0
+    });
+  });
+
+  it("completes a full run after one bounded fallback repair canonicalizes an unknown link", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const unknown = subject.answer(["W9"]);
+    const responses = [unknown, subject.answer(["W2"])];
+    subject.invoke.requestWithOneRetry = vi.fn(async () => {
+      subject.invoke.modelRequests += 1;
+      return answerModelResponse(responses.shift() ?? subject.answer([]));
+    });
+
+    await expect(
+      subject.orchestrator.run(subject.input)
+    ).resolves.toMatchObject({
+      status: "completed",
+      answer: { usedLinkIds: ["W2"] }
+    });
+
+    expect(subject.invoke.requestWithOneRetry).toHaveBeenCalledTimes(2);
+    expect(subject.store.complete).toHaveBeenCalledTimes(1);
+    expect(subject.store.recordToolCall).not.toHaveBeenCalled();
+    expect(subject.orchestrator.counters).toEqual({
+      modelRequests: 2,
+      retries: 0,
+      repairs: 1,
+      toolRounds: 0,
+      toolCalls: 0
+    });
   });
 
   it("revalidates a deterministic calculation fallback before persistence", async () => {
     const subject = verifiedLinkRepairSubject();
+    subject.invoke.verifiedLinks.set("W2", {
+      type: "verified_link",
+      linkId: "W2",
+      url: "https://www.leybold.com/manual",
+      label: "Leybold 厂家手册",
+      hostname: "www.leybold.com",
+      status: "verified",
+      evidenceIds: ["E9"]
+    });
     subject.invoke.calculations.set("calc_1", {
       id: "calc_1",
       tool: "calculate_throughput",
@@ -1221,6 +1546,7 @@ function artifactRequestSubject() {
 
 function verifiedLinkRepairSubject() {
   const store = {
+    recordToolCall: vi.fn(async () => undefined),
     complete: vi.fn(async () => ({ content: "saved", meta: {} }))
   };
   const provider = {
@@ -1256,6 +1582,7 @@ function verifiedLinkRepairSubject() {
     signal: new AbortController().signal
   };
   const invoke = orchestrator as unknown as {
+    modelRequests: number;
     contextBuilder: {
       build(): Promise<{
         input: ResponsesInputItem[];
@@ -1343,6 +1670,53 @@ function verifiedLinkRepairSubject() {
     usedLinkIds: linkIds
   });
   return { orchestrator, invoke, input, answer, store };
+}
+
+function rebindVerifiedLinkToSecondEvidence(
+  subject: ReturnType<typeof verifiedLinkRepairSubject>
+): void {
+  const evidenceId = subject.invoke.evidence.add(
+    {
+      citation: {
+        sourceId: "leybold-runtime-source-2",
+        title: "Leybold foreline pressure guidance 2",
+        publisher: "Leybold",
+        url: "https://www.leybold.com/manual-2",
+        fetchedAt: new Date("2026-08-11T00:00:00.000Z"),
+        licenseClass: "open"
+      },
+      excerpt: "第二条已验证依据。"
+    },
+    {
+      trustTier: "tier_a",
+      reviewStatus: "runtime_verified",
+      runtimeValidated: true
+    }
+  );
+  if (evidenceId !== "E2") throw new Error("Expected E2 test evidence.");
+  subject.invoke.verifiedLinks.set("W2", {
+    type: "verified_link",
+    linkId: "W2",
+    url: "https://www.leybold.com/manual-2",
+    label: "Leybold 厂家手册",
+    hostname: "www.leybold.com",
+    status: "verified",
+    evidenceIds: ["E2"]
+  });
+}
+
+function answerWithoutLinks(
+  answer: AnswerV3 | undefined
+): AnswerV3 | undefined {
+  return answer
+    ? {
+        ...answer,
+        blocks: answer.blocks.filter(
+          (block) => block.type !== "link_reference"
+        ),
+        usedLinkIds: []
+      }
+    : undefined;
 }
 
 function answerModelResponse(answer: AnswerV3) {
