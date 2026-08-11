@@ -1116,7 +1116,7 @@ describe("Agent V3 artifact provider requests", () => {
     });
   });
 
-  it("carries a semantic-invalid parameter table through one paired strict repair", async () => {
+  it("carries an unsupported parameter through one paired strict repair", async () => {
     const subject = artifactRunSubject([]);
     const invalidArguments = JSON.stringify({
       ...validParameterProviderArguments(),
@@ -1125,10 +1125,11 @@ describe("Agent V3 artifact provider requests", () => {
           title: "泵组参数",
           rows: [
             {
-              parameter: "有效抽速",
+              parameterKind: "descriptor",
+              parameter: "custom metric",
               valueOrStatus: "待用户确认",
-              unit: "L/s",
-              assumptionOrCondition: "-"
+              unit: "n/a",
+              assumptionOrCondition: "待用户确认"
             }
           ]
         }
@@ -1243,7 +1244,23 @@ describe("Agent V3 artifact provider requests", () => {
             parameters: {
               properties: {
                 contractVersion: {
-                  enum: ["openvac.parameter-table-provider.v1"]
+                  enum: ["openvac.parameter-table-provider.v2"]
+                },
+                tables: {
+                  items: {
+                    properties: {
+                      rows: {
+                        items: {
+                          properties: {
+                            parameterKind: {
+                              enum: ["physical", "descriptor", "count", "ratio"]
+                            }
+                          },
+                          required: expect.arrayContaining(["parameterKind"])
+                        }
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -1254,12 +1271,23 @@ describe("Agent V3 artifact provider requests", () => {
         expect.objectContaining({ role: "assistant" }),
         expect.objectContaining({
           role: "tool",
-          content: expect.stringContaining(
-            "tables.0.rows.0.assumptionOrCondition"
-          )
+          content: expect.stringContaining("tables.0.rows.0.parameter")
         })
       ])
     });
+    const strictMessages = requestBodies[1]?.messages;
+    if (!Array.isArray(strictMessages))
+      throw new Error("Expected strict repair messages.");
+    const toolMessage = strictMessages.find(
+      (message) =>
+        Boolean(message) &&
+        typeof message === "object" &&
+        (message as Record<string, unknown>).role === "tool"
+    ) as Record<string, unknown> | undefined;
+    expect(toolMessage?.content).toEqual(
+      expect.stringContaining("tables.0.rows.0.parameterKind")
+    );
+    expect(toolMessage?.content).not.toContain("custom metric");
     expect(subject.storage.create).toHaveBeenCalledTimes(1);
     expect(subject.storage.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1801,7 +1829,7 @@ function validParameterArtifactArguments() {
 
 function validParameterProviderArguments() {
   return {
-    contractVersion: "openvac.parameter-table-provider.v1",
+    contractVersion: "openvac.parameter-table-provider.v2",
     title: "泵组选型参数表",
     formats: ["csv"],
     summary: "参数、单位和假设",
@@ -1811,6 +1839,7 @@ function validParameterProviderArguments() {
         title: "泵组参数",
         rows: [
           {
+            parameterKind: "physical",
             parameter: "有效抽速",
             valueOrStatus: "待用户确认",
             unit: "L/s",
@@ -1831,6 +1860,7 @@ function invalidParameterArtifactArguments() {
         title: "泵组参数",
         rows: [
           {
+            parameterKind: "physical",
             parameter: "有效抽速",
             valueOrStatus: "10",
             unit: "L/s",
@@ -1852,6 +1882,7 @@ function mixedParameterProviderArguments() {
         rows: [
           valid.tables[0]!.rows[0]!,
           {
+            parameterKind: "descriptor",
             parameter: "泵型号",
             valueOrStatus: "待用户确认",
             unit: "不适用",

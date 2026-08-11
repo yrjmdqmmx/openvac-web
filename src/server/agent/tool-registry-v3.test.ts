@@ -13,6 +13,7 @@ import type { ArtifactStorage } from "./artifact-tools";
 import type { AttachmentStorage } from "./attachment-tools";
 import { EvidenceRegistry } from "./evidence-registry";
 import {
+  ARTIFACT_PROVIDER_INSTRUCTION,
   ARTIFACT_PROVIDER_LIMITS,
   createArtifactProviderSchema,
   PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION,
@@ -37,6 +38,10 @@ describe("ToolRegistry V3 exposure", () => {
     );
 
     expect(scoped.artifactProviderContract).toBe("parameter_table");
+    expect(definition?.description).toContain("pumping speed");
+    expect(definition?.description).toContain("首尾空白");
+    expect(ARTIFACT_PROVIDER_INSTRUCTION).toContain("pumping speed");
+    expect(ARTIFACT_PROVIDER_INSTRUCTION).toContain("首尾空白");
     expect(definition?.parameters).toMatchObject({
       type: "object",
       required: expect.arrayContaining(["contractVersion", "tables"]),
@@ -49,7 +54,13 @@ describe("ToolRegistry V3 exposure", () => {
             properties: {
               rows: {
                 items: {
+                  properties: {
+                    parameterKind: {
+                      enum: ["physical", "descriptor", "count", "ratio"]
+                    }
+                  },
                   required: [
+                    "parameterKind",
                     "parameter",
                     "valueOrStatus",
                     "unit",
@@ -503,7 +514,8 @@ describe("ToolRegistry V3 exposure", () => {
         {
           title: "表一",
           rows: Array.from({ length: 32 }, (_, index) => ({
-            parameter: `参数 ${index + 1}`,
+            parameterKind: "physical",
+            parameter: "目标入口压力",
             valueOrStatus: String(index + 1),
             unit: "Pa",
             assumptionOrCondition: "待用户确认"
@@ -512,7 +524,8 @@ describe("ToolRegistry V3 exposure", () => {
         {
           title: "表二",
           rows: Array.from({ length: 32 }, (_, index) => ({
-            parameter: `工况 ${index + 1}`,
+            parameterKind: "physical",
+            parameter: "目标有效抽速",
             valueOrStatus: String(index + 1),
             unit: "L/s",
             assumptionOrCondition: "额定工况"
@@ -532,7 +545,8 @@ describe("ToolRegistry V3 exposure", () => {
             rows: [
               ...base.tables[1].rows,
               {
-                parameter: "额外参数",
+                parameterKind: "physical",
+                parameter: "额外入口压力",
                 valueOrStatus: "1",
                 unit: "Pa",
                 assumptionOrCondition: "待用户确认"
@@ -543,18 +557,17 @@ describe("ToolRegistry V3 exposure", () => {
       }).success
     ).toBe(false);
     const scoped = registry("生成泵组选型参数表，并导出 CSV。");
-    const atVisibleLimit =
-      parameterProviderPayloadWithCanonicalVisibleCharacters(
-        ARTIFACT_PROVIDER_LIMITS.visibleCharacters
-      );
-    expect(visibleStringCharacters(atVisibleLimit)).toBeLessThanOrEqual(
+    const atVisibleLimit = parameterProviderPayloadWithVisibleCharacters(
+      ARTIFACT_PROVIDER_LIMITS.visibleCharacters
+    );
+    expect(visibleStringCharacters(atVisibleLimit)).toBe(
       ARTIFACT_PROVIDER_LIMITS.visibleCharacters
     );
     expect(
       visibleStringCharacters(
         parameterTableProviderPayloadToArtifactArguments(atVisibleLimit)
       )
-    ).toBe(ARTIFACT_PROVIDER_LIMITS.visibleCharacters);
+    ).toBeLessThanOrEqual(ARTIFACT_PROVIDER_LIMITS.visibleCharacters);
     expect(
       scoped.preflight({
         callId: "call-parameter-visible-limit",
@@ -566,12 +579,117 @@ describe("ToolRegistry V3 exposure", () => {
       callId: "call-parameter-visible-over-limit",
       name: "create_artifact",
       arguments: JSON.stringify(
-        parameterProviderPayloadWithCanonicalVisibleCharacters(
+        parameterProviderPayloadWithVisibleCharacters(
           ARTIFACT_PROVIDER_LIMITS.visibleCharacters + 1
         )
       )
     });
     expect(overVisibleLimit.ok).toBe(false);
+    if (overVisibleLimit.ok)
+      throw new Error("Expected provider visible-limit rejection.");
+    expect(overVisibleLimit.result.missingInputs).toEqual([
+      "providerEnvelope.visibleCharacters"
+    ]);
+    const mappedAtVisibleLimit =
+      parameterProviderPayloadWithCanonicalVisibleCharacters(
+        ARTIFACT_PROVIDER_LIMITS.visibleCharacters
+      );
+    expect(visibleStringCharacters(mappedAtVisibleLimit)).toBeLessThanOrEqual(
+      ARTIFACT_PROVIDER_LIMITS.visibleCharacters
+    );
+    expect(
+      scoped.preflight({
+        callId: "call-parameter-canonical-visible-limit",
+        name: "create_artifact",
+        arguments: JSON.stringify(mappedAtVisibleLimit)
+      }).ok
+    ).toBe(true);
+    const mappedAtVisibleLimitArguments =
+      parameterTableProviderPayloadToArtifactArguments(mappedAtVisibleLimit);
+    expect(visibleStringCharacters(mappedAtVisibleLimitArguments)).toBe(
+      ARTIFACT_PROVIDER_LIMITS.visibleCharacters
+    );
+    expect(
+      createArtifactProviderSchema.safeParse(mappedAtVisibleLimitArguments)
+        .success
+    ).toBe(true);
+    const mappedOverVisibleLimit =
+      parameterProviderPayloadWithCanonicalVisibleCharacters(
+        ARTIFACT_PROVIDER_LIMITS.visibleCharacters + 1
+      );
+    expect(visibleStringCharacters(mappedOverVisibleLimit)).toBeLessThanOrEqual(
+      ARTIFACT_PROVIDER_LIMITS.visibleCharacters
+    );
+    const mappedOverVisibleLimitArguments =
+      parameterTableProviderPayloadToArtifactArguments(mappedOverVisibleLimit);
+    expect(visibleStringCharacters(mappedOverVisibleLimitArguments)).toBe(
+      ARTIFACT_PROVIDER_LIMITS.visibleCharacters + 1
+    );
+    expect(
+      createArtifactProviderSchema.safeParse(mappedOverVisibleLimitArguments)
+        .success
+    ).toBe(false);
+    const canonicalOverVisibleLimit = scoped.preflight({
+      callId: "call-parameter-canonical-visible-over-limit",
+      name: "create_artifact",
+      arguments: JSON.stringify(mappedOverVisibleLimit)
+    });
+    expect(canonicalOverVisibleLimit.ok).toBe(false);
+    if (canonicalOverVisibleLimit.ok)
+      throw new Error("Expected canonical visible-limit rejection.");
+    expect(canonicalOverVisibleLimit.result.missingInputs).toEqual([
+      "providerEnvelope.visibleCharacters"
+    ]);
+    expect(
+      parameterTableProviderSchema.safeParse({
+        ...validParameterTableProviderPayload(),
+        title: ` ${validParameterTableProviderPayload().title}`
+      }).success
+    ).toBe(false);
+    const unicodeAtCellLimit = {
+      ...validParameterTableProviderPayload(),
+      tables: [
+        {
+          ...validParameterTableProviderPayload().tables[0],
+          rows: [
+            {
+              ...validParameterTableProviderPayload().tables[0].rows[0],
+              valueOrStatus: "😀".repeat(
+                ARTIFACT_PROVIDER_LIMITS.cellCharacters
+              )
+            }
+          ]
+        }
+      ]
+    };
+    expect(
+      parameterTableProviderSchema.safeParse(unicodeAtCellLimit).success
+    ).toBe(true);
+    expect(
+      createArtifactProviderSchema.safeParse(
+        parameterTableProviderPayloadToArtifactArguments(
+          parameterTableProviderSchema.parse(unicodeAtCellLimit)
+        )
+      ).success
+    ).toBe(true);
+    expect(
+      parameterTableProviderSchema.safeParse({
+        ...unicodeAtCellLimit,
+        tables: [
+          {
+            ...unicodeAtCellLimit.tables[0],
+            rows: [
+              {
+                ...unicodeAtCellLimit.tables[0].rows[0],
+                valueOrStatus: "😀".repeat(
+                  ARTIFACT_PROVIDER_LIMITS.cellCharacters + 1
+                )
+              }
+            ]
+          }
+        ]
+      }).success
+    ).toBe(false);
     expect(
       parameterTableProviderSchema.safeParse({
         ...validParameterTableProviderPayload(),
@@ -615,6 +733,7 @@ describe("ToolRegistry V3 exposure", () => {
           title: "泵组参数",
           rows: [
             {
+              parameterKind: "physical",
               parameter: "有效抽速",
               valueOrStatus: "待用户确认",
               unit: "L/s",
@@ -681,6 +800,7 @@ describe("ToolRegistry V3 exposure", () => {
             title: "泵组参数",
             rows: [
               {
+                parameterKind: "physical",
                 parameter: "有效抽速",
                 valueOrStatus: "待用户确认",
                 unit: "L/s"
@@ -712,7 +832,8 @@ describe("ToolRegistry V3 exposure", () => {
             rows: [
               validParameterTableProviderPayload().tables[0].rows[0],
               {
-                parameter: "泵型号",
+                parameterKind: "descriptor",
+                parameter: "备用泵密封配置",
                 valueOrStatus: "待用户确认",
                 unit: "不适用",
                 assumptionOrCondition: "待用户确认"
@@ -732,24 +853,186 @@ describe("ToolRegistry V3 exposure", () => {
           columns: ["参数", "数值或状态", "单位", "假设或工况"],
           rows: [
             ["有效抽速", "待用户确认", "L/s", "待用户确认"],
-            ["泵型号", "待用户确认", "不适用", "待用户确认"]
+            ["备用泵密封配置", "待用户确认", "不适用", "待用户确认"]
           ]
         }
       ]
     });
     for (const testCase of [
-      { parameter: "泵型号", unit: "不适用", expected: true },
-      { parameter: "数量", unit: "台", expected: true },
-      { parameter: "效率", unit: "%", expected: true },
-      { parameter: "额定效率", unit: "%", expected: true },
-      { parameter: "容积效率", unit: "%", expected: true },
-      { parameter: "机械效率", unit: "%", expected: true },
-      { parameter: "系统效率", unit: "%", expected: true },
-      { parameter: "级间压缩比", unit: "无量纲", expected: true },
-      { parameter: "泵型号", unit: "%", expected: false },
-      { parameter: "数量", unit: "%", expected: false },
-      { parameter: "效率", unit: "不适用", expected: false },
-      { parameter: "额定压力", unit: "%", expected: false }
+      {
+        parameterKind: "descriptor",
+        parameter: "泵型号",
+        unit: "不适用",
+        expected: true
+      },
+      {
+        parameterKind: "count",
+        parameter: "数量",
+        unit: "台",
+        expected: true
+      },
+      {
+        parameterKind: "ratio",
+        parameter: "效率",
+        unit: "%",
+        expected: true
+      },
+      {
+        parameterKind: "descriptor",
+        parameter: "备用泵密封配置",
+        unit: "不适用",
+        expected: true
+      },
+      {
+        parameterKind: "descriptor",
+        parameter: "适用介质/清洁度要求",
+        unit: "不适用",
+        expected: true
+      },
+      {
+        parameterKind: "ratio",
+        parameter: "级间压缩比",
+        unit: "无量纲",
+        expected: true
+      },
+      {
+        parameterKind: "physical",
+        parameter: "有效抽速",
+        unit: "L/s",
+        expected: true
+      },
+      {
+        parameterKind: "physical",
+        parameter: "target inlet pressure",
+        unit: "Pa",
+        expected: true
+      },
+      {
+        parameterKind: "descriptor",
+        parameter: "backup pump configuration",
+        unit: "n/a",
+        expected: true
+      },
+      {
+        parameterKind: "count",
+        parameter: "pump quantity",
+        unit: "dimensionless",
+        expected: true
+      },
+      {
+        parameterKind: "ratio",
+        parameter: "overall efficiency",
+        unit: "%",
+        expected: true
+      },
+      {
+        parameterKind: "physical",
+        parameter: "有效抽速",
+        unit: "待用户确认",
+        expected: false
+      },
+      {
+        parameterKind: "descriptor",
+        parameter: "泵型号",
+        unit: "-",
+        expected: false
+      },
+      {
+        parameterKind: "descriptor",
+        parameter: "泵型号",
+        unit: "%",
+        expected: false
+      },
+      {
+        parameterKind: "physical",
+        parameter: "额定压力",
+        unit: "%",
+        expected: false
+      },
+      {
+        parameterKind: "descriptor",
+        parameter: "入口压力",
+        unit: "不适用",
+        expected: false
+      },
+      {
+        parameterKind: "ratio",
+        parameter: "额定压力",
+        unit: "%",
+        expected: false
+      },
+      {
+        parameterKind: "count",
+        parameter: "有效抽速",
+        unit: "台",
+        expected: false
+      },
+      {
+        parameterKind: "physical",
+        parameter: "泵型号",
+        unit: "Pa",
+        expected: false
+      },
+      {
+        parameterKind: "descriptor",
+        parameter: "自定义指标",
+        unit: "不适用",
+        expected: false
+      },
+      {
+        parameterKind: "descriptor",
+        parameter: "target inlet pressure",
+        unit: "n/a",
+        expected: false
+      },
+      {
+        parameterKind: "descriptor",
+        parameter: "custom metric",
+        unit: "n/a",
+        expected: false
+      },
+      {
+        parameterKind: "descriptor",
+        parameter: "prototype",
+        unit: "n/a",
+        expected: false
+      },
+      {
+        parameterKind: "descriptor",
+        parameter: "brandname",
+        unit: "n/a",
+        expected: false
+      },
+      {
+        parameterKind: "ratio",
+        parameter: "inefficiency",
+        unit: "%",
+        expected: false
+      },
+      {
+        parameterKind: "physical",
+        parameter: "sometime",
+        unit: "s",
+        expected: false
+      },
+      {
+        parameterKind: "descriptor",
+        parameter: "proto\u200btype",
+        unit: "n/a",
+        expected: false
+      },
+      {
+        parameterKind: "descriptor",
+        parameter: "proto\u0301type",
+        unit: "n/a",
+        expected: false
+      },
+      {
+        parameterKind: "descriptor",
+        parameter: "proto\u0000type",
+        unit: "n/a",
+        expected: false
+      }
     ]) {
       expect(
         parameterTableProviderSchema.safeParse({
@@ -760,6 +1043,7 @@ describe("ToolRegistry V3 exposure", () => {
               rows: [
                 validParameterTableProviderPayload().tables[0].rows[0],
                 {
+                  parameterKind: testCase.parameterKind,
                   parameter: testCase.parameter,
                   valueOrStatus: "待用户确认",
                   unit: testCase.unit,
@@ -771,6 +1055,34 @@ describe("ToolRegistry V3 exposure", () => {
         }).success
       ).toBe(testCase.expected);
     }
+    const unsupported = scoped.preflight({
+      callId: "call-unsupported-parameter-vocabulary",
+      name: "create_artifact",
+      arguments: JSON.stringify({
+        ...validParameterTableProviderPayload(),
+        tables: [
+          {
+            title: "泵组参数",
+            rows: [
+              validParameterTableProviderPayload().tables[0].rows[0],
+              {
+                parameterKind: "descriptor",
+                parameter: "custom metric",
+                valueOrStatus: "待用户确认",
+                unit: "n/a",
+                assumptionOrCondition: "待用户确认"
+              }
+            ]
+          }
+        ]
+      })
+    });
+    expect(unsupported.ok).toBe(false);
+    if (unsupported.ok) throw new Error("Expected vocabulary rejection.");
+    expect(unsupported.result.missingInputs).toEqual([
+      "tables.0.rows.1.parameter",
+      "tables.0.rows.1.parameterKind"
+    ]);
     expect(storage.create).not.toHaveBeenCalled();
   });
 
@@ -799,6 +1111,7 @@ describe("ToolRegistry V3 exposure", () => {
           title: "泵组参数",
           rows: [
             {
+              parameterKind: "physical",
               parameter: "有效抽速",
               valueOrStatus: "10",
               unit: "L/s",
@@ -840,6 +1153,7 @@ describe("ToolRegistry V3 exposure", () => {
             title: "泵组参数",
             rows: [
               {
+                parameterKind: "physical",
                 parameter: "有效抽速",
                 valueOrStatus: "10",
                 unit: "待用户确认",
@@ -865,6 +1179,7 @@ describe("ToolRegistry V3 exposure", () => {
           title: "泵组参数",
           rows: [
             {
+              parameterKind: "descriptor",
               parameter: "泵型号",
               valueOrStatus: "待用户确认",
               unit: "不适用",
@@ -895,7 +1210,7 @@ describe("ToolRegistry V3 exposure", () => {
     ).resolves.toMatchObject({ ok: false });
     expect(storage.create).not.toHaveBeenCalled();
 
-    const misclassifiedPhysicalArguments = JSON.stringify({
+    const compositeDescriptorArguments = JSON.stringify({
       ...validParameterTableProviderPayload(),
       tables: [
         {
@@ -903,7 +1218,8 @@ describe("ToolRegistry V3 exposure", () => {
           rows: [
             validParameterTableProviderPayload().tables[0].rows[0],
             {
-              parameter: "极限压力",
+              parameterKind: "descriptor",
+              parameter: "备用泵密封配置",
               valueOrStatus: "待用户确认",
               unit: "不适用",
               assumptionOrCondition: "待用户确认"
@@ -912,25 +1228,25 @@ describe("ToolRegistry V3 exposure", () => {
         }
       ]
     });
-    const misclassifiedPhysical = scoped.preflight({
-      callId: "call-parameter-misclassified-physical",
+    const compositeDescriptor = scoped.preflight({
+      callId: "call-parameter-composite-descriptor",
       name: "create_artifact",
-      arguments: misclassifiedPhysicalArguments
+      arguments: compositeDescriptorArguments
     });
-    expect(misclassifiedPhysical.ok).toBe(false);
-    if (misclassifiedPhysical.ok)
-      throw new Error("Expected physical-parameter unit failure.");
-    expect(misclassifiedPhysical.result).toMatchObject({
-      errorCode: "INVALID_TOOL_ARGUMENTS",
-      missingInputs: ["tables.0.rows.1.unit"]
+    expect(compositeDescriptor.ok).toBe(true);
+    if (!compositeDescriptor.ok)
+      throw new Error("Expected composite descriptor acceptance.");
+    expect(compositeDescriptor.artifactSpec).toMatchObject({
+      tables: [
+        {
+          columns: ["参数", "数值或状态", "单位", "假设或工况"],
+          rows: [
+            ["有效抽速", "待用户确认", "L/s", "待用户确认"],
+            ["备用泵密封配置", "待用户确认", "不适用", "待用户确认"]
+          ]
+        }
+      ]
     });
-    await expect(
-      scoped.execute({
-        callId: "call-parameter-misclassified-physical-execute",
-        name: "create_artifact",
-        arguments: misclassifiedPhysicalArguments
-      })
-    ).resolves.toMatchObject({ ok: false });
     expect(storage.create).not.toHaveBeenCalled();
 
     const structurallyInvalid = scoped.preflight({
@@ -943,6 +1259,7 @@ describe("ToolRegistry V3 exposure", () => {
             title: "泵组参数",
             rows: [
               {
+                parameterKind: "physical",
                 parameter: "有效抽速",
                 valueOrStatus: "10",
                 unit: "L/s"
@@ -980,6 +1297,7 @@ describe("ToolRegistry V3 exposure", () => {
               title: "泵组参数",
               rows: [
                 {
+                  parameterKind: "physical",
                   parameter: "有效抽速",
                   valueOrStatus: "10",
                   unit: "L/s",
@@ -1242,7 +1560,7 @@ function providerSpecWithVisibleCharacters(target: number) {
 
 function validParameterTableProviderPayload() {
   return {
-    contractVersion: "openvac.parameter-table-provider.v1" as const,
+    contractVersion: "openvac.parameter-table-provider.v2" as const,
     title: "泵组选型参数表",
     formats: ["csv" as const],
     summary: "参数、单位和假设",
@@ -1252,6 +1570,7 @@ function validParameterTableProviderPayload() {
         title: "泵组参数",
         rows: [
           {
+            parameterKind: "physical",
             parameter: "有效抽速",
             valueOrStatus: "待用户确认",
             unit: "L/s",
@@ -1263,16 +1582,15 @@ function validParameterTableProviderPayload() {
   };
 }
 
-function parameterProviderPayloadWithCanonicalVisibleCharacters(
-  target: number
-) {
+function parameterProviderPayloadWithVisibleCharacters(target: number) {
   const payload = {
     ...validParameterTableProviderPayload(),
     tables: [
       {
         title: "表",
         rows: Array.from({ length: 64 }, () => ({
-          parameter: "参",
+          parameterKind: "physical" as const,
+          parameter: "入口压力",
           valueOrStatus: "值",
           unit: "Pa",
           assumptionOrCondition: "待用户确认"
@@ -1280,15 +1598,11 @@ function parameterProviderPayloadWithCanonicalVisibleCharacters(
       }
     ]
   };
-  let remaining =
-    target -
-    visibleStringCharacters(
-      parameterTableProviderPayloadToArtifactArguments(payload)
-    );
+  let remaining = target - visibleStringCharacters(payload);
   if (remaining < 0)
     throw new Error("Target is smaller than the base payload.");
   for (const row of payload.tables[0].rows) {
-    for (const key of ["parameter", "valueOrStatus"] as const) {
+    for (const key of ["valueOrStatus", "assumptionOrCondition"] as const) {
       if (remaining <= 0) break;
       const capacity =
         ARTIFACT_PROVIDER_LIMITS.cellCharacters - Array.from(row[key]).length;
@@ -1298,5 +1612,81 @@ function parameterProviderPayloadWithCanonicalVisibleCharacters(
     }
   }
   if (remaining !== 0) throw new Error("Target exceeds provider capacity.");
+  return payload;
+}
+
+function parameterProviderPayloadWithCanonicalVisibleCharacters(
+  target: number
+) {
+  const payload = {
+    ...validParameterTableProviderPayload(),
+    title: "表",
+    summary: "说明",
+    sections: Array.from({ length: 4 }, () => ({
+      heading: "节",
+      paragraphs: Array.from({ length: 4 }, () => "段")
+    })),
+    tables: [
+      {
+        title: "表",
+        rows: [
+          {
+            parameterKind: "physical" as const,
+            parameter: "入口压力",
+            valueOrStatus: "值",
+            unit: "Pa",
+            assumptionOrCondition: "待用户确认"
+          }
+        ]
+      }
+    ]
+  };
+  let remaining =
+    target -
+    visibleStringCharacters(
+      parameterTableProviderPayloadToArtifactArguments(payload)
+    );
+  if (remaining < 0)
+    throw new Error("Target is smaller than the canonical base payload.");
+  const extend = (value: string, maximum: number) => {
+    const length = Math.min(maximum - Array.from(value).length, remaining);
+    remaining -= length;
+    return value + "x".repeat(length);
+  };
+  payload.title = extend(
+    payload.title,
+    ARTIFACT_PROVIDER_LIMITS.titleCharacters
+  );
+  payload.summary = extend(
+    payload.summary,
+    ARTIFACT_PROVIDER_LIMITS.summaryCharacters
+  );
+  for (const section of payload.sections) {
+    section.heading = extend(
+      section.heading,
+      ARTIFACT_PROVIDER_LIMITS.titleCharacters
+    );
+    for (let index = 0; index < section.paragraphs.length; index += 1) {
+      section.paragraphs[index] = extend(
+        section.paragraphs[index]!,
+        ARTIFACT_PROVIDER_LIMITS.paragraphCharacters
+      );
+    }
+  }
+  payload.tables[0].title = extend(
+    payload.tables[0].title,
+    ARTIFACT_PROVIDER_LIMITS.titleCharacters
+  );
+  const row = payload.tables[0].rows[0];
+  row.valueOrStatus = extend(
+    row.valueOrStatus,
+    ARTIFACT_PROVIDER_LIMITS.cellCharacters
+  );
+  row.assumptionOrCondition = extend(
+    row.assumptionOrCondition,
+    ARTIFACT_PROVIDER_LIMITS.cellCharacters
+  );
+  if (remaining !== 0)
+    throw new Error("Target exceeds canonical provider capacity.");
   return payload;
 }
