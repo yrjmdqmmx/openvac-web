@@ -79,6 +79,7 @@ describe("Agent V3 staging runtime smoke safety", () => {
     expect(source).toContain('error.code !== "ATTACHMENT_BIND_CONFLICT"');
     expect(source).toContain("eq(agentRuns.clientRequestId, clientRequestId)");
     expect(source).toContain("calls.length !== 0");
+    expect(source).toContain("forbiddenToolExecuted: false");
     expect(source).not.toContain("00000000-0000-4000-8000-000000000000");
   });
 

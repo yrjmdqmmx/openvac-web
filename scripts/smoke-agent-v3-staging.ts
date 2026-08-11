@@ -187,6 +187,8 @@ const RUNTIME_EVIDENCE_NESTED_FAILURE_CODES = {
     "RUNTIME_AUTH_OUTCOME_REQUEST_ID_INVALID",
   "authorizationOutcome.agentToolCallQueryRunId":
     "RUNTIME_AUTH_OUTCOME_RUN_ID_INVALID",
+  "authorizationOutcome.forbiddenToolExecuted":
+    "RUNTIME_AUTH_OUTCOME_TOOL_EXECUTION_INVALID",
   "provenance.runId": "RUNTIME_PROVENANCE_RUN_ID_INVALID",
   "provenance.chatRequestId": "RUNTIME_PROVENANCE_REQUEST_ID_INVALID",
   "provenance.conversationId": "RUNTIME_PROVENANCE_CONVERSATION_ID_INVALID",
@@ -377,6 +379,7 @@ type AuthorizationOutcome = {
   deniedClientRequestId: string;
   outcome: "denied";
   boundToTargetMessage: false;
+  forbiddenToolExecuted: false;
   forbiddenAttachmentToolCallCount: 0;
   agentToolCallQueryRunId: string;
   deniedRunStatus: "failed";
@@ -715,6 +718,7 @@ async function captureCase(
       deniedClientRequestId: denied.clientRequestId,
       outcome: "denied",
       boundToTargetMessage: false,
+      forbiddenToolExecuted: false,
       forbiddenAttachmentToolCallCount: denied.forbiddenAttachmentToolCallCount,
       agentToolCallQueryRunId: denied.runId,
       deniedRunStatus: denied.runStatus
