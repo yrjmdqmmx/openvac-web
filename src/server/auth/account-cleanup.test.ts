@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { assertUserCanSelfDelete } from "./account-cleanup";
+import {
+  assertUserCanSelfDelete,
+  runDeletedUserDatabaseCleanupWithRetry
+} from "./account-cleanup";
 
 describe("account deletion policy", () => {
   it("blocks self-deletion while any administrator role remains", () => {
@@ -13,5 +16,49 @@ describe("account deletion policy", () => {
 
   it("allows a regular account to continue through deletion cleanup", () => {
     expect(() => assertUserCanSelfDelete([])).not.toThrow();
+  });
+});
+
+describe("post-delete database cleanup retry", () => {
+  it("retries transient failures with bounded delays", async () => {
+    const attempts: number[] = [];
+    const delays: number[] = [];
+
+    await runDeletedUserDatabaseCleanupWithRetry(
+      async () => {
+        attempts.push(attempts.length + 1);
+        if (attempts.length < 3) {
+          throw new Error("transient cleanup failure");
+        }
+      },
+      {
+        retryDelaysMs: [10, 20],
+        sleep: async (milliseconds) => {
+          delays.push(milliseconds);
+        }
+      }
+    );
+
+    expect(attempts).toEqual([1, 2, 3]);
+    expect(delays).toEqual([10, 20]);
+  });
+
+  it("rethrows the final failure after the retry budget is exhausted", async () => {
+    const failure = new Error("persistent cleanup failure");
+    let attempts = 0;
+
+    await expect(
+      runDeletedUserDatabaseCleanupWithRetry(
+        async () => {
+          attempts += 1;
+          throw failure;
+        },
+        {
+          retryDelaysMs: [10, 20],
+          sleep: async () => undefined
+        }
+      )
+    ).rejects.toBe(failure);
+    expect(attempts).toBe(3);
   });
 });
