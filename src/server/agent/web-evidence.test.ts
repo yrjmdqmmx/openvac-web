@@ -35,6 +35,7 @@ import type {
   ResponsesProvider,
   ResponsesStreamEvent
 } from "@/server/providers";
+import { VERIFIED_LINK_LABEL_FALLBACK } from "@/server/chat-v3/verified-link-label";
 
 import { EvidenceRegistry } from "./evidence-registry";
 import {
@@ -390,7 +391,7 @@ describe("DeepSeek native web evidence", () => {
       verifiedLinks: [
         {
           linkId: "W1",
-          label: "docs.example-a.com",
+          label: VERIFIED_LINK_LABEL_FALLBACK,
           url: "https://docs.example-a.com/pump"
         }
       ]
@@ -401,6 +402,60 @@ describe("DeepSeek native web evidence", () => {
       undefined
     );
   });
+
+  it.each([
+    ["240 ASCII units", "A".repeat(240), "A".repeat(240)],
+    ["241 ASCII units", "B".repeat(241), "B".repeat(240)],
+    ["surrogate boundary", "😀".repeat(121), "😀".repeat(120)],
+    [
+      "unsafe URL title",
+      "https://docs.example-a.com/manual",
+      VERIFIED_LINK_LABEL_FALLBACK
+    ],
+    [
+      "post-sanitizer reserved token",
+      "pro\uFE0Fvider result",
+      VERIFIED_LINK_LABEL_FALLBACK
+    ],
+    ["hostname title", "docs.example-a.com", VERIFIED_LINK_LABEL_FALLBACK]
+  ])(
+    "emits an AnswerV3-safe canonical label for %s",
+    async (_case, title, expected) => {
+      fetchMocks.fetch.mockResolvedValue({
+        url: "https://docs.example-a.com/manual",
+        body: "Manufacturer foreline-pressure guidance. ".repeat(4),
+        fetchedAt: new Date("2026-08-09T00:00:00.000Z")
+      });
+
+      await expect(
+        discover(
+          [
+            {
+              ...finish,
+              outputText: JSON.stringify({
+                candidates: [
+                  {
+                    url: "https://docs.example-a.com/manual",
+                    title,
+                    summary: ""
+                  }
+                ]
+              })
+            }
+          ],
+          [
+            {
+              domain: "example-a.com",
+              trustTier: "tier_a",
+              licenseClass: "open"
+            }
+          ]
+        )
+      ).resolves.toMatchObject({
+        verifiedLinks: [{ label: expected }]
+      });
+    }
+  );
 
   it("recovers an approved authority domain without an explicit scheme", async () => {
     fetchMocks.fetch.mockImplementation(async (url: string) => ({
@@ -625,7 +680,7 @@ describe("DeepSeek native web evidence", () => {
             sources: [
               {
                 url: "https://docs.example-a.com/annotation",
-                title: "Provider annotation"
+                title: "Manufacturer annotation"
               }
             ]
           },
@@ -643,7 +698,7 @@ describe("DeepSeek native web evidence", () => {
       verifiedLinks: [
         {
           url: "https://docs.example-a.com/annotation",
-          label: "Provider annotation"
+          label: "Manufacturer annotation"
         }
       ]
     });
@@ -681,7 +736,7 @@ describe("DeepSeek native web evidence", () => {
             sources: [
               {
                 url: "https://docs.example-a.com/annotation",
-                title: "Provider annotation"
+                title: "Manufacturer annotation"
               }
             ]
           },
@@ -700,7 +755,7 @@ describe("DeepSeek native web evidence", () => {
         { url: "https://docs.example-a.com/json", label: "JSON candidate" },
         {
           url: "https://docs.example-a.com/annotation",
-          label: "Provider annotation"
+          label: "Manufacturer annotation"
         }
       ]
     });

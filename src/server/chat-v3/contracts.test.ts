@@ -5,6 +5,7 @@ import {
   inputMessagePartsSchema,
   normalizeStoredMessageParts
 } from "./contracts";
+import { VERIFIED_LINK_LABEL_FALLBACK } from "./verified-link-label";
 
 describe("Agent V3 shared contracts", () => {
   it("accepts text, verified-link candidates, and up to five attachments", () => {
@@ -86,5 +87,32 @@ describe("Agent V3 shared contracts", () => {
     expect(normalizeStoredMessageParts("旧回答", null)).toEqual([
       { type: "text", text: "旧回答" }
     ]);
+  });
+
+  it.each([
+    ["empty", ""],
+    ["241 units", "A".repeat(241)],
+    ["unsafe", "provider tool_call result"]
+  ])("canonicalizes a %s stored verified-link label", (_case, label) => {
+    const [part] = normalizeStoredMessageParts("", [
+      {
+        type: "verified_link",
+        linkId: "W1",
+        url: "https://example.com/manual",
+        label,
+        hostname: "example.com",
+        status: "verified",
+        evidenceIds: ["E1"]
+      }
+    ]);
+
+    expect(part).toMatchObject({
+      type: "verified_link",
+      label:
+        label === "provider tool_call result" || label === ""
+          ? VERIFIED_LINK_LABEL_FALLBACK
+          : "A".repeat(240),
+      evidenceIds: ["E1"]
+    });
   });
 });

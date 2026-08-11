@@ -28,9 +28,14 @@ import type {
   VerifiedLinkPart
 } from "@/types/chat-v3";
 import { inputMessagePartsSchema } from "@/server/chat-v3/contracts";
+import { canonicalVerifiedLinkLabel } from "@/server/chat-v3/verified-link-label";
 
 import { safeParseAnswerV2, sanitizeStoredAnswerV2 } from "./answer-v2";
-import { renderAnswerV3, safeParseAnswerV3 } from "./answer-v3";
+import {
+  renderAnswerV3,
+  safeParseAnswerV3,
+  sanitizeStoredAnswerV3
+} from "./answer-v3";
 import { EvidenceRegistry } from "./evidence-registry";
 import { parsePublicHttpsUrl } from "./public-url";
 import { recoverStaleAgentRuns } from "./retention";
@@ -1000,7 +1005,11 @@ function restoreCitation(input: {
   }
   return {
     sourceId,
-    title: input.title,
+    title:
+      typeof input.metadata.originalSourceId === "string" &&
+      input.metadata.originalSourceId.startsWith("web:")
+        ? canonicalVerifiedLinkLabel(input.title)
+        : input.title,
     publisher,
     url: input.url,
     pageOrSection:
@@ -1027,8 +1036,10 @@ function restoreCitation(input: {
 
 function parseStoredAnswer(value: unknown): AnswerV2 | AnswerV3 | undefined {
   const v2 = safeParseAnswerV2(value);
+  const v3 = safeParseAnswerV3(value);
   return (
-    (v2 ? sanitizeStoredAnswerV2(v2) : undefined) ?? safeParseAnswerV3(value)
+    (v2 ? sanitizeStoredAnswerV2(v2) : undefined) ??
+    (v3 ? sanitizeStoredAnswerV3(v3) : undefined)
   );
 }
 
@@ -1073,8 +1084,7 @@ function safeStoredVerifiedLinks(value: unknown): VerifiedLinkPart[] {
       record.linkId.length < 1 ||
       record.linkId.length > 160 ||
       typeof record.label !== "string" ||
-      record.label.length < 1 ||
-      record.label.length > 240 ||
+      record.label.length > 4_096 ||
       typeof record.hostname !== "string" ||
       typeof record.url !== "string" ||
       (record.status !== "verified" && record.status !== "unavailable")
@@ -1101,7 +1111,7 @@ function safeStoredVerifiedLinks(value: unknown): VerifiedLinkPart[] {
         type: "verified_link" as const,
         linkId: record.linkId,
         url: url.href,
-        label: record.label,
+        label: canonicalVerifiedLinkLabel(record.label),
         hostname: record.hostname,
         status: record.status,
         ...(evidenceIds.length > 0 ? { evidenceIds } : {})

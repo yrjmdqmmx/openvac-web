@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
 import type { HttpsRequester } from "@/server/knowledge/web-fetch";
+import { VERIFIED_LINK_LABEL_FALLBACK } from "@/server/chat-v3/verified-link-label";
 
 import { VerifiedUrlError, VerifiedUrlReader } from "./verified-url";
 
@@ -55,7 +56,7 @@ describe("VerifiedUrlReader turn binding", () => {
     expect(requester).not.toHaveBeenCalled();
   });
 
-  it("replaces an unsafe user label with the verified hostname", async () => {
+  it("replaces an unsafe user label with the server-owned safe label", async () => {
     const reader = new VerifiedUrlReader({
       turnId,
       links: [
@@ -75,9 +76,37 @@ describe("VerifiedUrlReader turn binding", () => {
     });
 
     await expect(reader.read({ turnId, linkId: "L1" })).resolves.toMatchObject({
-      link: { label: "example.com" }
+      link: { label: VERIFIED_LINK_LABEL_FALLBACK }
     });
   });
+
+  it.each([
+    ["240 ASCII units", "A".repeat(240), "A".repeat(240)],
+    ["241 ASCII units", "B".repeat(241), "B".repeat(240)],
+    ["surrogate boundary", "😀".repeat(121), "😀".repeat(120)],
+    ["missing", undefined, VERIFIED_LINK_LABEL_FALLBACK]
+  ])(
+    "canonicalizes %s before producing a verified link",
+    async (_case, label, expected) => {
+      const reader = new VerifiedUrlReader({
+        turnId,
+        links: [{ linkId: "L1", url: "https://example.com/report", label }],
+        fetcherOptions: {
+          resolveDns: async () => [{ address: "8.8.8.8", family: 4 }],
+          request: staticRequester({
+            headers: { "content-type": "text/plain" },
+            body: "verified content"
+          })
+        }
+      });
+
+      await expect(
+        reader.read({ turnId, linkId: "L1" })
+      ).resolves.toMatchObject({
+        link: { label: expected }
+      });
+    }
+  );
 
   it.each([
     "http://example.com/report",

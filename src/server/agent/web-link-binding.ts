@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 
 import type { VerifiedLinkPart } from "@/types/chat-v3";
 
-const WEB_LINK_BINDING_VERSION = "openvac.web-link-binding.v1";
+const WEB_LINK_BINDING_VERSION = "openvac.web-link-binding.v2";
 
 export function webLinkBindingDigest(input: {
   evidenceId: string;
-  link: Pick<VerifiedLinkPart, "linkId" | "hostname" | "url">;
+  link: Pick<VerifiedLinkPart, "linkId" | "hostname" | "label" | "url">;
 }): string {
   return createHash("sha256")
     .update(
@@ -15,6 +15,7 @@ export function webLinkBindingDigest(input: {
         evidenceId: input.evidenceId,
         linkId: input.link.linkId,
         hostname: input.link.hostname,
+        label: input.link.label,
         url: input.link.url
       })
     )

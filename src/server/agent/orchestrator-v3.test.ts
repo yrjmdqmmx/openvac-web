@@ -26,6 +26,10 @@ import { EvidenceRegistry } from "./evidence-registry";
 import type { RunStore } from "./run-store";
 import { ToolRegistry } from "./tool-registry";
 import type { ArtifactStorage } from "./artifact-tools";
+import {
+  canonicalVerifiedLinkLabel,
+  VERIFIED_LINK_LABEL_FALLBACK
+} from "@/server/chat-v3/verified-link-label";
 
 const finalAnswer: AnswerV3 = {
   schemaVersion: "openvac.answer.v3",
@@ -616,6 +620,39 @@ describe("Agent V3 verified link selection repair", () => {
       answer: { usedLinkIds: ["W2"] }
     });
 
+    expect(subject.invoke.requestWithOneRetry).toHaveBeenCalledTimes(1);
+    expect(subject.store.complete).toHaveBeenCalledTimes(1);
+    expect(subject.store.recordToolCall).not.toHaveBeenCalled();
+    expect(subject.orchestrator.counters).toEqual({
+      modelRequests: 1,
+      retries: 0,
+      repairs: 0,
+      toolRounds: 0,
+      toolCalls: 0
+    });
+  });
+
+  it("projects a producer-canonicalized link label with no repair or duplicate persistence", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const link = subject.invoke.verifiedLinks.get("W2");
+    if (!link) throw new Error("Expected verified link W2.");
+    subject.invoke.verifiedLinks.set("W2", {
+      ...link,
+      label: canonicalVerifiedLinkLabel("provider tool_call result")
+    });
+    subject.invoke.requestWithOneRetry = vi.fn(async () => {
+      subject.invoke.modelRequests += 1;
+      return answerModelResponse(subject.answer([]));
+    });
+
+    const result = await subject.orchestrator.run(subject.input);
+
+    expect(result.answer.usedLinkIds).toEqual(["W2"]);
+    expect(result.answer.blocks.at(-1)).toEqual({
+      type: "link_reference",
+      linkId: "W2",
+      label: VERIFIED_LINK_LABEL_FALLBACK
+    });
     expect(subject.invoke.requestWithOneRetry).toHaveBeenCalledTimes(1);
     expect(subject.store.complete).toHaveBeenCalledTimes(1);
     expect(subject.store.recordToolCall).not.toHaveBeenCalled();

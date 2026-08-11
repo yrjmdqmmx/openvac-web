@@ -18,6 +18,10 @@ import {
 } from "@/server/quota";
 import type { SourceTrustTier } from "@/types/chat";
 import type { VerifiedLinkPart } from "@/types/chat-v3";
+import {
+  canonicalVerifiedLinkLabel,
+  VERIFIED_LINK_LABEL_FALLBACK
+} from "@/server/chat-v3/verified-link-label";
 
 import { defaultTierADomains, EvidenceRegistry } from "./evidence-registry";
 import { parsePublicHttpsUrl } from "./public-url";
@@ -299,27 +303,29 @@ export class WebEvidenceService {
           finalPolicy.licenseClass === "private_authorized"
             ? 2_600
             : 480;
-        const id = this.evidence.add(
-          sanitizeGroundingEvidence(
-            {
-              citation: {
-                sourceId: `web:${urlDigest(publicUrl.href)}`,
-                title: candidate.title,
-                publisher: publicUrl.hostname,
-                url: publicUrl.href,
-                fetchedAt: page.fetchedAt,
-                licenseClass: finalPolicy.licenseClass
-              },
-              excerpt
-            },
-            excerptLimit
-          ),
+        const sanitizedEvidence = sanitizeGroundingEvidence(
           {
-            trustTier: finalPolicy.trustTier,
-            reviewStatus: "runtime_verified",
-            runtimeValidated: true
-          }
+            citation: {
+              sourceId: `web:${urlDigest(publicUrl.href)}`,
+              title: candidate.title,
+              publisher: publicUrl.hostname,
+              url: publicUrl.href,
+              fetchedAt: page.fetchedAt,
+              licenseClass: finalPolicy.licenseClass
+            },
+            excerpt
+          },
+          excerptLimit
         );
+        const finalLabel = canonicalVerifiedLinkLabel(
+          sanitizedEvidence.citation.title
+        );
+        sanitizedEvidence.citation.title = finalLabel;
+        const id = this.evidence.add(sanitizedEvidence, {
+          trustTier: finalPolicy.trustTier,
+          reviewStatus: "runtime_verified",
+          runtimeValidated: true
+        });
         if (id && !ids.includes(id)) {
           const hostname = publicUrl.hostname.toLowerCase();
           const linkId = `W${verifiedLinks.length + 1}`;
@@ -329,8 +335,7 @@ export class WebEvidenceService {
             type: "verified_link",
             linkId,
             url: publicUrl.href,
-            label:
-              this.evidence.get(id)?.evidence.citation.title ?? candidate.title,
+            label: finalLabel,
             hostname,
             status: "verified",
             evidenceIds: [id]
@@ -558,11 +563,13 @@ function countCharacter(value: string, expected: string): number {
 
 function sanitizeCandidateTitle(value: string, url: URL): string {
   const title = value
-    .replace(/[\u0000-\u001f\u007f]+/gu, " ")
+    .normalize("NFKC")
+    .replace(/[\p{Cc}\p{Cf}]+/gu, " ")
     .replace(/\s+/gu, " ")
-    .trim()
-    .slice(0, 300);
-  return title || url.hostname;
+    .trim();
+  return title.toLocaleLowerCase() === url.hostname.toLocaleLowerCase()
+    ? VERIFIED_LINK_LABEL_FALLBACK
+    : canonicalVerifiedLinkLabel(title);
 }
 
 async function loadDomainPolicies(): Promise<WebDomainPolicy[]> {

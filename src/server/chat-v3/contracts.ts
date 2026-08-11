@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { MessagePart } from "@/types/chat-v3";
+import { canonicalVerifiedLinkLabel } from "./verified-link-label";
 
 export const MAX_CHAT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 export const MAX_CHAT_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -329,7 +330,16 @@ export function normalizeStoredMessageParts(
 ): MessagePart[] {
   if (Array.isArray(parts)) {
     const parsed = parts.slice(0, 256).flatMap((candidate) => {
-      const result = messagePartSchema.safeParse(candidate);
+      const normalizedCandidate =
+        candidate &&
+        typeof candidate === "object" &&
+        "type" in candidate &&
+        candidate.type === "verified_link" &&
+        "label" in candidate &&
+        typeof candidate.label === "string"
+          ? { ...candidate, label: canonicalVerifiedLinkLabel(candidate.label) }
+          : candidate;
+      const result = messagePartSchema.safeParse(normalizedCandidate);
       return result.success ? [result.data as MessagePart] : [];
     });
     if (parsed.length > 0) return parsed;

@@ -8,7 +8,12 @@ import {
   safeParseAnswerV2,
   sanitizeStoredAnswerV2
 } from "@/server/agent/answer-v2";
-import { safeParseAnswerV3 } from "@/server/agent/answer-v3";
+import {
+  renderAnswerV3,
+  safeParseAnswerV3,
+  sanitizeStoredAnswerV3
+} from "@/server/agent/answer-v3";
+import { canonicalVerifiedLinkLabel } from "@/server/chat-v3/verified-link-label";
 import {
   inputMessagePartsSchema,
   normalizeStoredMessageParts
@@ -55,7 +60,11 @@ export function serializeStoredCitation(
   const licenseClass = licenseClassValue(citation.license);
   return {
     sourceId: stringValue(citation.metadata.sourceId) ?? citation.id,
-    title: citation.title,
+    title:
+      stringValue(citation.metadata.originalSourceId)?.startsWith("web:") ===
+      true
+        ? canonicalVerifiedLinkLabel(citation.title)
+        : citation.title,
     publisher: stringValue(citation.metadata.publisher) ?? "来源发布者未标注",
     url: citation.url,
     sourcePolicy: citationSourcePolicy(
@@ -135,6 +144,24 @@ export function serializeStoredMessage(
     }
   }
 
+  if (result.meta?.answerV3) {
+    const citationNumbers = new Map(
+      result.meta.citations.map((citation, index) => [
+        citation.sourceId,
+        index + 1
+      ])
+    );
+    const canonicalContent = renderAnswerV3(
+      result.meta.answerV3,
+      citationNumbers
+    );
+    result.content = canonicalContent;
+    result.parts = dedupeMessageParts([
+      { type: "text", text: canonicalContent },
+      ...(result.parts ?? []).filter((part) => part.type !== "text")
+    ]);
+  }
+
   return result;
 }
 
@@ -166,7 +193,10 @@ function answerMetaValue(
   const answer = parsedAnswer
     ? sanitizeStoredAnswerV2(parsedAnswer)
     : undefined;
-  const answerV3 = safeParseAnswerV3(answerPayload);
+  const parsedAnswerV3 = safeParseAnswerV3(answerPayload);
+  const answerV3 = parsedAnswerV3
+    ? sanitizeStoredAnswerV3(parsedAnswerV3)
+    : undefined;
   return {
     riskLevel: riskLevelValue(metadata.riskLevel),
     missingInputs: stringArrayValue(metadata.missingInputs),

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import type { AnswerV3 } from "@/types/chat-v3";
+import {
+  canonicalVerifiedLinkLabel,
+  VERIFIED_LINK_LABEL_FALLBACK
+} from "@/server/chat-v3/verified-link-label";
 
 import {
   ANSWER_V3_JSON_SCHEMA,
@@ -16,6 +20,7 @@ import {
   requestsVerifiedLinkSelection,
   requiresExpertAnswer,
   safeParseAnswerV3,
+  sanitizeStoredAnswerV3,
   validateAnswerV3
 } from "./answer-v3";
 
@@ -312,6 +317,119 @@ describe("Answer V3", () => {
     ).toBe(false);
   });
 
+  it.each([
+    ["240 ASCII units", "A".repeat(240)],
+    ["241 ASCII units", "B".repeat(241)],
+    ["surrogate boundary", "😀".repeat(121)],
+    ["unsafe URL-like title", "www.example.com/manual"],
+    ["unsafe internal title", "provider tool_call result"],
+    ["unsafe token formed by truncation", `${"A".repeat(231)} providerX`],
+    ["Unicode format control", "Manufacturer\u202E manual"]
+  ])(
+    "accepts the canonical verified-link label for %s",
+    (_case, sourceLabel) => {
+      const label = canonicalVerifiedLinkLabel(sourceLabel);
+      const answer: AnswerV3 = {
+        schemaVersion: "openvac.answer.v3",
+        answerKind: "expert",
+        riskLevel: "medium",
+        blocks: [
+          {
+            type: "paragraph",
+            text: "前级压力需要按具体型号核对。",
+            evidenceIds: ["E1"]
+          },
+          { type: "link_reference", linkId: "W1", label }
+        ],
+        missingInputs: [],
+        usedEvidenceIds: ["E1"],
+        usedLinkIds: ["W1"]
+      };
+
+      expect(label.length).toBeLessThanOrEqual(240);
+      expect(
+        validateAnswerV3({
+          value: answer,
+          riskLevel: "medium",
+          minimumLinkCount: 1,
+          knownEvidenceIds: ["E1"],
+          knownLinkIds: ["W1"],
+          knownLinkBindings: [{ linkId: "W1", label, evidenceIds: ["E1"] }]
+        }).valid
+      ).toBe(true);
+    }
+  );
+
+  it("rejects a non-canonical server link binding even when the answer uses its safe fallback", () => {
+    const label = canonicalVerifiedLinkLabel("provider title");
+    const answer: AnswerV3 = {
+      schemaVersion: "openvac.answer.v3",
+      answerKind: "expert",
+      riskLevel: "medium",
+      blocks: [
+        {
+          type: "paragraph",
+          text: "前级压力需要按具体型号核对。",
+          evidenceIds: ["E1"]
+        },
+        { type: "link_reference", linkId: "W1", label }
+      ],
+      missingInputs: [],
+      usedEvidenceIds: ["E1"],
+      usedLinkIds: ["W1"]
+    };
+
+    const result = validateAnswerV3({
+      value: answer,
+      riskLevel: "medium",
+      minimumLinkCount: 1,
+      knownEvidenceIds: ["E1"],
+      knownLinkIds: ["W1"],
+      knownLinkBindings: [
+        { linkId: "W1", label: "provider title", evidenceIds: ["E1"] }
+      ]
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.join(" ")).toContain("服务端显示标签不满足安全边界");
+  });
+
+  it("canonicalizes stored AnswerV3 link labels without changing their bindings", () => {
+    const answer: AnswerV3 = {
+      schemaVersion: "openvac.answer.v3",
+      answerKind: "expert",
+      riskLevel: "medium",
+      blocks: [
+        {
+          type: "paragraph",
+          text: "前级压力需要按具体型号核对。",
+          evidenceIds: ["E1"]
+        },
+        {
+          type: "link_reference",
+          linkId: "W1",
+          label: "provider tool_call result"
+        }
+      ],
+      missingInputs: [],
+      usedEvidenceIds: ["E1"],
+      usedLinkIds: ["W1"]
+    };
+
+    expect(sanitizeStoredAnswerV3(answer)).toMatchObject({
+      blocks: [
+        answer.blocks[0],
+        {
+          type: "link_reference",
+          linkId: "W1",
+          label: VERIFIED_LINK_LABEL_FALLBACK
+        }
+      ],
+      usedEvidenceIds: ["E1"],
+      usedLinkIds: ["W1"]
+    });
+  });
+
   it("recognizes explicit link requests without treating ordinary web text as one", () => {
     expect(requestsVerifiedLinkSelection("请给出已验证链接")).toBe(true);
     expect(
@@ -347,6 +465,32 @@ describe("Answer V3", () => {
         "Without commentary, provide the official URL."
       )
     ).toBe(true);
+  });
+
+  it.each([
+    ["empty", ""],
+    ["bare hostname", "docs.example.com"],
+    ["hostname path", "docs.example.com/manual"],
+    ["IPv4 literal", "192.0.2.1/manual"],
+    ["IPv6 literal", "[2001:db8::1]/manual"],
+    ["Unicode hostname", "例子.公司/手册"],
+    ["trailing-dot hostname", "docs.example.com."],
+    ["URL", "https://docs.example.com/manual"],
+    ["reserved internal token", "provider result"],
+    ["oversized", "A".repeat(4_097)]
+  ])("uses the neutral verified-link fallback for %s", (_case, sourceLabel) => {
+    expect(canonicalVerifiedLinkLabel(sourceLabel)).toBe(
+      VERIFIED_LINK_LABEL_FALLBACK
+    );
+  });
+
+  it.each([
+    ["isolated high surrogate", "Unsafe\ud800label"],
+    ["isolated low surrogate", "Unsafe\udc00label"]
+  ])("uses the safe label for %s", (_case, sourceLabel) => {
+    expect(canonicalVerifiedLinkLabel(sourceLabel)).toBe(
+      VERIFIED_LINK_LABEL_FALLBACK
+    );
   });
 
   it("rejects dynamic internal calculation keys in any visible block", () => {
