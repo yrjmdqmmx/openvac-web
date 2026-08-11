@@ -1327,41 +1327,33 @@ async function destroyTemporaryPrincipal(
     code: "PRINCIPAL_PREPARE_DELETION_FAILED"
   });
   await prepareUserDeletion(principal.userId);
-  markSmokeDiagnostic("principal_cleanup", {
-    code: "PRINCIPAL_SESSION_DELETE_FAILED"
+  await db.transaction(async (transaction) => {
+    markSmokeDiagnostic("principal_cleanup", {
+      code: "PRINCIPAL_SESSION_DELETE_FAILED"
+    });
+    await transaction
+      .delete(sessions)
+      .where(eq(sessions.userId, principal.userId));
+    markSmokeDiagnostic("principal_cleanup", {
+      code: "PRINCIPAL_USER_DELETE_FAILED"
+    });
+    const deletedUsers = await transaction
+      .delete(users)
+      .where(eq(users.id, principal.userId))
+      .returning({ id: users.id });
+    if (deletedUsers.length !== 1 || deletedUsers[0]?.id !== principal.userId) {
+      markSmokeDiagnostic("principal_cleanup", {
+        code: "PRINCIPAL_USER_DELETE_NOT_CONFIRMED"
+      });
+      throw new Error(
+        "Temporary Agent V3 staging user deletion was not confirmed."
+      );
+    }
   });
-  await db
-    .delete(sessions)
-    .where(
-      and(
-        eq(sessions.id, principal.sessionId),
-        eq(sessions.userId, principal.userId)
-      )
-    );
-  markSmokeDiagnostic("principal_cleanup", {
-    code: "PRINCIPAL_USER_DELETE_FAILED"
-  });
-  await db.delete(users).where(eq(users.id, principal.userId));
   markSmokeDiagnostic("principal_cleanup", {
     code: "PRINCIPAL_POST_DELETE_CLEANUP_FAILED"
   });
   await cleanupDeletedUser(principal.userId);
-  markSmokeDiagnostic("principal_cleanup", {
-    code: "PRINCIPAL_DELETION_VERIFY_FAILED"
-  });
-  const [remainingUser] = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.id, principal.userId))
-    .limit(1);
-  const [remainingSession] = await db
-    .select({ id: sessions.id })
-    .from(sessions)
-    .where(eq(sessions.id, principal.sessionId))
-    .limit(1);
-  if (remainingUser || remainingSession) {
-    throw new Error("Temporary Agent V3 staging principal was not deleted.");
-  }
 }
 
 async function assertHealth(baseUrl: URL): Promise<void> {
