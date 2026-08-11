@@ -5,6 +5,7 @@ import type { AnswerV3 } from "@/types/chat-v3";
 import { QuotaExceededError } from "@/server/quota";
 import {
   ProviderError,
+  DeepSeekResponsesProvider,
   type ResponsesInputItem,
   type ResponsesProvider,
   type ResponsesStreamEvent,
@@ -260,8 +261,16 @@ describe("Agent V3 artifact provider requests", () => {
       true,
       "fresh_json_invalid"
     );
+    await invoke.collectModelResponse(
+      input,
+      cleanInput,
+      input.signal,
+      "answer_artifact_continuation_invalid_arguments",
+      true,
+      "continuation_invalid_arguments"
+    );
 
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(3);
     for (const request of requests) {
       expect(request.input).toEqual(cleanInput);
       expect(request.maxOutputTokens).toBe(MAX_ARTIFACT_PROVIDER_OUTPUT_TOKENS);
@@ -281,9 +290,15 @@ describe("Agent V3 artifact provider requests", () => {
     expect(requests[0]?.instructions).not.toContain(
       "上一次 create_artifact 参数不是合法 JSON"
     );
+    expect(requests[0]?.safeInvocationPhase).toBeUndefined();
     expect(requests[1]?.instructions).toContain(
       "上一次 create_artifact 参数不是合法 JSON"
     );
+    expect(requests[1]?.safeInvocationPhase).toBe("artifact_fresh_json_repair");
+    expect(requests[2]?.instructions).not.toContain(
+      "上一次 create_artifact 参数不是合法 JSON"
+    );
+    expect(requests[2]?.safeInvocationPhase).toBeUndefined();
   });
 
   it("retries one semantic repair with the identical clean transport payload", async () => {
@@ -338,6 +353,37 @@ describe("Agent V3 artifact provider requests", () => {
     expect(invoke.retries).toBe(1);
   });
 
+  it("does not create a transport retry after cancellation wins the failure race", async () => {
+    const { invoke, input } = artifactRequestSubject();
+    const controller = new AbortController();
+    const cleanInput: ResponsesInputItem[] = [
+      { type: "message", role: "user", content: "生成泵组选型参数表" }
+    ];
+    const collect = vi.fn(async () => {
+      controller.abort();
+      throw new ProviderError("transient", {
+        provider: "deepseek-responses",
+        status: 503,
+        retryable: true
+      });
+    });
+    invoke.collectModelResponse = collect;
+
+    await expect(
+      invoke.requestWithOneRetry(
+        input,
+        cleanInput,
+        controller.signal,
+        "answer_artifact_fresh_json_invalid",
+        true,
+        "fresh_json_invalid"
+      )
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(collect).toHaveBeenCalledTimes(1);
+    expect(invoke.retries).toBe(0);
+  });
+
   it("runs JSON-invalid through one clean fresh repair and one artifact audit", async () => {
     const malformed = artifactModelResponse([
       {
@@ -377,6 +423,137 @@ describe("Agent V3 artifact provider requests", () => {
     expect(subject.store.complete).toHaveBeenCalledTimes(1);
     expect(subject.orchestrator.counters).toMatchObject({
       modelRequests: 2,
+      repairs: 1,
+      toolRounds: 1,
+      toolCalls: 1
+    });
+  });
+
+  it("carries a real strict provider repair through preflight, storage, and audit", async () => {
+    const subject = artifactRunSubject([]);
+    const malformedArguments = "{private-malformed-arguments";
+    const validArguments = JSON.stringify(validParameterArtifactArguments());
+    const urls: string[] = [];
+    const requestBodies: string[] = [];
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        urls.push(String(url));
+        requestBodies.push(String(init?.body));
+        if (urls.length === 1) {
+          return new Response(
+            responsesSse([
+              {
+                type: "response.created",
+                sequence_number: 0,
+                response: { id: "response-malformed" }
+              },
+              {
+                type: "response.output_item.done",
+                sequence_number: 1,
+                item: {
+                  type: "function_call",
+                  call_id: "malformed-call",
+                  name: "create_artifact",
+                  arguments: malformedArguments
+                }
+              },
+              {
+                type: "response.completed",
+                sequence_number: 2,
+                response: {
+                  id: "response-malformed",
+                  output: [
+                    {
+                      type: "function_call",
+                      call_id: "malformed-call",
+                      name: "create_artifact",
+                      arguments: malformedArguments
+                    }
+                  ]
+                }
+              }
+            ])
+          );
+        }
+        if (urls.length === 2) {
+          throw new TypeError("synthetic TLS reset");
+        }
+        return new Response(
+          JSON.stringify({
+            id: "chatcmpl-strict-valid",
+            choices: [
+              {
+                finish_reason: "tool_calls",
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: "strict-valid-call",
+                      type: "function",
+                      function: {
+                        name: "create_artifact",
+                        arguments: validArguments
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            usage: {
+              prompt_tokens: 500,
+              prompt_cache_hit_tokens: 100,
+              prompt_cache_miss_tokens: 400,
+              completion_tokens: 200,
+              total_tokens: 700,
+              completion_tokens_details: { reasoning_tokens: 0 }
+            }
+          })
+        );
+      })
+    });
+    const invoke = subject.invoke as typeof subject.invoke & {
+      provider: ResponsesProvider;
+    };
+    invoke.provider = provider;
+    const prototype = AgentRunOrchestrator.prototype as unknown as {
+      requestWithOneRetry(...args: unknown[]): Promise<unknown>;
+    };
+    subject.invoke.requestWithOneRetry = prototype.requestWithOneRetry.bind(
+      subject.orchestrator
+    ) as ReturnType<typeof vi.fn>;
+    subject.invoke.meteredStream = async function* (
+      _input: Record<string, unknown>,
+      request: ResponsesStreamRequest
+    ): AsyncGenerator<ResponsesStreamEvent> {
+      subject.invoke.modelRequests += 1;
+      yield* provider.stream(request);
+    };
+
+    await expect(
+      subject.orchestrator.run(subject.input)
+    ).resolves.toMatchObject({ status: "completed" });
+
+    expect(urls).toEqual([
+      "https://api.deepseek.com/responses",
+      "https://api.deepseek.com/beta/chat/completions",
+      "https://api.deepseek.com/beta/chat/completions"
+    ]);
+    expect(requestBodies[2]).toBe(requestBodies[1]);
+    expect(subject.storage.create).toHaveBeenCalledTimes(1);
+    expect(subject.store.recordToolCall).toHaveBeenCalledTimes(1);
+    expect(subject.store.recordToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: "strict-valid-call",
+        toolName: "create_artifact",
+        status: "completed"
+      })
+    );
+    expect(subject.orchestrator.counters).toMatchObject({
+      modelRequests: 3,
+      retries: 1,
       repairs: 1,
       toolRounds: 1,
       toolCalls: 1
@@ -534,6 +711,7 @@ describe("Agent V3 artifact provider requests", () => {
         name: "create_artifact"
       });
       expect(request.maxOutputTokens).toBe(MAX_ARTIFACT_PROVIDER_OUTPUT_TOKENS);
+      expect(request.safeInvocationPhase).toBe("artifact_fresh_json_repair");
       expect(JSON.stringify(request)).not.toMatch(
         /private-malformed|malformed-call|previous_response_id|function_call/iu
       );
@@ -871,4 +1049,18 @@ function artifactTransportRunSubject(
     };
   };
   return { ...subject, requests, phases };
+}
+
+function responsesSse(events: unknown[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const event of events) {
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
+        );
+      }
+      controller.close();
+    }
+  });
 }

@@ -106,6 +106,14 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
       throw new TypeError("maxOutputTokens must be a positive integer.");
     }
     assertFunctionCallPairing(request.input);
+    if (request.safeInvocationPhase === "artifact_fresh_json_repair") {
+      yield* this.streamStrictArtifactFreshRepair(
+        request,
+        apiKey,
+        maxOutputTokens
+      );
+      return;
+    }
     const portableRequest = portableToolRequest(request);
 
     const deadline = createProviderDeadline(
@@ -439,6 +447,294 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
       deadline.dispose();
     }
   }
+
+  private async *streamStrictArtifactFreshRepair(
+    request: ResponsesStreamRequest,
+    apiKey: string,
+    maxOutputTokens: number
+  ): AsyncGenerator<ResponsesStreamEvent, void, undefined> {
+    const tool = strictArtifactRepairTool(request);
+    const deadline = createProviderDeadline(
+      PROVIDER_ID,
+      this.requestTimeoutMs,
+      request.signal
+    );
+    const startedAt = performance.now();
+
+    try {
+      const response = await this.fetchFn(
+        strictChatCompletionsUrl(this.baseUrl),
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: this.model,
+            messages: strictArtifactRepairMessages(request),
+            tools: [
+              {
+                type: "function",
+                function: {
+                  name: tool.name,
+                  description: tool.description,
+                  strict: true,
+                  parameters: deepSeekStrictSchema(tool.parameters)
+                }
+              }
+            ],
+            tool_choice: {
+              type: "function",
+              function: { name: tool.name }
+            },
+            thinking: { type: "disabled" },
+            max_tokens: maxOutputTokens,
+            user_id: request.user,
+            stream: false
+          }),
+          redirect: "error",
+          signal: deadline.signal
+        }
+      );
+      const payload = await readJsonResponse(PROVIDER_ID, response);
+      const responseId = pickString(payload, ["id"]);
+      const choices = Array.isArray(payload.choices) ? payload.choices : [];
+      if (!responseId || choices.length !== 1) {
+        throw invalidStrictArtifactRepair(
+          "DeepSeek strict artifact repair returned an invalid completion envelope."
+        );
+      }
+      const choice = asRecord(choices[0]);
+      const finishReason = pickString(choice, ["finish_reason"]);
+      const usage = parseChatCompletionsUsage(asRecord(payload.usage));
+      const providerRequestId =
+        response.headers.get("x-request-id") ??
+        response.headers.get("request-id") ??
+        undefined;
+      const firstEventLatencyMs = Math.max(
+        0,
+        Math.round(performance.now() - startedAt)
+      );
+      if (finishReason === "length") {
+        yield { type: "response-created", responseId };
+        yield {
+          type: "finish",
+          status: "incomplete",
+          responseId,
+          outputText: "",
+          continuationItems: [],
+          usage,
+          incomplete: { reason: "max_output_tokens" },
+          providerRequestId,
+          firstEventLatencyMs,
+          completedWebSearchCalls: 0
+        };
+        return;
+      }
+      if (finishReason === "insufficient_system_resource") {
+        throw new ProviderResponseError(
+          PROVIDER_ID,
+          "DeepSeek strict artifact repair lacked provider resources.",
+          { status: 200, retryable: true }
+        );
+      }
+      if (finishReason === "content_filter" || finishReason === "stop") {
+        throw invalidStrictArtifactRepair(
+          `DeepSeek strict artifact repair ended with ${finishReason}.`
+        );
+      }
+      const message = asRecord(choice.message);
+      const toolCalls = Array.isArray(message.tool_calls)
+        ? message.tool_calls
+        : [];
+      if (finishReason !== "tool_calls" || toolCalls.length !== 1) {
+        throw invalidStrictArtifactRepair(
+          "DeepSeek strict artifact repair did not complete one tool call."
+        );
+      }
+      const call = asRecord(toolCalls[0]);
+      const fn = asRecord(call.function);
+      const callId = pickString(call, ["id"]);
+      const name = pickString(fn, ["name"]);
+      const args = pickString(fn, ["arguments"]);
+      if (!callId || name !== tool.name || args === undefined) {
+        throw invalidStrictArtifactRepair(
+          "DeepSeek strict artifact repair returned an incomplete tool call."
+        );
+      }
+      const continuationItem: ResponsesInputItem = {
+        type: "function_call",
+        call_id: callId,
+        name,
+        arguments: args
+      };
+
+      yield { type: "response-created", responseId };
+      yield {
+        type: "function-call",
+        callId,
+        name,
+        arguments: args
+      };
+      yield {
+        type: "finish",
+        status: "completed",
+        responseId,
+        outputText: "",
+        continuationItems: [continuationItem],
+        usage,
+        providerRequestId,
+        firstEventLatencyMs,
+        completedWebSearchCalls: 0
+      };
+    } catch (cause) {
+      if (deadline.didTimeout()) {
+        throw deadline.timeoutError;
+      }
+      if (request.signal?.aborted) throw cause;
+      if (
+        cause instanceof ProviderResponseError &&
+        cause.status === 200 &&
+        cause.message.includes("non-JSON response")
+      ) {
+        throw new ProviderResponseError(
+          PROVIDER_ID,
+          "DeepSeek strict artifact repair response was interrupted.",
+          { status: 200, retryable: true, cause }
+        );
+      }
+      if (cause instanceof TypeError) {
+        throw new ProviderResponseError(
+          PROVIDER_ID,
+          "DeepSeek strict artifact repair transport failed.",
+          { retryable: true, cause }
+        );
+      }
+      throw cause;
+    } finally {
+      deadline.dispose();
+    }
+  }
+}
+
+function strictArtifactRepairTool(
+  request: ResponsesStreamRequest
+): ResponsesFunctionTool {
+  if (
+    typeof request.toolChoice !== "object" ||
+    request.toolChoice === null ||
+    request.toolChoice.type !== "function" ||
+    request.toolChoice.name !== "create_artifact"
+  ) {
+    throw invalidContinuation(
+      "Strict artifact repair requires a forced create_artifact tool."
+    );
+  }
+  const matches = (request.tools ?? []).filter(
+    (tool): tool is ResponsesFunctionTool =>
+      tool.type === "function" && tool.name === "create_artifact"
+  );
+  if (matches.length !== 1) {
+    throw invalidContinuation(
+      "Strict artifact repair requires exactly one create_artifact definition."
+    );
+  }
+  return matches[0]!;
+}
+
+function strictArtifactRepairMessages(
+  request: ResponsesStreamRequest
+): Array<{ role: "system" | "user"; content: string }> {
+  const cleanInput =
+    typeof request.input === "string"
+      ? request.input
+      : JSON.stringify(
+          request.input.flatMap((item) => {
+            if (item.type !== "message") return [];
+            const record = item as Record<string, unknown>;
+            const role = pickString(record, ["role"]);
+            if (role !== "user" && role !== "assistant") return [];
+            return [
+              {
+                type: "message",
+                role,
+                content: record.content
+              }
+            ];
+          })
+        );
+  return [
+    ...(request.instructions
+      ? [{ role: "system" as const, content: request.instructions }]
+      : []),
+    { role: "user", content: cleanInput }
+  ];
+}
+
+function strictChatCompletionsUrl(baseUrl: string): string {
+  const url = new URL(baseUrl);
+  url.pathname = "/beta/chat/completions";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function deepSeekStrictSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(deepSeekStrictSchema);
+  if (!value || typeof value !== "object") return value;
+  const source = value as Record<string, unknown>;
+  const type = source.type;
+  const output: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(source)) {
+    if (
+      key === "minLength" ||
+      key === "maxLength" ||
+      key === "minItems" ||
+      key === "maxItems" ||
+      key === "uniqueItems" ||
+      key === "required" ||
+      key === "additionalProperties"
+    ) {
+      continue;
+    }
+    if (key === "const" && typeof child === "string") {
+      output.enum = [child];
+      continue;
+    }
+    output[key] = deepSeekStrictSchema(child);
+  }
+  if (
+    output.type === undefined &&
+    Array.isArray(output.enum) &&
+    output.enum.every((item) => typeof item === "string")
+  ) {
+    output.type = "string";
+  }
+  if (type === "object") {
+    const properties = asRecord(output.properties);
+    output.properties = properties;
+    output.required = Object.keys(properties);
+    output.additionalProperties = false;
+  }
+  return output;
+}
+
+function parseChatCompletionsUsage(
+  usage: Record<string, unknown>
+): ResponsesUsage | undefined {
+  if (Object.keys(usage).length === 0) return undefined;
+  const promptDetails = asRecord(usage.prompt_tokens_details);
+  const completionDetails = asRecord(usage.completion_tokens_details);
+  return {
+    inputTokens: pickNumber(usage, ["prompt_tokens"]),
+    cachedInputTokens:
+      pickNumber(usage, ["prompt_cache_hit_tokens"]) ??
+      pickNumber(promptDetails, ["cached_tokens"]),
+    outputTokens: pickNumber(usage, ["completion_tokens"]),
+    reasoningTokens: pickNumber(completionDetails, ["reasoning_tokens"]),
+    totalTokens: pickNumber(usage, ["total_tokens"])
+  };
 }
 
 function serializeTools(tools: ResponsesTool[]): ResponsesTool[] {
@@ -998,6 +1294,10 @@ function malformed(message: string): ProviderResponseError {
 }
 
 function invalidContinuation(message: string): ProviderResponseError {
+  return new ProviderResponseError(PROVIDER_ID, message, { retryable: false });
+}
+
+function invalidStrictArtifactRepair(message: string): ProviderResponseError {
   return new ProviderResponseError(PROVIDER_ID, message, { retryable: false });
 }
 

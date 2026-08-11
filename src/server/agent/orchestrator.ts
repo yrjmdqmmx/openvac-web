@@ -1218,6 +1218,7 @@ export class AgentRunOrchestrator {
       );
     } catch (error) {
       if (!(error instanceof ProviderError) || !error.retryable) throw error;
+      signal.throwIfAborted();
       this.retries += 1;
       return this.collectModelResponse(
         input,
@@ -1290,6 +1291,9 @@ export class AgentRunOrchestrator {
             budgetProfile.outputTokenEnvironmentName,
             budgetProfile.outputTokenFallback
           ),
+      ...(artifactRecoveryMode === "fresh_json_invalid"
+        ? { safeInvocationPhase: "artifact_fresh_json_repair" as const }
+        : {}),
       user: input.userPartition,
       signal
     };
@@ -1370,7 +1374,10 @@ export class AgentRunOrchestrator {
         evidenceSourceIds: this.evidence.list().map((entry) => entry.id),
         webSearched: phase === "web_discovery",
         agentRunId: input.run.runId,
-        protocol: "responses",
+        protocol:
+          request.safeInvocationPhase === "artifact_fresh_json_repair"
+            ? "chat"
+            : "responses",
         phase,
         attempt: this.modelRequests,
         retryOfId: phase.endsWith("_retry")

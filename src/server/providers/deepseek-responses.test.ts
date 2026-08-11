@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { DeepSeekResponsesProvider } from "./deepseek-responses";
 import { ConfigurationError } from "./errors";
+import type { ResponsesStreamRequest } from "./types";
 import { createDeepSeekUserPartition } from "./user-partition";
 
 describe("DeepSeekResponsesProvider", () => {
@@ -331,6 +332,347 @@ describe("DeepSeekResponsesProvider", () => {
     expect(sentBody).not.toHaveProperty(
       "tools.0.parameters.properties.outputUnit"
     );
+  });
+
+  it("routes a fresh artifact JSON repair through one beta strict tool call", async () => {
+    let sentUrl = "";
+    let sentRedirect: RequestRedirect | undefined;
+    let sentBody: Record<string, unknown> = {};
+    const argumentsJson = JSON.stringify({
+      schemaVersion: "openvac.artifact.v1",
+      kind: "diagnosis_report",
+      title: "诊断记录",
+      formats: ["md"],
+      summary: "基于当前输入生成的简洁诊断记录。",
+      sections: [{ heading: "结论", paragraphs: ["先核对测量条件再执行。"] }],
+      tables: []
+    });
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        sentUrl = String(url);
+        sentRedirect = init?.redirect;
+        sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(
+          JSON.stringify({
+            id: "chatcmpl-strict-artifact",
+            choices: [
+              {
+                finish_reason: "tool_calls",
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: "call-strict-artifact",
+                      type: "function",
+                      function: {
+                        name: "create_artifact",
+                        arguments: argumentsJson
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            usage: {
+              prompt_tokens: 700,
+              prompt_cache_hit_tokens: 100,
+              prompt_cache_miss_tokens: 600,
+              completion_tokens: 300,
+              completion_tokens_details: { reasoning_tokens: 0 },
+              total_tokens: 1_000
+            }
+          }),
+          { headers: { "x-request-id": "strict-provider-request" } }
+        );
+      })
+    });
+
+    const events = await collect(
+      provider.stream({
+        instructions:
+          "上一次 create_artifact 参数不是合法 JSON。重新生成一个简洁、完整的调用。",
+        input: [
+          { type: "message", role: "user", content: "生成诊断报告" },
+          {
+            type: "message",
+            role: "assistant",
+            content: "clean-prior-diagnosis"
+          },
+          {
+            type: "function_call",
+            call_id: "private-old-call",
+            name: "create_artifact",
+            arguments: "{private-malformed-arguments"
+          },
+          {
+            type: "function_call_output",
+            call_id: "private-old-call",
+            output: "private-old-output"
+          },
+          { type: "reasoning", id: "private-reasoning" }
+        ],
+        tools: [
+          {
+            type: "function",
+            name: "create_artifact",
+            description: "Create one complete artifact.",
+            strict: true,
+            parameters: {
+              type: "object",
+              additionalProperties: false,
+              required: [
+                "schemaVersion",
+                "kind",
+                "title",
+                "formats",
+                "summary",
+                "sections",
+                "tables"
+              ],
+              properties: {
+                schemaVersion: {
+                  type: "string",
+                  const: "openvac.artifact.v1"
+                },
+                kind: {
+                  type: "string",
+                  enum: ["diagnosis_report", "parameter_table"]
+                },
+                title: { type: "string", minLength: 1, maxLength: 120 },
+                formats: {
+                  type: "array",
+                  minItems: 1,
+                  maxItems: 4,
+                  uniqueItems: true,
+                  items: { enum: ["md", "docx", "pdf", "csv"] }
+                },
+                summary: { type: "string", minLength: 1, maxLength: 600 },
+                sections: {
+                  type: "array",
+                  maxItems: 4,
+                  items: { type: "string" }
+                },
+                tables: {
+                  type: "array",
+                  maxItems: 2,
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["columns", "rows"],
+                    properties: {
+                      title: { type: "string", maxLength: 120 },
+                      columns: { type: "array", items: { type: "string" } },
+                      rows: {
+                        type: "array",
+                        items: {
+                          type: "array",
+                          items: { type: "string", maxLength: 160 }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            type: "function",
+            name: "search_knowledge",
+            description: "Search knowledge.",
+            parameters: { type: "object" }
+          }
+        ],
+        toolChoice: { type: "function", name: "create_artifact" },
+        maxOutputTokens: 8_192,
+        safeInvocationPhase: "artifact_fresh_json_repair",
+        user: "ov1_safe-user"
+      })
+    );
+
+    expect(sentUrl).toBe("https://api.deepseek.com/beta/chat/completions");
+    expect(sentRedirect).toBe("error");
+    expect(sentBody).toMatchObject({
+      model: "deepseek-v4-flash",
+      thinking: { type: "disabled" },
+      max_tokens: 8_192,
+      user_id: "ov1_safe-user",
+      stream: false,
+      tool_choice: {
+        type: "function",
+        function: { name: "create_artifact" }
+      },
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "create_artifact",
+            strict: true,
+            parameters: {
+              type: "object",
+              required: [
+                "schemaVersion",
+                "kind",
+                "title",
+                "formats",
+                "summary",
+                "sections",
+                "tables"
+              ],
+              additionalProperties: false,
+              properties: {
+                schemaVersion: {
+                  type: "string",
+                  enum: ["openvac.artifact.v1"]
+                },
+                formats: {
+                  type: "array",
+                  items: {
+                    type: "string",
+                    enum: ["md", "docx", "pdf", "csv"]
+                  }
+                },
+                tables: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    required: ["title", "columns", "rows"],
+                    additionalProperties: false
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    });
+    expect(sentBody).not.toHaveProperty(
+      "tools.0.function.parameters.properties.title.minLength"
+    );
+    expect(sentBody).not.toHaveProperty(
+      "tools.0.function.parameters.properties.title.maxLength"
+    );
+    expect(sentBody).not.toHaveProperty(
+      "tools.0.function.parameters.properties.formats.minItems"
+    );
+    expect(sentBody).not.toHaveProperty(
+      "tools.0.function.parameters.properties.formats.maxItems"
+    );
+    expect(sentBody).not.toHaveProperty(
+      "tools.0.function.parameters.properties.formats.uniqueItems"
+    );
+    const serializedMessages = JSON.stringify(sentBody.messages);
+    expect(serializedMessages).toContain("上一次 create_artifact");
+    expect(serializedMessages).toContain("生成诊断报告");
+    expect(serializedMessages).toContain("clean-prior-diagnosis");
+    expect(serializedMessages).not.toMatch(
+      /private-old-call|private-malformed|private-old-output|private-reasoning/iu
+    );
+    expect(events).toContainEqual({
+      type: "function-call",
+      callId: "call-strict-artifact",
+      name: "create_artifact",
+      arguments: argumentsJson
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      status: "completed",
+      responseId: "chatcmpl-strict-artifact",
+      continuationItems: [
+        {
+          type: "function_call",
+          call_id: "call-strict-artifact",
+          name: "create_artifact",
+          arguments: argumentsJson
+        }
+      ],
+      providerRequestId: "strict-provider-request",
+      usage: {
+        inputTokens: 700,
+        cachedInputTokens: 100,
+        outputTokens: 300,
+        reasoningTokens: 0,
+        totalTokens: 1_000
+      }
+    });
+  });
+
+  it("preserves usage and an incomplete terminal when strict output hits the token limit", async () => {
+    const provider = strictArtifactRepairProvider({
+      finishReason: "length",
+      usage: {
+        prompt_tokens: 120,
+        prompt_cache_hit_tokens: 20,
+        prompt_cache_miss_tokens: 100,
+        completion_tokens: 80,
+        total_tokens: 200
+      }
+    });
+
+    const events = await collect(
+      provider.stream(strictArtifactRepairRequest())
+    );
+
+    expect(events.at(-1)).toMatchObject({
+      type: "finish",
+      status: "incomplete",
+      incomplete: { reason: "max_output_tokens" },
+      continuationItems: [],
+      usage: {
+        inputTokens: 120,
+        cachedInputTokens: 20,
+        outputTokens: 80,
+        totalTokens: 200
+      }
+    });
+    expect(events).not.toContainEqual(
+      expect.objectContaining({ type: "function-call" })
+    );
+  });
+
+  it.each(["stop", "content_filter"])(
+    "fails closed without retry for a strict %s terminal",
+    async (finishReason) => {
+      const provider = strictArtifactRepairProvider({ finishReason });
+
+      await expect(
+        collect(provider.stream(strictArtifactRepairRequest()))
+      ).rejects.toMatchObject({
+        name: "ProviderResponseError",
+        retryable: false
+      });
+    }
+  );
+
+  it("marks a strict provider resource terminal retryable", async () => {
+    const provider = strictArtifactRepairProvider({
+      finishReason: "insufficient_system_resource"
+    });
+
+    await expect(
+      collect(provider.stream(strictArtifactRepairRequest()))
+    ).rejects.toMatchObject({
+      name: "ProviderResponseError",
+      status: 200,
+      retryable: true
+    });
+  });
+
+  it("marks a truncated HTTP 200 strict response retryable without changing its status", async () => {
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async () => new Response('{"id":"truncated"'))
+    });
+
+    await expect(
+      collect(provider.stream(strictArtifactRepairRequest()))
+    ).rejects.toMatchObject({
+      name: "ProviderResponseError",
+      status: 200,
+      retryable: true
+    });
   });
 
   it("restores high structured output from a fresh trusted calculation input", async () => {
@@ -1618,6 +1960,60 @@ describe("createDeepSeekUserPartition", () => {
     );
   });
 });
+
+function strictArtifactRepairRequest(): ResponsesStreamRequest {
+  return {
+    instructions: "Repair the artifact as one valid JSON tool call.",
+    input: [{ type: "message", role: "user", content: "Create a report." }],
+    tools: [
+      {
+        type: "function",
+        name: "create_artifact",
+        description: "Create one artifact.",
+        strict: true,
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          required: ["title"],
+          properties: { title: { type: "string", minLength: 1 } }
+        }
+      }
+    ],
+    toolChoice: { type: "function", name: "create_artifact" },
+    maxOutputTokens: 8_192,
+    safeInvocationPhase: "artifact_fresh_json_repair",
+    user: "ov1_safe-user"
+  };
+}
+
+function strictArtifactRepairProvider(input: {
+  finishReason: string;
+  usage?: Record<string, unknown>;
+}): DeepSeekResponsesProvider {
+  return new DeepSeekResponsesProvider({
+    apiKey: "test-key",
+    fetch: vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: `chatcmpl-${input.finishReason}`,
+            choices: [
+              {
+                finish_reason: input.finishReason,
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: []
+                }
+              }
+            ],
+            ...(input.usage ? { usage: input.usage } : {})
+          })
+        )
+    )
+  });
+}
 
 function event(
   type: string,
