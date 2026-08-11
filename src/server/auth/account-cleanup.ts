@@ -48,6 +48,11 @@ type DeletedUserCleanupRetryOptions = {
   sleep?: (milliseconds: number) => Promise<void>;
 };
 
+type DeletedUserAvatarCleanupOptions = {
+  getStorage?: () => Pick<ReturnType<typeof getObjectStorage>, "deletePrivate">;
+  objectKey?: (userId: string) => string;
+};
+
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -76,6 +81,20 @@ export async function runDeletedUserDatabaseCleanupWithRetry(
       }
       await wait(retryDelayMs);
     }
+  }
+}
+
+export async function cleanupDeletedUserAvatarBestEffort(
+  userId: string,
+  options: DeletedUserAvatarCleanupOptions = {}
+): Promise<void> {
+  try {
+    const storage = (options.getStorage ?? getObjectStorage)();
+    const objectKey = (options.objectKey ?? accountAvatarObjectKey)(userId);
+    await storage.deletePrivate(objectKey);
+  } catch {
+    // The account is already deleted. Storage construction, key derivation,
+    // and remote deletion failures are all best-effort at this boundary.
   }
 }
 
@@ -256,9 +275,7 @@ export async function cleanupDeletedUser(userId: string): Promise<void> {
   // The private avatar key is derived from the deleted account identifier, so
   // it remains recoverable after the user row has cascaded away. Missing
   // objects are success; cleanup failures must not resurrect a deleted user.
-  await getObjectStorage()
-    .deletePrivate(accountAvatarObjectKey(userId))
-    .catch(() => undefined);
+  await cleanupDeletedUserAvatarBestEffort(userId);
 }
 
 export async function isUserDeletionInProgress(
