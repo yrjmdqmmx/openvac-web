@@ -269,10 +269,12 @@ export type AnswerV3ValidationInput = {
   riskLevel?: AgentV3RiskLevel;
   question?: string;
   requiresExpert?: boolean;
+  minimumLinkCount?: 0 | 1;
   knownEvidenceIds?: Iterable<string>;
   knownLinkIds?: Iterable<string>;
   knownLinkBindings?: Iterable<{
     linkId: string;
+    label?: string;
     evidenceIds: Iterable<string>;
   }>;
   knownArtifactIds?: Iterable<string>;
@@ -370,6 +372,12 @@ export function validateAnswerV3(
   const answer = parsed.data as AnswerV3;
   const references = collectAnswerV3References(answer);
   const errors: string[] = [];
+  const blockLinkIds = answer.blocks.flatMap(collectBlockLinkIds);
+  validateUniqueReferences(blockLinkIds, "link_reference", errors);
+  validateUniqueReferences(answer.usedLinkIds, "usedLinkIds", errors);
+  if (references.linkIds.length < (input.minimumLinkCount ?? 0)) {
+    errors.push("回答必须选择至少一个已验证链接。");
+  }
   const effectiveRisk = input.riskLevel ?? answer.riskLevel;
   if (answer.riskLevel !== effectiveRisk) {
     errors.push(
@@ -441,7 +449,11 @@ export function validateAnswerV3(
     errors
   );
   validateKnownLinkBindings(
-    references.linkIds,
+    answer.blocks.flatMap((block) =>
+      block.type === "link_reference"
+        ? [{ linkId: block.linkId, label: block.label }]
+        : []
+    ),
     references.evidenceIds,
     input.knownLinkBindings,
     errors
@@ -685,6 +697,21 @@ export function requiresExpertAnswer(
   return COMPLEX_QUESTION.test(normalized);
 }
 
+export function requestsVerifiedLinkSelection(question: string): boolean {
+  return question
+    .normalize("NFKC")
+    .split(/[，。；！？,.;!?]/u)
+    .some(
+      (clause) =>
+        !/(?:不要|别|勿|禁止|避免)(?:(?:给出?|提供|附上|列出|展示|返回|查找|检索)\s*)?(?:任何)?\s*(?:(?:已验证|可核验|官方|厂家|来源)\s*)?(?:链接|网址|\burl\b)|(?:无需|不需要|不必)\s*(?:(?:给出?|提供)\s*)?(?:任何)?\s*(?:(?:已验证|可核验|官方|厂家|来源)\s*)?(?:链接|网址|\burl\b)|\b(?:do\s+not|don['’]t|without)\s+(?:(?:include|provide|show|list|return|find)\s+)?(?:(?:any|a|the)\s+)?(?:(?:verified|official|manufacturer|source)\s+)?(?:links?|urls?)\b|\b(?:include|provide|show|list|return|find)\s+no\s+(?:(?:verified|official|manufacturer|source)\s+)?(?:links?|urls?)\b/iu.test(
+          clause
+        ) &&
+        /(?:给出|提供|附上|列出|展示|返回|查找|检索).{0,16}(?:已验证|可核验|官方|厂家|来源)?\s*(?:链接|网址|\burl\b)|(?:链接|网址|\burl\b).{0,8}(?:给我|发我|列出)|\b(?:provide|include|show|list|return|find)\b.{0,32}\b(?:links?|urls?)\b/iu.test(
+          clause
+        )
+    );
+}
+
 const COMPLEX_QUESTION =
   /(?:故障(?:诊断|原因|排查)|选型|推荐(?:型号|泵)|采购|报价|库存|标准(?:条文|要求|编号)|GB\/T|ISO\s*\d|是否安全|能否继续运行|拆修|带电|联锁|抽空时间|有效抽速|流导|漏率|放气率|工程(?:设计|批准)|\d(?:[\d.,]*\d)?\s*(?:Pa|kPa|mbar|bar|Torr|L\/s|m3\/h|m³\/h|℃|°C|K|mm|cm|m))/iu;
 
@@ -837,31 +864,49 @@ function validateKnownReferences(
 }
 
 function validateKnownLinkBindings(
-  linkIds: string[],
+  linkReferences: Array<{ linkId: string; label: string }>,
   evidenceIds: string[],
   bindings:
-    Iterable<{ linkId: string; evidenceIds: Iterable<string> }> | undefined,
+    | Iterable<{
+        linkId: string;
+        label?: string;
+        evidenceIds: Iterable<string>;
+      }>
+    | undefined,
   errors: string[]
 ): void {
-  if (linkIds.length === 0) return;
+  if (linkReferences.length === 0) return;
   if (bindings === undefined) {
     errors.push("回答中的链接缺少已验证证据绑定映射。");
     return;
   }
   const evidenceSet = new Set(evidenceIds);
-  const bindingMap = new Map<string, Set<string>>();
+  const bindingMap = new Map<
+    string,
+    { evidenceIds: Set<string>; label?: string }
+  >();
   for (const binding of bindings) {
-    const known = bindingMap.get(binding.linkId) ?? new Set<string>();
-    for (const evidenceId of binding.evidenceIds) known.add(evidenceId);
+    const known = bindingMap.get(binding.linkId) ?? {
+      evidenceIds: new Set<string>(),
+      ...(binding.label === undefined ? {} : { label: binding.label })
+    };
+    for (const evidenceId of binding.evidenceIds) {
+      known.evidenceIds.add(evidenceId);
+    }
     bindingMap.set(binding.linkId, known);
   }
-  for (const linkId of linkIds) {
-    const boundEvidence = bindingMap.get(linkId);
+  for (const reference of linkReferences) {
+    const binding = bindingMap.get(reference.linkId);
     if (
-      !boundEvidence ||
-      ![...boundEvidence].some((evidenceId) => evidenceSet.has(evidenceId))
+      !binding ||
+      ![...binding.evidenceIds].some((evidenceId) =>
+        evidenceSet.has(evidenceId)
+      )
     ) {
-      errors.push(`链接 ${linkId} 未与回答引用的已验证证据绑定。`);
+      errors.push(`链接 ${reference.linkId} 未与回答引用的已验证证据绑定。`);
+    }
+    if (binding?.label !== undefined && reference.label !== binding.label) {
+      errors.push(`链接 ${reference.linkId} 未使用服务端核验的显示标签。`);
     }
   }
 }
@@ -883,6 +928,16 @@ function compareDeclaredReferences(
     errors.push(
       `${field} 声明了正文未使用的引用：${unique(unused).join(", ")}`
     );
+  }
+}
+
+function validateUniqueReferences(
+  references: string[],
+  field: string,
+  errors: string[]
+): void {
+  if (new Set(references).size !== references.length) {
+    errors.push(`${field} 不得重复声明同一链接。`);
   }
 }
 

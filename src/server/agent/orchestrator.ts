@@ -45,6 +45,7 @@ import {
   buildDeterministicSafeAnswerV3,
   buildDeterministicWebUnavailableAnswerV3,
   collectAnswerV3References,
+  requestsVerifiedLinkSelection,
   requiresExpertAnswer,
   validateAnswerV3,
   type AnswerV3References
@@ -612,6 +613,20 @@ export class AgentRunOrchestrator {
       );
     }
 
+    const finalValidation = this.validateAnswerCandidate(
+      input,
+      answer,
+      this.minimumRequiredLinkCount(input.run.question)
+    );
+    if (!finalValidation.valid) {
+      throw new AgentRuntimeError(
+        "ANSWER_VALIDATION_FAILED",
+        "最终回答未通过结构、引用或安全校验。",
+        false
+      );
+    }
+    answer = finalValidation.answer;
+
     const references = collectAnswerV3References(answer);
     const usedEvidenceIds = references.evidenceIds;
     this.stage("saving", "正在保存回答与引用快照…");
@@ -1020,41 +1035,9 @@ export class AgentRunOrchestrator {
           ? isCurrentTurnRuntimeEvidenceSource(entry.originalSourceId)
           : false;
       });
+    const minimumLinkCount = this.minimumRequiredLinkCount(input.run.question);
     const validate = (value: unknown) =>
-      validateAnswerV3({
-        value: localizeKnownCalculationBlocks(value, this.calculations),
-        riskLevel: input.riskLevel,
-        question: input.run.question,
-        requiresExpert: requiresExpertAnswer(
-          input.run.question,
-          input.riskLevel
-        ),
-        knownEvidenceIds: this.evidence.list().map((entry) => entry.id),
-        knownLinkIds: this.verifiedLinks.keys(),
-        knownLinkBindings: [...this.verifiedLinks.values()].map((link) => ({
-          linkId: link.linkId,
-          evidenceIds: link.evidenceIds ?? []
-        })),
-        knownArtifactIds: this.artifacts.keys(),
-        knownCalculationIds: this.calculations.keys(),
-        forbiddenVisibleTerms: [...this.calculations.values()].flatMap(
-          (calculation) => [
-            calculation.tool,
-            calculation.formulaId,
-            calculation.formulaVersion,
-            ...Object.keys(calculation.normalizedInputs),
-            ...Object.keys(calculation.result)
-          ]
-        ),
-        verifiedEvidenceIds: this.evidence
-          .list()
-          .filter(
-            (entry) =>
-              entry.trustTier === "tier_a" &&
-              ["reviewed", "runtime_verified"].includes(entry.reviewStatus)
-          )
-          .map((entry) => entry.id)
-      });
+      this.validateAnswerCandidate(input, value, minimumLinkCount);
     let validated = validate(safeJson(input.outputText));
     if (!validated.valid) {
       // Local calculation results have already passed strict schema and
@@ -1073,13 +1056,37 @@ export class AgentRunOrchestrator {
         this.calculations.keys()
       );
       if (!candidateUsesGrounding) {
+        if (minimumLinkCount > 0) {
+          throw new AgentRuntimeError(
+            "ANSWER_VALIDATION_FAILED",
+            "回答未能选择请求的已验证链接。",
+            false
+          );
+        }
         return buildDeterministicSafeAnswerV3(
           input.riskLevel,
           "请补充设备型号、工况、单位和希望确认的具体问题。"
         );
       }
+      const repairSourceAnswer = validated.answer;
       const repaired = await this.repair(input, validated.errors);
       validated = validate(safeJson(repaired));
+      if (
+        minimumLinkCount > 0 &&
+        repairSourceAnswer &&
+        validated.valid &&
+        !linkRepairPreservesCandidate(
+          repairSourceAnswer,
+          validated.answer,
+          this.verifiedLinks
+        )
+      ) {
+        throw new AgentRuntimeError(
+          "ANSWER_VALIDATION_FAILED",
+          "链接修复改变了候选回答的事实或引用。",
+          false
+        );
+      }
     }
     if (validated.valid) {
       return requiresWebQuotaFallback(validated.references)
@@ -1090,6 +1097,13 @@ export class AgentRunOrchestrator {
         : validated.answer;
     }
     if (preferCalculationAnswer) return calculationAnswer();
+    if (minimumLinkCount > 0) {
+      throw new AgentRuntimeError(
+        "ANSWER_VALIDATION_FAILED",
+        "回答修复后仍未能选择请求的已验证链接。",
+        false
+      );
+    }
     if (
       this.webSearchFailure &&
       (input.webMode === "always" ||
@@ -1155,19 +1169,23 @@ export class AgentRunOrchestrator {
               "safe_refusal",
               ...(hasGrounding ? ["expert"] : [])
             ];
+    const minimumLinkCount = this.minimumRequiredLinkCount(input.run.question);
     const repairInput: ResponsesInputItem[] = [
       {
         type: "message",
         role: "user",
         content: JSON.stringify({
-          task: "Repair the candidate into valid openvac.answer.v3 JSON. Do not add new facts, citations, links, artifacts, or calculations.",
+          task: "Repair the candidate into valid openvac.answer.v3 JSON. Do not add new facts, citations, artifacts, calculations, or any link outside allowedLinkIds.",
           requiredRiskLevel: input.riskLevel,
+          minimumLinkCount,
           allowedAnswerKinds,
           repairRules: [
             "The answer riskLevel must equal requiredRiskLevel exactly.",
             "When no allowed evidence or calculation exists, do not use answerKind expert; use clarification or safe_refusal.",
             "Do not turn a permission denial into a claim that an attachment was accessed.",
-            "Each link_reference must cite at least one evidence ID from its allowedLinkBindings entry in a paragraph, list, table, or callout block; usedEvidenceIds and usedLinkIds must exactly match block references."
+            "Each link_reference must use the exact linkId and label from allowedLinkBindings and cite at least one evidence ID from that binding in a paragraph, list, table, or callout block; usedEvidenceIds and usedLinkIds must exactly match block references.",
+            "Use each allowed link ID at most once across link_reference blocks and usedLinkIds.",
+            "When minimumLinkCount is 1, select at least one existing allowedLinkId; never invent a link or evidence ID."
           ],
           validationErrors: errors.slice(0, 20),
           allowedEvidenceIds: this.evidence.list().map((entry) => entry.id),
@@ -1175,6 +1193,7 @@ export class AgentRunOrchestrator {
           allowedLinkIds: [...this.verifiedLinks.keys()],
           allowedLinkBindings: [...this.verifiedLinks.values()].map((link) => ({
             linkId: link.linkId,
+            label: link.label,
             evidenceIds: link.evidenceIds ?? []
           })),
           allowedArtifactIds: [...this.artifacts.keys()],
@@ -1191,6 +1210,53 @@ export class AgentRunOrchestrator {
     );
     if (result.finish.status !== "completed") return "";
     return result.finish.outputText || result.outputText;
+  }
+
+  private minimumRequiredLinkCount(question: string): 0 | 1 {
+    return this.verifiedLinks.size > 0 &&
+      requestsVerifiedLinkSelection(question)
+      ? 1
+      : 0;
+  }
+
+  private validateAnswerCandidate(
+    input: { run: CreatedRun; riskLevel: RiskLevel },
+    value: unknown,
+    minimumLinkCount: 0 | 1
+  ) {
+    return validateAnswerV3({
+      value: localizeKnownCalculationBlocks(value, this.calculations),
+      riskLevel: input.riskLevel,
+      question: input.run.question,
+      requiresExpert: requiresExpertAnswer(input.run.question, input.riskLevel),
+      minimumLinkCount,
+      knownEvidenceIds: this.evidence.list().map((entry) => entry.id),
+      knownLinkIds: this.verifiedLinks.keys(),
+      knownLinkBindings: [...this.verifiedLinks.values()].map((link) => ({
+        linkId: link.linkId,
+        label: link.label,
+        evidenceIds: link.evidenceIds ?? []
+      })),
+      knownArtifactIds: this.artifacts.keys(),
+      knownCalculationIds: this.calculations.keys(),
+      forbiddenVisibleTerms: [...this.calculations.values()].flatMap(
+        (calculation) => [
+          calculation.tool,
+          calculation.formulaId,
+          calculation.formulaVersion,
+          ...Object.keys(calculation.normalizedInputs),
+          ...Object.keys(calculation.result)
+        ]
+      ),
+      verifiedEvidenceIds: this.evidence
+        .list()
+        .filter(
+          (entry) =>
+            entry.trustTier === "tier_a" &&
+            ["reviewed", "runtime_verified"].includes(entry.reviewStatus)
+        )
+        .map((entry) => entry.id)
+    });
   }
 
   private async requestWithOneRetry(
@@ -1479,6 +1545,29 @@ export function candidateUsesOnlyKnownGrounding(
     evidenceIds.every((id) => knownEvidence.has(id)) &&
     calculationIds.every((id) => knownCalculations.has(id))
   );
+}
+
+function linkRepairPreservesCandidate(
+  candidate: AnswerV3,
+  repaired: AnswerV3,
+  allowedLinks: ReadonlyMap<string, VerifiedLinkPart>
+): boolean {
+  const withoutLinks = (answer: AnswerV3) => ({
+    ...answer,
+    blocks: answer.blocks.filter((block) => block.type !== "link_reference"),
+    usedLinkIds: []
+  });
+  if (
+    JSON.stringify(withoutLinks(candidate)) !==
+    JSON.stringify(withoutLinks(repaired))
+  ) {
+    return false;
+  }
+  return repaired.blocks.every((block) => {
+    if (block.type !== "link_reference") return true;
+    const allowed = allowedLinks.get(block.linkId);
+    return Boolean(allowed && block.label === allowed.label);
+  });
 }
 
 type CollectedModelResponse = {
