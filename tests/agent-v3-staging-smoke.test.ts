@@ -142,6 +142,19 @@ describe("Agent V3 staging runtime smoke safety", () => {
     );
   });
 
+  it("keeps report finalization failures separate from principal cleanup", () => {
+    expect(
+      publicSmokeFailureDiagnostic({
+        stage: "report_finalize",
+        code: "ACCEPTANCE_SECRET_SCAN_FAILED"
+      })
+    ).toEqual({
+      schemaVersion: "openvac.agent-v3-staging-failure.v1",
+      stage: "report_finalize",
+      code: "ACCEPTANCE_SECRET_SCAN_FAILED"
+    });
+  });
+
   it("reports a bounded attachment substage without object or URL details", () => {
     const diagnostic = publicSmokeFailureDiagnostic({
       stage: "attachment_ready",
