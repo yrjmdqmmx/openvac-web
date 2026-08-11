@@ -591,7 +591,7 @@ jobs:
           cp "$source_dir/openvac-web-release.digest" "$RUNNER_TEMP/openvac-web-release.digest"
           cp "$source_dir/openvac-web-release.digest.sha256" "$RUNNER_TEMP/openvac-web-release.digest.sha256"
       - name: Upload the same-run web deployment archive
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: openvac-web-release-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -1048,7 +1048,7 @@ jobs:
             --run-attempt "$GITHUB_RUN_ATTEMPT"
       - if: inputs.target == 'staging'
         name: Save complete Agent V3 staging acceptance provenance
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: openvac-staging-provenance-${{ inputs.commit_sha }}-${{ steps.deploy.outputs.digest_hex }}
           path: ${{ runner.temp }}/openvac-agent-v3-acceptance
