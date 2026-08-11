@@ -1455,7 +1455,7 @@ export function buildAgentV3InstructionsForRisk(
     AGENT_V3_INSTRUCTIONS,
     `本轮服务端风险等级已固定为 ${riskLevel}；最终答案的 riskLevel 必须原样使用该值，不得由模型重新分类。`,
     "如果复杂或中高风险回答没有可用证据或服务端确定性计算，不得生成无依据的 expert；应使用 clarification 或 safe_refusal。",
-    "调用 create_artifact 时，sections 与 tables 至少一个非空；CSV 必须包含非空 tables；每个 section 的 paragraphs 非空；每个 table 的 rows 非空、列名不重复且每行单元格数必须等于 columns 数。",
+    "调用 create_artifact 时，sections 与 tables 至少一个非空；CSV 必须包含非空 tables；每个 section 的 paragraphs 非空。只有通用 ArtifactSpec table 使用 columns 和 cell 数组并要求列数相等；专用 parameter_table provider contract 必须遵循工具定义的 row 对象。",
     ARTIFACT_PROVIDER_INSTRUCTION,
     ...(artifactRecoveryMode === "fresh_json_invalid"
       ? [FRESH_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION]
