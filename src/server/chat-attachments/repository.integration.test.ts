@@ -314,6 +314,130 @@ describeDatabase("chat attachment repository integration", () => {
     userIds.splice(userIds.indexOf(ownerId), 1);
   });
 
+  it("deletes an account after a ready artifact has been queued for object cleanup", async () => {
+    const ownerId = `artifact-delete-${randomUUID()}`;
+    userIds.push(ownerId);
+    await db.insert(users).values({
+      id: ownerId,
+      name: "Artifact Deleting Owner",
+      email: `${ownerId}@example.test`
+    });
+    const conversationId = randomUUID();
+    await db.insert(conversations).values({
+      id: conversationId,
+      userId: ownerId,
+      title: "Delete ready artifact"
+    });
+    const userMessageId = randomUUID();
+    await db.insert(messages).values({
+      id: userMessageId,
+      conversationId,
+      userId: ownerId,
+      sequence: 1,
+      role: "user",
+      content: "Create a report"
+    });
+    const sourceTurnId = randomUUID();
+    await db.insert(conversationTurns).values({
+      id: sourceTurnId,
+      conversationId,
+      userMessageId,
+      ordinal: 1
+    });
+    const assistantMessageId = randomUUID();
+    await db.insert(messages).values({
+      id: assistantMessageId,
+      conversationId,
+      userId: ownerId,
+      sequence: 2,
+      role: "assistant",
+      content: ""
+    });
+    const runId = randomUUID();
+    await db.insert(agentRuns).values({
+      id: runId,
+      turnId: sourceTurnId,
+      userId: ownerId,
+      assistantMessageId,
+      clientRequestId: randomUUID(),
+      version: 1,
+      model: "test-model",
+      status: "running"
+    });
+
+    const artifactId = randomUUID();
+    const fileId = randomUUID();
+    const objectKey =
+      `private/chat-artifacts/abcdef0123456789abcdef01/${conversationId}/` +
+      `${artifactId}/${fileId}/diagnosis.pdf`;
+    objectKeys.push(objectKey);
+    const repository = new PostgresChatArtifactStorageRepository(
+      sqlClient as never
+    );
+    await repository.createArtifact({
+      artifactId,
+      userId: ownerId,
+      conversationId,
+      runId,
+      assistantMessageId,
+      spec: {
+        schemaVersion: "openvac.artifact.v1",
+        kind: "diagnosis_report",
+        title: "Diagnosis",
+        formats: ["pdf"],
+        summary: "Summary",
+        sections: [{ heading: "Result", paragraphs: ["Ready"] }],
+        tables: [],
+        sourceTurnId
+      }
+    });
+    await repository.reserveFile({
+      fileId,
+      artifactId,
+      userId: ownerId,
+      conversationId,
+      format: "pdf",
+      filename: "diagnosis.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 128,
+      sha256: "e".repeat(64),
+      objectKey
+    });
+    await repository.commitFile({ fileId, artifactId, userId: ownerId });
+    await repository.completeArtifact({
+      artifactId,
+      userId: ownerId,
+      conversationId
+    });
+
+    const deletion = await db.transaction((transaction) =>
+      enqueueConversationStorageDeletion(transaction, {
+        userId: ownerId,
+        conversationIds: [conversationId],
+        deleteMetadata: true
+      })
+    );
+    expect(deletion).toMatchObject({
+      artifactsDeleted: 1,
+      objectsQueued: 1,
+      committedBytesReleased: 128
+    });
+    await db.delete(conversations).where(eq(conversations.id, conversationId));
+    await prepareUserDeletion(ownerId);
+    await db.delete(users).where(eq(users.id, ownerId));
+
+    const [job] = await db
+      .select()
+      .from(chatStorageDeletionJobs)
+      .where(eq(chatStorageDeletionJobs.objectKey, objectKey));
+    expect(job).toMatchObject({
+      userId: null,
+      objectType: "artifact",
+      status: "queued"
+    });
+    userIds.splice(userIds.indexOf(ownerId), 1);
+  });
+
   it("shares the same locked 500 MiB quota with artifact files", async () => {
     const ownerId = `artifact-owner-${randomUUID()}`;
     userIds.push(ownerId);
