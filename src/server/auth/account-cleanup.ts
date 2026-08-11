@@ -21,6 +21,18 @@ export class AdminAccountDeletionForbiddenError extends Error {
   }
 }
 
+export class DeletedUserDatabaseCleanupError extends Error {
+  readonly code = "DELETED_USER_DATABASE_CLEANUP_FAILED";
+
+  constructor(options: { cause: unknown }) {
+    super(
+      "Deleted-user database cleanup failed after bounded retries",
+      options
+    );
+    this.name = "DeletedUserDatabaseCleanupError";
+  }
+}
+
 export function assertUserCanSelfDelete(
   roleAssignments: ReadonlyArray<{ role: string }>
 ): void {
@@ -204,38 +216,42 @@ export async function prepareUserDeletion(userId: string): Promise<void> {
 }
 
 export async function cleanupDeletedUser(userId: string): Promise<void> {
-  await runDeletedUserDatabaseCleanupWithRetry(async () => {
-    await db.transaction(async (transaction) => {
-      // Better Auth runs afterDelete outside the beforeDelete transaction. Scan
-      // once more after the actual user deletion so a late row can never retain
-      // request correlation or free-form personal data.
-      await transaction
-        .update(auditLogs)
-        .set({
-          actorUserId: sql`case
-            when ${auditLogs.actorUserId} = ${userId} then null
-            else ${auditLogs.actorUserId}
-          end`,
-          targetId: anonymizedAuditTargetId(userId),
-          requestId: null,
-          ipAddress: null,
-          userAgent: null,
-          before: null,
-          after: null,
-          metadata: {}
-        })
-        .where(auditReferencesUser(userId));
+  try {
+    await runDeletedUserDatabaseCleanupWithRetry(async () => {
+      await db.transaction(async (transaction) => {
+        // Better Auth runs afterDelete outside the beforeDelete transaction. Scan
+        // once more after the actual user deletion so a late row can never retain
+        // request correlation or free-form personal data.
+        await transaction
+          .update(auditLogs)
+          .set({
+            actorUserId: sql`case
+              when ${auditLogs.actorUserId} = ${userId} then null
+              else ${auditLogs.actorUserId}
+            end`,
+            targetId: anonymizedAuditTargetId(userId),
+            requestId: null,
+            ipAddress: null,
+            userAgent: null,
+            before: null,
+            after: null,
+            metadata: {}
+          })
+          .where(auditReferencesUser(userId));
 
-      await transaction
-        .delete(quotaBucket)
-        .where(
-          and(
-            eq(quotaBucket.scopeType, "user"),
-            eq(quotaBucket.scopeKey, userId)
-          )
-        );
+        await transaction
+          .delete(quotaBucket)
+          .where(
+            and(
+              eq(quotaBucket.scopeType, "user"),
+              eq(quotaBucket.scopeKey, userId)
+            )
+          );
+      });
     });
-  });
+  } catch (cause) {
+    throw new DeletedUserDatabaseCleanupError({ cause });
+  }
 
   // The private avatar key is derived from the deleted account identifier, so
   // it remains recoverable after the user row has cascaded away. Missing

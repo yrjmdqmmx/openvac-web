@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertUserCanSelfDelete,
+  DeletedUserDatabaseCleanupError,
   runDeletedUserDatabaseCleanupWithRetry
 } from "./account-cleanup";
 
@@ -60,5 +61,16 @@ describe("post-delete database cleanup retry", () => {
       )
     ).rejects.toBe(failure);
     expect(attempts).toBe(3);
+  });
+
+  it("exposes only a fixed code for the final database cleanup boundary", () => {
+    const cause = new Error("database response details");
+    const error = new DeletedUserDatabaseCleanupError({ cause });
+
+    expect(error).toMatchObject({
+      name: "DeletedUserDatabaseCleanupError",
+      code: "DELETED_USER_DATABASE_CLEANUP_FAILED",
+      cause
+    });
   });
 });

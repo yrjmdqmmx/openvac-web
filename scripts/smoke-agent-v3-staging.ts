@@ -18,6 +18,7 @@ import {
 } from "../src/evals/vision/qwen-vl-benchmark";
 import {
   cleanupDeletedUser,
+  DeletedUserDatabaseCleanupError,
   prepareUserDeletion
 } from "../src/server/auth/account-cleanup";
 import { renderArtifactFiles } from "../src/server/artifacts";
@@ -87,6 +88,7 @@ const SMOKE_DIAGNOSTIC_STAGES = [
   "tool_validation",
   "case_cleanup",
   "principal_cleanup",
+  "report_finalize",
   "report_write"
 ] as const;
 const SMOKE_DIAGNOSTIC_STAGE_SET = new Set<string>(SMOKE_DIAGNOSTIC_STAGES);
@@ -392,6 +394,9 @@ async function main(): Promise<void> {
         try {
           await destroyTemporaryPrincipal(principal);
         } catch (error) {
+          if (error instanceof DeletedUserDatabaseCleanupError) {
+            markSmokeDiagnostic("principal_cleanup", { code: error.code });
+          }
           captureSmokeFailure();
           throw error;
         }
@@ -405,8 +410,17 @@ async function main(): Promise<void> {
           visionBenchmark
         })
     });
+    markSmokeDiagnostic("report_finalize", {
+      code: "RUNTIME_EVIDENCE_SERIALIZATION_FAILED"
+    });
     const serializedEvidence = `${JSON.stringify(runtimeEvidence, null, 2)}\n`;
+    markSmokeDiagnostic("report_finalize", {
+      code: "RUNTIME_EVIDENCE_HASH_FAILED"
+    });
     const runtimeEvidenceSha256 = sha256(Buffer.from(serializedEvidence));
+    markSmokeDiagnostic("report_finalize", {
+      code: "PUBLIC_SMOKE_REPORT_BUILD_FAILED"
+    });
     const smoke = publicSmokeReport({
       gitSha,
       imageDigest,
@@ -415,6 +429,9 @@ async function main(): Promise<void> {
       runtimeCaseCount: runtimeEvidence.cases.length
     });
     const serializedSmoke = `${JSON.stringify(smoke, null, 2)}\n`;
+    markSmokeDiagnostic("report_finalize", {
+      code: "ACCEPTANCE_SECRET_SCAN_FAILED"
+    });
     assertNoSecrets(serializedEvidence, serializedSmoke, secret);
     markSmokeDiagnostic("report_write");
     await mkdir(outputDirectory, { recursive: true });
