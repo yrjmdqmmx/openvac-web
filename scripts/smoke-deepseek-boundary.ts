@@ -3,6 +3,10 @@ import {
   answerV3Schema,
   buildDeterministicCalculationAnswerV3,
   buildDeterministicSafeAnswerV3,
+  extractTrustedPumpdownArguments,
+  trustedPumpdownProjectionFromToolTurn,
+  type ToolExecutionResult,
+  type TrustedPumpdownProjection,
   validateAnswerV3
 } from "../src/server/agent";
 import type { CalculationResult, RiskLevel } from "../src/types/chat";
@@ -10,7 +14,8 @@ import type { AnswerV3 } from "../src/types/chat-v3";
 import {
   ProviderError,
   ProviderResponseError,
-  ProviderTimeoutError
+  ProviderTimeoutError,
+  type ResponsesInputItem
 } from "../src/server/providers";
 
 export type DeepSeekSmokeBoundaryResult = {
@@ -76,6 +81,86 @@ export async function collectCompletedSafetyProbeWithOneRetry<
     "safety",
     "provider_other"
   );
+}
+
+export async function collectDeepSeekToolProbeWithOneTransportRetry<T>(
+  collect: () => Promise<T>
+): Promise<T> {
+  try {
+    return await collect();
+  } catch (error) {
+    if (!(error instanceof ProviderError) || !error.retryable) throw error;
+    return collect();
+  }
+}
+
+export function buildDeepSeekSmokeTrustedExecutionCall(input: {
+  question: string;
+  modelInput: ResponsesInputItem[];
+  providerCall: { callId: string; name: string; arguments: string };
+}): { callId: string; name: string; arguments: string } | undefined {
+  if (input.providerCall.name !== "estimate_pumpdown_time") return undefined;
+  const trustedArguments = extractTrustedPumpdownArguments(
+    input.question,
+    input.modelInput
+  );
+  return trustedArguments
+    ? {
+        callId: input.providerCall.callId,
+        name: input.providerCall.name,
+        arguments: JSON.stringify(trustedArguments)
+      }
+    : undefined;
+}
+
+export async function executeDeepSeekSmokeTrustedToolTurn(input: {
+  question: string;
+  modelInput: ResponsesInputItem[];
+  probe: {
+    terminal: string;
+    calls: Array<{ callId: string; name: string; arguments: string }>;
+    continuationItems: ResponsesInputItem[];
+  };
+  execute: (call: {
+    callId: string;
+    name: string;
+    arguments: string;
+  }) => Promise<ToolExecutionResult>;
+}): Promise<{
+  projection: TrustedPumpdownProjection;
+  calculations: CalculationResult[];
+}> {
+  const providerCall = input.probe.calls[0];
+  if (
+    input.probe.terminal !== "completed" ||
+    input.probe.calls.length !== 1 ||
+    !providerCall ||
+    providerCall.name !== "estimate_pumpdown_time"
+  ) {
+    throw new DeepSeekSmokeFailure("TOOL_CALL_INVALID");
+  }
+  const executionCall = buildDeepSeekSmokeTrustedExecutionCall({
+    question: input.question,
+    modelInput: input.modelInput,
+    providerCall
+  });
+  if (!executionCall) {
+    throw classifyDeepSeekToolExecutionFailure("CALCULATION_INPUT_INVALID");
+  }
+  const execution = await input.execute(executionCall);
+  if (!execution.ok) {
+    throw classifyDeepSeekToolExecutionFailure(execution.errorCode);
+  }
+  const projection = trustedPumpdownProjectionFromToolTurn({
+    calls: input.probe.calls,
+    executedCalls: [executionCall],
+    continuationItems: input.probe.continuationItems,
+    outputs: [execution]
+  });
+  if (!projection) {
+    throw new DeepSeekSmokeFailure("TOOL_CONTINUATION_INVALID");
+  }
+  return { projection, calculations: execution.calculations };
 }
 
 export function classifyDeepSeekSmokeProviderFailure(
@@ -152,16 +237,6 @@ export function classifyDeepSeekToolExecutionFailure(
           ? "timeout"
           : "request_contract";
   return new DeepSeekSmokeFailure("TOOL_EXECUTION_FAILED", "tool_first", kind);
-}
-
-export function shouldRetryDeepSeekToolArguments(
-  errorCode: string | undefined
-): boolean {
-  return (
-    errorCode === "INVALID_TOOL_ARGUMENTS_JSON" ||
-    errorCode === "INVALID_TOOL_ARGUMENTS" ||
-    errorCode === "CALCULATION_INPUT_INVALID"
-  );
 }
 
 export function applyDeepSeekSmokeBoundary(input: {

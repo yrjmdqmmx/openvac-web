@@ -1,11 +1,12 @@
+import { pathToFileURL } from "node:url";
+
 import {
   answerV3JsonSchemaForRisk,
   buildTrustedCalculationFinalInput,
   buildAgentV3InstructionsForRisk,
   classifyVacuumRisk,
   EvidenceRegistry,
-  ToolRegistry,
-  trustedPumpdownProjectionFromToolTurn
+  ToolRegistry
 } from "../src/server/agent";
 import {
   createDeepSeekUserPartition,
@@ -19,12 +20,12 @@ import {
   applyDeepSeekToolProjectionBoundary,
   applyDeepSeekSmokeBoundary,
   classifyDeepSeekSmokeProviderFailure,
-  classifyDeepSeekToolExecutionFailure,
+  collectDeepSeekToolProbeWithOneTransportRetry,
   collectCompletedSafetyProbeWithOneRetry,
   DeepSeekSmokeFailure,
+  executeDeepSeekSmokeTrustedToolTurn,
   parseDeepSeekSmokeAnswer,
-  publicDeepSeekSmokeFailure,
-  shouldRetryDeepSeekToolArguments
+  publicDeepSeekSmokeFailure
 } from "./smoke-deepseek-boundary";
 
 async function main() {
@@ -107,8 +108,11 @@ type ProbeResult = {
   continuationItems: ResponsesInputItem[];
 };
 
+type DeepSeekProbeProvider = Pick<DeepSeekResponsesProvider, "stream">;
+type DeepSeekProbeRegistry = Pick<ToolRegistry, "definitions" | "execute">;
+
 async function collectProbe(
-  provider: DeepSeekResponsesProvider,
+  provider: DeepSeekProbeProvider,
   request: ResponsesStreamRequest
 ): Promise<ProbeResult> {
   let outputText = "";
@@ -129,9 +133,10 @@ async function collectProbe(
   return { outputText, terminal, usage, calls, continuationItems };
 }
 
-async function runToolContinuationProbe(
-  provider: DeepSeekResponsesProvider,
-  userPartition: string
+export async function runToolContinuationProbe(
+  provider: DeepSeekProbeProvider,
+  userPartition: string,
+  registry: DeepSeekProbeRegistry = new ToolRegistry(new EvidenceRegistry())
 ): Promise<{
   terminal: "completed";
   callCount: 1;
@@ -141,74 +146,46 @@ async function runToolContinuationProbe(
   const question =
     "腔体体积 100 L、等效抽速 10 L/s；估算从 100 Pa 抽到 1 Pa 的理想抽空时间。";
   const risk = classifyVacuumRisk(question);
-  const registry = new ToolRegistry(new EvidenceRegistry());
   const input: ResponsesInputItem[] = [
     { type: "message", role: "user", content: question }
   ];
-  let first: ProbeResult | undefined;
-  let execution: Awaited<ReturnType<ToolRegistry["execute"]>> | undefined;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      first = await collectProbe(provider, {
-        instructions: buildAgentV3InstructionsForRisk(risk.level),
-        input,
-        tools: registry.definitions,
-        toolChoice: { type: "function", name: "estimate_pumpdown_time" },
-        reasoningEffort: "high",
-        textFormat: {
-          type: "json_schema",
-          name: "openvac_answer_v3",
-          schema: answerV3JsonSchemaForRisk(risk.level),
-          strict: true
-        },
-        user: userPartition
-      });
-    } catch (error) {
-      throw classifyDeepSeekSmokeProviderFailure(
-        "PROVIDER_REQUEST_FAILED",
-        "tool_first",
-        error
-      );
-    }
-    const call = first.calls[0];
-    if (
-      first.terminal !== "completed" ||
-      first.calls.length !== 1 ||
-      !call ||
-      call.name !== "estimate_pumpdown_time"
-    ) {
-      throw new DeepSeekSmokeFailure("TOOL_CALL_INVALID");
-    }
-    execution = await registry.execute({
-      callId: call.callId,
-      name: call.name,
-      arguments: call.arguments
-    });
-    if (execution.ok) break;
-    if (
-      attempt === 0 &&
-      shouldRetryDeepSeekToolArguments(execution.errorCode)
-    ) {
-      continue;
-    }
-    throw classifyDeepSeekToolExecutionFailure(execution.errorCode);
+  let first: ProbeResult;
+  try {
+    const request: ResponsesStreamRequest = {
+      instructions: buildAgentV3InstructionsForRisk(risk.level),
+      input,
+      tools: registry.definitions,
+      toolChoice: { type: "function", name: "estimate_pumpdown_time" },
+      reasoningEffort: "high",
+      textFormat: {
+        type: "json_schema",
+        name: "openvac_answer_v3",
+        schema: answerV3JsonSchemaForRisk(risk.level),
+        strict: true
+      },
+      user: userPartition
+    };
+    first = await collectDeepSeekToolProbeWithOneTransportRetry(() =>
+      collectProbe(provider, request)
+    );
+  } catch (error) {
+    throw classifyDeepSeekSmokeProviderFailure(
+      "PROVIDER_REQUEST_FAILED",
+      "tool_first",
+      error
+    );
   }
-  if (!first || !execution?.ok) {
-    throw new DeepSeekSmokeFailure("TOOL_EXECUTION_FAILED");
-  }
-  const projection = trustedPumpdownProjectionFromToolTurn({
-    calls: first.calls,
-    continuationItems: first.continuationItems,
-    outputs: [execution]
+  const trustedTurn = await executeDeepSeekSmokeTrustedToolTurn({
+    question,
+    modelInput: input,
+    probe: first,
+    execute: (call) => registry.execute(call)
   });
-  if (!projection) {
-    throw new DeepSeekSmokeFailure("TOOL_CONTINUATION_INVALID");
-  }
   let final: ProbeResult;
   try {
     final = await collectProbe(provider, {
       instructions: buildAgentV3InstructionsForRisk(risk.level),
-      input: buildTrustedCalculationFinalInput(input, projection),
+      input: buildTrustedCalculationFinalInput(input, trustedTurn.projection),
       toolChoice: "none",
       reasoningEffort: "high",
       textFormat: {
@@ -238,8 +215,8 @@ async function runToolContinuationProbe(
   const boundary = applyDeepSeekToolProjectionBoundary({
     candidate: parsed,
     riskLevel: risk.level === "medium" ? "medium" : "low",
-    calculations: execution.calculations,
-    calculationIds: new Set([projection.calculationId])
+    calculations: trustedTurn.calculations,
+    calculationIds: new Set([trustedTurn.projection.calculationId])
   });
   return {
     terminal: "completed",
@@ -249,7 +226,12 @@ async function runToolContinuationProbe(
   };
 }
 
-main().catch((error) => {
-  console.error(JSON.stringify(publicDeepSeekSmokeFailure(error)));
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((error) => {
+    console.error(JSON.stringify(publicDeepSeekSmokeFailure(error)));
+    process.exitCode = 1;
+  });
+}

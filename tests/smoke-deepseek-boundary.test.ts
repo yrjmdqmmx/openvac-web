@@ -2,26 +2,32 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   buildDeterministicSafeAnswerV3,
+  EvidenceRegistry,
   executeCalculator,
   renderAnswerV3,
+  ToolRegistry,
   validateAnswerV3
 } from "../src/server/agent";
 import type { AnswerV3 } from "../src/types/chat-v3";
 import {
   applyDeepSeekSmokeBoundary,
   applyDeepSeekToolProjectionBoundary,
+  buildDeepSeekSmokeTrustedExecutionCall,
   classifyDeepSeekSmokeProviderFailure,
   classifyDeepSeekToolExecutionFailure,
+  collectDeepSeekToolProbeWithOneTransportRetry,
   collectCompletedSafetyProbeWithOneRetry,
   DeepSeekSmokeFailure,
   parseDeepSeekSmokeAnswer,
-  publicDeepSeekSmokeFailure,
-  shouldRetryDeepSeekToolArguments
+  publicDeepSeekSmokeFailure
 } from "../scripts/smoke-deepseek-boundary";
+import { runToolContinuationProbe } from "../scripts/smoke-deepseek";
 import {
   ProviderError,
   ProviderResponseError,
-  ProviderTimeoutError
+  ProviderTimeoutError,
+  type ResponsesStreamEvent,
+  type ResponsesStreamRequest
 } from "../src/server/providers";
 
 const direct: AnswerV3 = {
@@ -41,15 +47,316 @@ const direct: AnswerV3 = {
 };
 
 describe("DeepSeek release smoke semantic boundary", () => {
-  it.each([
-    ["INVALID_TOOL_ARGUMENTS_JSON", true],
-    ["INVALID_TOOL_ARGUMENTS", true],
-    ["CALCULATION_INPUT_INVALID", true],
-    ["TOOL_TIMEOUT", false],
-    ["TOOL_EXECUTION_FAILED", false],
-    [undefined, false]
-  ])("limits tool retries to argument failures: %s", (code, expected) => {
-    expect(shouldRetryDeepSeekToolArguments(code)).toBe(expected);
+  it("retries one identical physical tool probe only for retryable transport failures", async () => {
+    const collect = vi
+      .fn<() => Promise<{ terminal: string }>>()
+      .mockRejectedValueOnce(
+        new ProviderError("transient", {
+          provider: "deepseek-responses",
+          status: 503,
+          retryable: true
+        })
+      )
+      .mockResolvedValueOnce({ terminal: "completed" });
+
+    await expect(
+      collectDeepSeekToolProbeWithOneTransportRetry(collect)
+    ).resolves.toEqual({ terminal: "completed" });
+    expect(collect).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a semantic or non-retryable tool probe failure", async () => {
+    const failure = new ProviderError("request invalid", {
+      provider: "deepseek-responses",
+      status: 422,
+      retryable: false
+    });
+    const collect = vi.fn<() => Promise<never>>().mockRejectedValue(failure);
+
+    await expect(
+      collectDeepSeekToolProbeWithOneTransportRetry(collect)
+    ).rejects.toBe(failure);
+    expect(collect).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops after the second retryable transport failure", async () => {
+    const failures = ["first", "second"].map(
+      (message) =>
+        new ProviderError(message, {
+          provider: "deepseek-responses",
+          status: 503,
+          retryable: true
+        })
+    );
+    const collect = vi
+      .fn<() => Promise<never>>()
+      .mockRejectedValueOnce(failures[0])
+      .mockRejectedValueOnce(failures[1]);
+
+    await expect(
+      collectDeepSeekToolProbeWithOneTransportRetry(collect)
+    ).rejects.toBe(failures[1]);
+    expect(collect).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["{malformed", "{}", "private-provider-sentinel"])(
+    "builds trusted execution arguments without replaying provider arguments: %s",
+    (providerArguments) => {
+      const question =
+        "腔体体积 100 L、等效抽速 10 L/s；估算从 100 Pa 抽到 1 Pa 的理想抽空时间。";
+      const providerCall = {
+        callId: "call-smoke",
+        name: "estimate_pumpdown_time",
+        arguments: providerArguments
+      };
+      const executionCall = buildDeepSeekSmokeTrustedExecutionCall({
+        question,
+        modelInput: [{ type: "message", role: "user", content: question }],
+        providerCall
+      });
+
+      expect(executionCall).toEqual({
+        callId: providerCall.callId,
+        name: providerCall.name,
+        arguments: JSON.stringify({
+          volume: { value: 100, unit: "L" },
+          pumpingSpeed: { value: 10, unit: "L/s" },
+          initialPressure: { value: 100, unit: "Pa" },
+          targetPressure: { value: 1, unit: "Pa" },
+          outputUnit: "s"
+        })
+      });
+      expect(executionCall?.arguments).not.toContain(providerArguments);
+    }
+  );
+
+  it("fails trusted smoke extraction closed without using provider arguments", () => {
+    expect(
+      buildDeepSeekSmokeTrustedExecutionCall({
+        question: "估算抽空时间。",
+        modelInput: [
+          { type: "message", role: "user", content: "估算抽空时间。" }
+        ],
+        providerCall: {
+          callId: "call-smoke",
+          name: "estimate_pumpdown_time",
+          arguments: "private-provider-sentinel"
+        }
+      })
+    ).toBeUndefined();
+  });
+
+  it.each(["{malformed", "{}", "private-provider-sentinel"])(
+    "runs the complete trusted smoke turn without replaying raw arguments: %s",
+    async (providerArguments) => {
+      const requests: ResponsesStreamRequest[] = [];
+      const provider = {
+        stream: async function* (
+          request: ResponsesStreamRequest
+        ): AsyncGenerator<ResponsesStreamEvent> {
+          requests.push(request);
+          if (requests.length === 1) {
+            const continuationItems = [
+              {
+                type: "function_call" as const,
+                call_id: "call-smoke",
+                name: "estimate_pumpdown_time",
+                arguments: providerArguments
+              }
+            ];
+            yield {
+              type: "function-call",
+              callId: "call-smoke",
+              name: "estimate_pumpdown_time",
+              arguments: providerArguments
+            };
+            yield {
+              type: "finish",
+              status: "completed",
+              responseId: "response-tool",
+              outputText: "",
+              continuationItems
+            };
+            return;
+          }
+          yield {
+            type: "finish",
+            status: "completed",
+            responseId: "response-final",
+            outputText: "{}",
+            continuationItems: []
+          };
+        }
+      };
+      const realRegistry = new ToolRegistry(new EvidenceRegistry());
+      const execute = vi.fn(realRegistry.execute.bind(realRegistry));
+
+      await expect(
+        runToolContinuationProbe(provider, "partition", {
+          definitions: realRegistry.definitions,
+          execute
+        })
+      ).resolves.toMatchObject({
+        terminal: "completed",
+        callCount: 1,
+        resultTransport: "trusted_projection",
+        semanticRecovery: "deterministic_calculation"
+      });
+
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute).toHaveBeenCalledWith({
+        callId: "call-smoke",
+        name: "estimate_pumpdown_time",
+        arguments: JSON.stringify({
+          volume: { value: 100, unit: "L" },
+          pumpingSpeed: { value: 10, unit: "L/s" },
+          initialPressure: { value: 100, unit: "Pa" },
+          targetPressure: { value: 1, unit: "Pa" },
+          outputUnit: "s"
+        })
+      });
+      expect(requests).toHaveLength(2);
+      expect(requests[1]?.toolChoice).toBe("none");
+      expect(
+        Array.isArray(requests[1]?.input)
+          ? requests[1].input.map((item) => item.type)
+          : []
+      ).toEqual(["message", "message"]);
+      expect(JSON.stringify(requests[1]?.input)).not.toMatch(
+        /function_call|function_call_output|private-provider-sentinel|\{malformed/u
+      );
+    }
+  );
+
+  it("fails the complete smoke turn after one trusted execution failure without a final request", async () => {
+    const requests: ResponsesStreamRequest[] = [];
+    const provider = {
+      stream: async function* (
+        request: ResponsesStreamRequest
+      ): AsyncGenerator<ResponsesStreamEvent> {
+        requests.push(request);
+        yield {
+          type: "function-call",
+          callId: "call-smoke",
+          name: "estimate_pumpdown_time",
+          arguments: "private-provider-sentinel"
+        };
+        yield {
+          type: "finish",
+          status: "completed",
+          responseId: "response-tool",
+          outputText: "",
+          continuationItems: [
+            {
+              type: "function_call",
+              call_id: "call-smoke",
+              name: "estimate_pumpdown_time",
+              arguments: "private-provider-sentinel"
+            }
+          ]
+        };
+      }
+    };
+    const definitions = new ToolRegistry(new EvidenceRegistry()).definitions;
+    const execute = vi.fn(async (call: { callId: string }) => ({
+      ok: false as const,
+      outputItem: {
+        type: "function_call_output" as const,
+        call_id: call.callId,
+        output: JSON.stringify({ ok: false, error: "TOOL_TIMEOUT" })
+      },
+      errorCode: "TOOL_TIMEOUT",
+      evidenceIds: [],
+      calculations: [],
+      verifiedLinks: [],
+      artifacts: [],
+      missingInputs: []
+    }));
+
+    const action = runToolContinuationProbe(provider, "partition", {
+      definitions,
+      execute
+    });
+    await expect(action).rejects.toMatchObject({
+      code: "TOOL_EXECUTION_FAILED",
+      phase: "tool_first",
+      kind: "timeout"
+    });
+    expect(requests).toHaveLength(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(
+      JSON.stringify(
+        publicDeepSeekSmokeFailure(await action.catch((error) => error))
+      )
+    ).not.toContain("private-provider-sentinel");
+  });
+
+  it("fails the complete smoke turn on continuation identity mismatch without a final request", async () => {
+    const requests: ResponsesStreamRequest[] = [];
+    const provider = {
+      stream: async function* (
+        request: ResponsesStreamRequest
+      ): AsyncGenerator<ResponsesStreamEvent> {
+        requests.push(request);
+        yield {
+          type: "function-call",
+          callId: "call-smoke",
+          name: "estimate_pumpdown_time",
+          arguments: "private-provider-sentinel"
+        };
+        yield {
+          type: "finish",
+          status: "completed",
+          responseId: "response-tool",
+          outputText: "",
+          continuationItems: [
+            {
+              type: "function_call",
+              call_id: "different-call",
+              name: "estimate_pumpdown_time",
+              arguments: "private-provider-sentinel"
+            }
+          ]
+        };
+      }
+    };
+    const realRegistry = new ToolRegistry(new EvidenceRegistry());
+    const execute = vi.fn(realRegistry.execute.bind(realRegistry));
+
+    await expect(
+      runToolContinuationProbe(provider, "partition", {
+        definitions: realRegistry.definitions,
+        execute
+      })
+    ).rejects.toMatchObject({ code: "TOOL_CONTINUATION_INVALID" });
+    expect(requests).toHaveLength(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries the exact same tool-first request only after a retryable transport error", async () => {
+    const requests: ResponsesStreamRequest[] = [];
+    const provider = {
+      stream: async function* (
+        request: ResponsesStreamRequest
+      ): AsyncGenerator<ResponsesStreamEvent> {
+        requests.push(request);
+        throw new ProviderError("transient", {
+          provider: "deepseek-responses",
+          status: 503,
+          retryable: true
+        });
+      }
+    };
+
+    await expect(
+      runToolContinuationProbe(provider, "partition")
+    ).rejects.toMatchObject({
+      code: "PROVIDER_REQUEST_FAILED",
+      phase: "tool_first",
+      kind: "provider_5xx"
+    });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
   });
 
   it("retries one side-effect-free safety probe after an invalid terminal", async () => {
