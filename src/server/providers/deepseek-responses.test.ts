@@ -599,6 +599,151 @@ describe("DeepSeekResponsesProvider", () => {
     });
   });
 
+  it("uses one sanitized paired continuation with the strict beta contract", async () => {
+    let sentBody: Record<string, unknown> = {};
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async (_url, init) => {
+        sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(
+          JSON.stringify({
+            id: "chatcmpl-continuation-repair",
+            choices: [
+              {
+                finish_reason: "tool_calls",
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: "call-repaired",
+                      type: "function",
+                      function: {
+                        name: "create_artifact",
+                        arguments: '{"title":"repaired"}'
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          })
+        );
+      })
+    });
+    const request = strictArtifactRepairRequest();
+    request.safeInvocationPhase = "artifact_continuation_repair";
+    request.input = [
+      { type: "message", role: "user", content: "Create a parameter table." },
+      {
+        type: "function_call",
+        call_id: "call-calculation",
+        name: "estimate_pumpdown_time",
+        arguments: '{"privatePriorCalculation":true}'
+      },
+      {
+        type: "function_call_output",
+        call_id: "call-calculation",
+        output:
+          '{"ok":false,"error":"INVALID_TOOL_ARGUMENTS","missingInputs":["calculation.unit"],"privatePriorResult":true}'
+      },
+      {
+        type: "function_call",
+        call_id: "call-old",
+        name: "create_artifact",
+        arguments: '{"title":"old"}'
+      },
+      {
+        type: "function_call_output",
+        call_id: "call-old",
+        output: JSON.stringify({
+          ok: false,
+          error: "INVALID_TOOL_ARGUMENTS",
+          missingInputs: ["parameterTable.assumption"],
+          private: "must-not-cross-the-provider-boundary"
+        })
+      },
+      { type: "reasoning", id: "private-reasoning" }
+    ];
+
+    await collect(provider.stream(request));
+
+    expect(sentBody.messages).toEqual([
+      { role: "system", content: request.instructions },
+      {
+        role: "user",
+        content: JSON.stringify([
+          {
+            type: "message",
+            role: "user",
+            content: "Create a parameter table."
+          }
+        ])
+      },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-old",
+            type: "function",
+            function: {
+              name: "create_artifact",
+              arguments: '{"title":"old"}'
+            }
+          }
+        ]
+      },
+      {
+        role: "tool",
+        tool_call_id: "call-old",
+        content: JSON.stringify({
+          ok: false,
+          error: "INVALID_TOOL_ARGUMENTS",
+          missingInputs: ["parameterTable.assumption"]
+        })
+      }
+    ]);
+    expect(JSON.stringify(sentBody.messages)).not.toMatch(
+      /must-not-cross|private-reasoning|privatePriorCalculation|privatePriorResult/iu
+    );
+  });
+
+  it("rejects an oversized strict continuation before provider transport", async () => {
+    const fetchMock = vi.fn();
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: fetchMock
+    });
+    const request = strictArtifactRepairRequest();
+    request.safeInvocationPhase = "artifact_continuation_repair";
+    request.input = [
+      { type: "message", role: "user", content: "Create a parameter table." },
+      {
+        type: "function_call",
+        call_id: "call-old",
+        name: "create_artifact",
+        arguments: JSON.stringify({ value: "x".repeat(64 * 1024) })
+      },
+      {
+        type: "function_call_output",
+        call_id: "call-old",
+        output: JSON.stringify({
+          ok: false,
+          error: "INVALID_TOOL_ARGUMENTS",
+          missingInputs: ["providerEnvelope.rawArgumentBytes"]
+        })
+      }
+    ];
+
+    await expect(collect(provider.stream(request))).rejects.toMatchObject({
+      name: "ProviderResponseError",
+      retryable: false
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("preserves usage and an incomplete terminal when strict output hits the token limit", async () => {
     const provider = strictArtifactRepairProvider({
       finishReason: "length",

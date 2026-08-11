@@ -298,7 +298,12 @@ describe("Agent V3 artifact provider requests", () => {
     expect(requests[2]?.instructions).not.toContain(
       "上一次 create_artifact 参数不是合法 JSON"
     );
-    expect(requests[2]?.safeInvocationPhase).toBeUndefined();
+    expect(requests[2]?.instructions).toContain(
+      "根据已配对的工具结果中列出的缺失路径"
+    );
+    expect(requests[2]?.safeInvocationPhase).toBe(
+      "artifact_continuation_repair"
+    );
   });
 
   it("retries one semantic repair with the identical clean transport payload", async () => {
@@ -560,6 +565,172 @@ describe("Agent V3 artifact provider requests", () => {
     });
   });
 
+  it("carries a semantic-invalid parameter table through one paired strict repair", async () => {
+    const subject = artifactRunSubject([]);
+    const invalidArguments = JSON.stringify({
+      ...validParameterProviderArguments(),
+      tables: [
+        {
+          title: "泵组参数",
+          rows: [
+            {
+              parameter: "有效抽速",
+              valueOrStatus: "待用户确认",
+              unit: "L/s",
+              assumptionOrCondition: "-"
+            }
+          ]
+        }
+      ]
+    });
+    const validArguments = JSON.stringify(validParameterProviderArguments());
+    const urls: string[] = [];
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const provider = new DeepSeekResponsesProvider({
+      apiKey: "test-key",
+      fetch: vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        urls.push(String(url));
+        requestBodies.push(
+          JSON.parse(String(init?.body)) as Record<string, unknown>
+        );
+        if (urls.length === 1) {
+          return new Response(
+            responsesSse([
+              {
+                type: "response.created",
+                sequence_number: 0,
+                response: { id: "response-semantic-invalid" }
+              },
+              {
+                type: "response.output_item.done",
+                sequence_number: 1,
+                item: {
+                  type: "function_call",
+                  call_id: "semantic-invalid-call",
+                  name: "create_artifact",
+                  arguments: invalidArguments
+                }
+              },
+              {
+                type: "response.completed",
+                sequence_number: 2,
+                response: {
+                  id: "response-semantic-invalid",
+                  output: [
+                    {
+                      type: "function_call",
+                      call_id: "semantic-invalid-call",
+                      name: "create_artifact",
+                      arguments: invalidArguments
+                    }
+                  ]
+                }
+              }
+            ])
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            id: "chatcmpl-semantic-valid",
+            choices: [
+              {
+                finish_reason: "tool_calls",
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: "semantic-valid-call",
+                      type: "function",
+                      function: {
+                        name: "create_artifact",
+                        arguments: validArguments
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          })
+        );
+      })
+    });
+    const invoke = subject.invoke as typeof subject.invoke & {
+      provider: ResponsesProvider;
+    };
+    invoke.provider = provider;
+    const prototype = AgentRunOrchestrator.prototype as unknown as {
+      requestWithOneRetry(...args: unknown[]): Promise<unknown>;
+    };
+    subject.invoke.requestWithOneRetry = prototype.requestWithOneRetry.bind(
+      subject.orchestrator
+    ) as ReturnType<typeof vi.fn>;
+    subject.invoke.meteredStream = async function* (
+      _input: Record<string, unknown>,
+      request: ResponsesStreamRequest
+    ): AsyncGenerator<ResponsesStreamEvent> {
+      subject.invoke.modelRequests += 1;
+      yield* provider.stream(request);
+    };
+
+    await expect(
+      subject.orchestrator.run(subject.input)
+    ).resolves.toMatchObject({ status: "completed" });
+
+    expect(urls).toEqual([
+      "https://api.deepseek.com/responses",
+      "https://api.deepseek.com/beta/chat/completions"
+    ]);
+    expect(requestBodies[1]).toMatchObject({
+      thinking: { type: "disabled" },
+      max_tokens: MAX_ARTIFACT_PROVIDER_OUTPUT_TOKENS,
+      tools: [
+        {
+          function: {
+            strict: true,
+            parameters: {
+              properties: {
+                contractVersion: {
+                  enum: ["openvac.parameter-table-provider.v1"]
+                }
+              }
+            }
+          }
+        }
+      ],
+      messages: expect.arrayContaining([
+        expect.objectContaining({ role: "assistant" }),
+        expect.objectContaining({
+          role: "tool",
+          content: expect.stringContaining("assumptionOrCondition")
+        })
+      ])
+    });
+    expect(subject.storage.create).toHaveBeenCalledTimes(1);
+    expect(subject.storage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        spec: expect.objectContaining({
+          kind: "parameter_table",
+          tables: [
+            {
+              title: "泵组参数",
+              columns: ["参数", "数值或状态", "单位", "假设或工况"],
+              rows: [["有效抽速", "待用户确认", "L/s", "待用户确认"]]
+            }
+          ]
+        })
+      })
+    );
+    expect(subject.store.recordToolCall).toHaveBeenCalledTimes(1);
+    expect(subject.orchestrator.counters).toMatchObject({
+      modelRequests: 2,
+      repairs: 1,
+      toolRounds: 1,
+      toolCalls: 1
+    });
+  });
+
   it("repairs a semantic-invalid parameter table once before storage", async () => {
     const subject = artifactRunSubject([
       artifactModelResponse([
@@ -585,7 +756,7 @@ describe("Agent V3 artifact provider requests", () => {
       "continuation_invalid_arguments"
     );
     expect(JSON.stringify(subject.request.mock.calls[1]?.[1])).toContain(
-      "parameterTable.assumption"
+      "assumptionOrCondition"
     );
     expect(subject.storage.create).toHaveBeenCalledTimes(1);
     expect(subject.store.recordToolCall).toHaveBeenCalledTimes(1);
@@ -625,6 +796,36 @@ describe("Agent V3 artifact provider requests", () => {
       }
     );
     expect(subject.request).toHaveBeenCalledTimes(2);
+    expect(subject.storage.create).not.toHaveBeenCalled();
+    expect(subject.store.recordToolCall).not.toHaveBeenCalled();
+    expect(subject.store.complete).not.toHaveBeenCalled();
+    expect(subject.orchestrator.counters).toMatchObject({
+      modelRequests: 2,
+      repairs: 1,
+      toolRounds: 0,
+      toolCalls: 0
+    });
+  });
+
+  it("rejects a mixed valid and invalid parameter-row repair without side effects", async () => {
+    const mixedArguments = JSON.stringify(
+      mixedInvalidParameterProviderArguments()
+    );
+    const subject = artifactRunSubject([
+      artifactModelResponse([
+        { callId: "mixed-invalid-call-1", arguments: mixedArguments }
+      ]),
+      artifactModelResponse([
+        { callId: "mixed-invalid-call-2", arguments: mixedArguments }
+      ])
+    ]);
+
+    await expect(subject.orchestrator.run(subject.input)).rejects.toMatchObject(
+      {
+        code: "INVALID_TOOL_ARGUMENTS",
+        retryable: false
+      }
+    );
     expect(subject.storage.create).not.toHaveBeenCalled();
     expect(subject.store.recordToolCall).not.toHaveBeenCalled();
     expect(subject.store.complete).not.toHaveBeenCalled();
@@ -842,17 +1043,27 @@ function artifactRunInput(run: {
 }
 
 function validParameterArtifactArguments() {
+  return validParameterProviderArguments();
+}
+
+function validParameterProviderArguments() {
   return {
-    schemaVersion: "openvac.artifact.v1",
-    kind: "parameter_table",
+    contractVersion: "openvac.parameter-table-provider.v1",
     title: "泵组选型参数表",
     formats: ["csv"],
     summary: "参数、单位和假设",
     sections: [],
     tables: [
       {
-        columns: ["参数", "值", "单位/假设"],
-        rows: [["有效抽速", "10", "L/s；假设稳态"]]
+        title: "泵组参数",
+        rows: [
+          {
+            parameter: "有效抽速",
+            valueOrStatus: "待用户确认",
+            unit: "L/s",
+            assumptionOrCondition: "待用户确认"
+          }
+        ]
       }
     ]
   };
@@ -864,8 +1075,36 @@ function invalidParameterArtifactArguments() {
     summary: "参数表包含单位和假设",
     tables: [
       {
-        columns: ["参数", "值", "单位/假设"],
-        rows: [["有效抽速", "10", "L/s"]]
+        title: "泵组参数",
+        rows: [
+          {
+            parameter: "有效抽速",
+            valueOrStatus: "10",
+            unit: "L/s",
+            assumptionOrCondition: "-"
+          }
+        ]
+      }
+    ]
+  };
+}
+
+function mixedInvalidParameterProviderArguments() {
+  const valid = validParameterProviderArguments();
+  return {
+    ...valid,
+    tables: [
+      {
+        title: "泵组参数",
+        rows: [
+          valid.tables[0]!.rows[0]!,
+          {
+            parameter: "极限压力",
+            valueOrStatus: "待用户确认",
+            unit: "-",
+            assumptionOrCondition: "-"
+          }
+        ]
       }
     ]
   };

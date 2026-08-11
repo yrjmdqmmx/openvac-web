@@ -23,6 +23,7 @@ import type {
 import {
   ArtifactToolService,
   hasExplicitArtifactIntent,
+  hasExplicitParameterTableIntent,
   MAX_ARTIFACT_SPEC_BYTES,
   type ArtifactStorage,
   UnconfiguredArtifactStorage
@@ -32,7 +33,11 @@ import {
   type AttachmentStorage,
   UnconfiguredAttachmentStorage
 } from "./attachment-tools";
-import { inspectParameterTableSemantics } from "./artifact-semantics";
+import {
+  hasAssumptionValueText,
+  hasPhysicalUnitValue,
+  inspectParameterTableSemantics
+} from "./artifact-semantics";
 import {
   calculatorSchemas,
   executeCalculator,
@@ -62,6 +67,11 @@ export const ARTIFACT_PROVIDER_LIMITS = {
   cellCharacters: 160,
   formats: 4
 } as const;
+
+export const PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION =
+  "openvac.parameter-table-provider.v1";
+
+export type ArtifactProviderContract = "parameter_table";
 
 export const ARTIFACT_PROVIDER_INSTRUCTION = [
   "create_artifact 必须只返回一个简洁、完整的函数调用。",
@@ -125,6 +135,117 @@ const artifactProviderTableSchema = z
       .max(ARTIFACT_PROVIDER_LIMITS.rowsPerTable)
   })
   .strict();
+
+const parameterTableProviderRowSchema = z
+  .object({
+    parameter: z
+      .string()
+      .trim()
+      .min(1)
+      .max(ARTIFACT_PROVIDER_LIMITS.cellCharacters),
+    valueOrStatus: z
+      .string()
+      .trim()
+      .min(1)
+      .max(ARTIFACT_PROVIDER_LIMITS.cellCharacters),
+    unit: z.string().trim().min(1).max(ARTIFACT_PROVIDER_LIMITS.cellCharacters),
+    assumptionOrCondition: z
+      .string()
+      .trim()
+      .min(1)
+      .max(ARTIFACT_PROVIDER_LIMITS.cellCharacters)
+  })
+  .strict()
+  .superRefine((row, context) => {
+    if (!hasPhysicalUnitValue(row.unit)) {
+      context.addIssue({
+        code: "custom",
+        path: ["unit"],
+        message: "Provider parameter row requires a physical unit."
+      });
+    }
+    if (!hasAssumptionValueText(row.assumptionOrCondition)) {
+      context.addIssue({
+        code: "custom",
+        path: ["assumptionOrCondition"],
+        message: "Provider parameter row requires an assumption or condition."
+      });
+    }
+  });
+
+export const parameterTableProviderSchema = z
+  .object({
+    contractVersion: z.literal(PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION),
+    title: z
+      .string()
+      .trim()
+      .min(1)
+      .max(ARTIFACT_PROVIDER_LIMITS.titleCharacters),
+    formats: z
+      .array(z.enum(["md", "docx", "pdf", "csv"]))
+      .min(1)
+      .max(ARTIFACT_PROVIDER_LIMITS.formats),
+    summary: z
+      .string()
+      .trim()
+      .min(1)
+      .max(ARTIFACT_PROVIDER_LIMITS.summaryCharacters),
+    sections: z
+      .array(
+        z
+          .object({
+            heading: z
+              .string()
+              .trim()
+              .min(1)
+              .max(ARTIFACT_PROVIDER_LIMITS.titleCharacters),
+            paragraphs: z
+              .array(
+                z
+                  .string()
+                  .trim()
+                  .min(1)
+                  .max(ARTIFACT_PROVIDER_LIMITS.paragraphCharacters)
+              )
+              .min(1)
+              .max(ARTIFACT_PROVIDER_LIMITS.paragraphsPerSection)
+          })
+          .strict()
+      )
+      .max(ARTIFACT_PROVIDER_LIMITS.sections),
+    tables: z
+      .array(
+        z
+          .object({
+            title: z
+              .string()
+              .trim()
+              .min(1)
+              .max(ARTIFACT_PROVIDER_LIMITS.titleCharacters),
+            rows: z
+              .array(parameterTableProviderRowSchema)
+              .min(1)
+              .max(ARTIFACT_PROVIDER_LIMITS.rowsPerTable)
+          })
+          .strict()
+      )
+      .min(1)
+      .max(ARTIFACT_PROVIDER_LIMITS.tables)
+  })
+  .strict()
+  .superRefine((spec, context) => {
+    const totalRows = spec.tables.reduce(
+      (sum, table) => sum + table.rows.length,
+      0
+    );
+    if (totalRows > ARTIFACT_PROVIDER_LIMITS.totalRows) {
+      context.addIssue({
+        code: "custom",
+        path: ["tables"],
+        message: "Provider parameter tables exceed the total row limit."
+      });
+    }
+  });
 
 export const createArtifactProviderSchema = z
   .object({
@@ -214,6 +335,42 @@ export function visibleStringCharacters(value: unknown): number {
   );
 }
 
+export function parameterTableProviderPayloadToArtifactArguments(
+  input: z.infer<typeof parameterTableProviderSchema>
+): z.infer<typeof createArtifactSchema> {
+  return {
+    schemaVersion: "openvac.artifact.v1",
+    kind: "parameter_table",
+    title: input.title,
+    formats: [...input.formats],
+    summary: input.summary,
+    sections: input.sections.map((section) => ({
+      heading: section.heading,
+      paragraphs: [...section.paragraphs]
+    })),
+    tables: input.tables.map((table) => ({
+      title: table.title,
+      columns: ["参数", "数值或状态", "单位", "假设或工况"],
+      rows: table.rows.map((row) => [
+        row.parameter,
+        row.valueOrStatus,
+        row.unit,
+        row.assumptionOrCondition
+      ])
+    }))
+  };
+}
+
+function isParameterTableProviderPayload(value: unknown): boolean {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).contractVersion ===
+      PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION
+  );
+}
+
 export type ToolExecutionResult = {
   ok: boolean;
   errorCode?: string;
@@ -257,6 +414,7 @@ export type ToolRegistryOptions = {
 
 export class ToolRegistry {
   readonly definitions: ResponsesFunctionTool[];
+  readonly artifactProviderContract?: ArtifactProviderContract;
   private readonly options?: ToolRegistryOptions;
   private readonly attachmentIds: string[];
   private readonly attachmentService?: AttachmentToolService;
@@ -297,6 +455,10 @@ export class ToolRegistry {
     options?: ToolRegistryOptions
   ) {
     this.options = options;
+    this.artifactProviderContract =
+      options && hasExplicitParameterTableIntent(options.question)
+        ? "parameter_table"
+        : undefined;
     this.timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.attachmentIds = options
       ? options.inputParts.flatMap((part) =>
@@ -343,7 +505,11 @@ export class ToolRegistry {
       ...(this.verifiedUrlReader ? [readVerifiedUrlDefinition()] : []),
       ...(this.attachmentIds.length ? attachmentDefinitions() : []),
       ...(options && hasExplicitArtifactIntent(options.question)
-        ? [createArtifactDefinition()]
+        ? [
+            this.artifactProviderContract === "parameter_table"
+              ? createParameterTableArtifactDefinition()
+              : createArtifactDefinition()
+          ]
         : [])
     ];
   }
@@ -420,6 +586,55 @@ export class ToolRegistry {
             [],
             [],
             ["providerEnvelope.rawArgumentBytes"]
+          )
+        };
+      }
+      if (this.artifactProviderContract === "parameter_table") {
+        if (!isParameterTableProviderPayload(raw)) {
+          return {
+            ok: false,
+            result: this.output(
+              input.callId,
+              {
+                ok: false,
+                error: "INVALID_TOOL_ARGUMENTS",
+                missingInputs: ["parameterTable.providerContract"]
+              },
+              [],
+              [],
+              ["parameterTable.providerContract"]
+            )
+          };
+        }
+        const parameterTableParsed =
+          parameterTableProviderSchema.safeParse(raw);
+        if (!parameterTableParsed.success) {
+          return {
+            ok: false,
+            result: this.invalid(input.callId, parameterTableParsed.error)
+          };
+        }
+        raw = parameterTableProviderPayloadToArtifactArguments(
+          parameterTableParsed.data
+        );
+      } else if (
+        Boolean(raw) &&
+        typeof raw === "object" &&
+        !Array.isArray(raw) &&
+        (raw as Record<string, unknown>).kind === "parameter_table"
+      ) {
+        return {
+          ok: false,
+          result: this.output(
+            input.callId,
+            {
+              ok: false,
+              error: "INVALID_TOOL_ARGUMENTS",
+              missingInputs: ["parameterTable.providerContract"]
+            },
+            [],
+            [],
+            ["parameterTable.providerContract"]
           )
         };
       }
@@ -795,11 +1010,18 @@ export class ToolRegistry {
   }
 
   private invalid(callId: string, error: z.ZodError): ToolExecutionResult {
-    return this.output(callId, {
-      ok: false,
-      error: "INVALID_TOOL_ARGUMENTS",
-      missingInputs: error.issues.map((issue) => issue.path.join("."))
-    });
+    const missingInputs = error.issues.map((issue) => issue.path.join("."));
+    return this.output(
+      callId,
+      {
+        ok: false,
+        error: "INVALID_TOOL_ARGUMENTS",
+        missingInputs
+      },
+      [],
+      [],
+      missingInputs
+    );
   }
 
   private output(
@@ -906,6 +1128,134 @@ function attachmentDefinitions(): ResponsesFunctionTool[] {
   ];
 }
 
+function createParameterTableArtifactDefinition(): ResponsesFunctionTool {
+  return {
+    type: "function",
+    name: "create_artifact",
+    description:
+      "创建一个泵组或真空系统参数表。每一行必须由模型明确提供参数、数值或状态、真实物理单位、以及假设或适用工况；信息不足时数值或状态及假设可标记待用户确认，但单位必须是该参数适用的真实物理单位。服务端只做结构映射，不会补写内容。",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "contractVersion",
+        "title",
+        "formats",
+        "summary",
+        "sections",
+        "tables"
+      ],
+      properties: {
+        contractVersion: {
+          type: "string",
+          const: PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION
+        },
+        title: {
+          type: "string",
+          minLength: 1,
+          maxLength: ARTIFACT_PROVIDER_LIMITS.titleCharacters
+        },
+        formats: {
+          type: "array",
+          minItems: 1,
+          maxItems: ARTIFACT_PROVIDER_LIMITS.formats,
+          uniqueItems: true,
+          items: {
+            type: "string",
+            enum: ["md", "docx", "pdf", "csv"]
+          }
+        },
+        summary: {
+          type: "string",
+          minLength: 1,
+          maxLength: ARTIFACT_PROVIDER_LIMITS.summaryCharacters
+        },
+        sections: {
+          type: "array",
+          maxItems: ARTIFACT_PROVIDER_LIMITS.sections,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["heading", "paragraphs"],
+            properties: {
+              heading: {
+                type: "string",
+                minLength: 1,
+                maxLength: ARTIFACT_PROVIDER_LIMITS.titleCharacters
+              },
+              paragraphs: {
+                type: "array",
+                minItems: 1,
+                maxItems: ARTIFACT_PROVIDER_LIMITS.paragraphsPerSection,
+                items: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: ARTIFACT_PROVIDER_LIMITS.paragraphCharacters
+                }
+              }
+            }
+          }
+        },
+        tables: {
+          type: "array",
+          minItems: 1,
+          maxItems: ARTIFACT_PROVIDER_LIMITS.tables,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["title", "rows"],
+            properties: {
+              title: {
+                type: "string",
+                minLength: 1,
+                maxLength: ARTIFACT_PROVIDER_LIMITS.titleCharacters
+              },
+              rows: {
+                type: "array",
+                minItems: 1,
+                maxItems: ARTIFACT_PROVIDER_LIMITS.rowsPerTable,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: [
+                    "parameter",
+                    "valueOrStatus",
+                    "unit",
+                    "assumptionOrCondition"
+                  ],
+                  properties: {
+                    parameter: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: ARTIFACT_PROVIDER_LIMITS.cellCharacters
+                    },
+                    valueOrStatus: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: ARTIFACT_PROVIDER_LIMITS.cellCharacters
+                    },
+                    unit: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: ARTIFACT_PROVIDER_LIMITS.cellCharacters
+                    },
+                    assumptionOrCondition: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: ARTIFACT_PROVIDER_LIMITS.cellCharacters
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    strict: true
+  };
+}
+
 function createArtifactDefinition(): ResponsesFunctionTool {
   const textArray = {
     type: "array",
@@ -937,12 +1287,7 @@ function createArtifactDefinition(): ResponsesFunctionTool {
         schemaVersion: { type: "string", const: "openvac.artifact.v1" },
         kind: {
           type: "string",
-          enum: [
-            "diagnosis_report",
-            "selection_report",
-            "inspection_checklist",
-            "parameter_table"
-          ]
+          enum: ["diagnosis_report", "selection_report", "inspection_checklist"]
         },
         title: {
           type: "string",

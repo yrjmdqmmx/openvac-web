@@ -5,6 +5,7 @@ import type { ArtifactSpec } from "@/types/chat-v3";
 import {
   ArtifactToolService,
   hasExplicitArtifactIntent,
+  hasExplicitParameterTableIntent,
   type ArtifactStorage,
   UnconfiguredArtifactStorage
 } from "./artifact-tools";
@@ -34,6 +35,27 @@ describe("hasExplicitArtifactIntent", () => {
   ])("does not expose creation for a mere artifact mention: %s", (question) => {
     expect(hasExplicitArtifactIntent(question)).toBe(false);
   });
+});
+
+describe("hasExplicitParameterTableIntent", () => {
+  it.each([
+    "生成泵组选型参数表，并导出 CSV。",
+    "Please create a parameter table and export CSV."
+  ])("selects the dedicated provider contract: %s", (question) => {
+    expect(hasExplicitParameterTableIntent(question)).toBe(true);
+  });
+
+  it.each([
+    "解释这份参数表",
+    "生成诊断报告并附参数表",
+    "创建检查清单和参数表",
+    "不要生成参数表"
+  ])(
+    "keeps mixed or non-creation requests on the generic contract: %s",
+    (question) => {
+      expect(hasExplicitParameterTableIntent(question)).toBe(false);
+    }
+  );
 });
 
 describe("ArtifactToolService", () => {

@@ -76,7 +76,7 @@ const unitExpression = new RegExp(
   "iu"
 );
 
-function hasPhysicalUnitValue(value: string): boolean {
+export function hasPhysicalUnitValue(value: string): boolean {
   const normalized = value.trim();
   if (
     normalized.length === 0 ||
@@ -99,7 +99,7 @@ function hasPhysicalUnitValue(value: string): boolean {
   return compact.length <= 48 && unitExpression.test(compact);
 }
 
-function hasAssumptionValueText(value: string): boolean {
+export function hasAssumptionValueText(value: string): boolean {
   const normalized = value.trim();
   if (emptyPlaceholder.test(normalized)) return false;
   if (/^[-+]?\d/u.test(normalized)) {
