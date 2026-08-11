@@ -9,7 +9,6 @@ import {
   type QwenVisionBenchmarkMeasurement
 } from "../src/evals/vision/qwen-vl-benchmark";
 import {
-  ProviderError,
   ProviderTimeoutError,
   QwenVlProvider,
   type QwenVlTelemetryResult,
@@ -19,9 +18,12 @@ import {
 } from "../src/server/providers";
 import {
   classifyQwenVlSmokeFailure,
+  createQwenVlSmokeRetryBudget,
   publicQwenVlSmokeFailure,
+  qwenVlSmokeRecordedDurationMs,
   QwenVlSmokeFailure,
-  recognizesVisualNonce
+  recognizesVisualNonce,
+  withOneQwenVlControlledFixtureRetry
 } from "./smoke-qwen-vl-boundary";
 import { renderVisualFixture, renderVisualNonce } from "./qwen-vl-fixtures";
 
@@ -41,6 +43,7 @@ let activeBenchmarkCase:
       thinking: boolean;
     }
   | undefined;
+const controlledFixtureRetryBudget = createQwenVlSmokeRetryBudget();
 
 async function main(): Promise<void> {
   const mode = process.env.QWEN_VL_SMOKE_MODE?.trim() || "contract";
@@ -203,7 +206,16 @@ async function measureVisualNonce(
     };
     const result =
       transport === "non_streaming"
-        ? await analyzeWithOneRetry(provider, request)
+        ? (
+            await withOneQwenVlControlledFixtureRetry({
+              caseId: "visual_nonce",
+              budget: controlledFixtureRetryBudget,
+              request,
+              execute: (stableRequest) =>
+                analyzeAttempt(provider, stableRequest),
+              onRetry: (event) => console.warn(JSON.stringify(event))
+            })
+          ).result
         : await telemetryAttempt(provider, request);
     const usage = requireUsage(result);
     const passed = recognizesVisualNonce(result.text, visualNonce);
@@ -246,18 +258,6 @@ async function measureVisualNonce(
       code: classifyQwenVlSmokeFailure(error).code
     };
   }
-}
-
-async function analyzeWithOneRetry(
-  provider: QwenVlProvider,
-  request: VisionRequest
-): Promise<VisionResult> {
-  try {
-    return await analyzeAttempt(provider, request);
-  } catch (error) {
-    if (!(error instanceof ProviderError) || !error.retryable) throw error;
-  }
-  return analyzeAttempt(provider, request);
 }
 
 async function analyzeAttempt(
@@ -406,11 +406,21 @@ async function measure(
     model: provider.model as typeof CURRENT_MODEL | typeof BASELINE_MODEL,
     thinking
   };
-  const result = await telemetryAttempt(provider, {
+  const request: VisionRequest = {
     prompt: testCase.prompt,
     images: testCase.images,
     maxOutputTokens: 384
+  };
+  const requestStartedAt = performance.now();
+  const attempt = await withOneQwenVlControlledFixtureRetry({
+    caseId: testCase.id,
+    budget: controlledFixtureRetryBudget,
+    request,
+    execute: (stableRequest) => telemetryAttempt(provider, stableRequest),
+    onRetry: (event) => console.warn(JSON.stringify(event))
   });
+  const result = attempt.result;
+  const requestFinishedAt = performance.now();
   const usage = requireUsage(result);
   const parsed = parseModelObject(result.text);
   const expectedKeys = Object.keys(testCase.expected).sort();
@@ -431,7 +441,12 @@ async function measure(
     passedChecks,
     totalChecks,
     firstTokenLatencyMs: result.firstTokenLatencyMs,
-    totalDurationMs: result.totalDurationMs,
+    totalDurationMs: qwenVlSmokeRecordedDurationMs({
+      attempts: attempt.attempts,
+      successfulAttemptDurationMs: result.totalDurationMs,
+      requestStartedAtMs: requestStartedAt,
+      requestFinishedAtMs: requestFinishedAt
+    }),
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     totalTokens: usage.totalTokens,
