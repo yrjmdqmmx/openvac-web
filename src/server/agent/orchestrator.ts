@@ -1609,14 +1609,6 @@ function buildDeterministicVerifiedLinkSelection(
   candidate: AnswerV3,
   allowedLinks: ReadonlyMap<string, VerifiedLinkPart>
 ): AnswerV3 | undefined {
-  const candidateLinkIds = [
-    ...candidate.blocks.flatMap((block) =>
-      block.type === "link_reference" ? [block.linkId] : []
-    ),
-    ...candidate.usedLinkIds
-  ];
-  const uniqueCandidateLinkIds = [...new Set(candidateLinkIds)];
-  if (uniqueCandidateLinkIds.length > 1) return undefined;
   const referencedEvidenceIds = new Set(
     collectAnswerV3References(candidate).evidenceIds
   );
@@ -1625,15 +1617,11 @@ function buildDeterministicVerifiedLinkSelection(
     (link.evidenceIds ?? []).some((evidenceId) =>
       referencedEvidenceIds.has(evidenceId)
     );
-  const existingLinkId = uniqueCandidateLinkIds[0];
-  const existingLink = existingLinkId
-    ? allowedLinks.get(existingLinkId)
-    : undefined;
-  if (existingLinkId && (!existingLink || !isEvidenceBound(existingLink))) {
-    return undefined;
-  }
-  const selectedLink =
-    existingLink ?? [...allowedLinks.values()].find(isEvidenceBound);
+  // Model-selected links are untrusted presentation data. Once the strict
+  // AnswerV3 shape and the complete linkless answer have both validated,
+  // project one server-owned binding in stable Map insertion order instead
+  // of spending the sole semantic repair on unknown or conflicting IDs.
+  const selectedLink = [...allowedLinks.values()].find(isEvidenceBound);
   if (!selectedLink) return undefined;
   const linklessCandidate = withoutVerifiedLinkSelection(candidate);
   return {
