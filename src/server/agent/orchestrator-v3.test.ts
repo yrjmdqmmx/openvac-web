@@ -280,7 +280,7 @@ describe("Agent V3 artifact provider requests", () => {
       });
       expect(request.instructions).toContain("所有字符串合计不得超过 6000");
       expect(request.instructions).toContain(
-        "parameter_table 必须包含有真实值的单位/unit 列"
+        "parameter_table 必须作为整体包含至少一个真实有量纲单位"
       );
       expect(request.instructions).toContain("不得编造具体工况");
       expect(JSON.stringify(request.input)).not.toContain(
@@ -703,7 +703,9 @@ describe("Agent V3 artifact provider requests", () => {
         expect.objectContaining({ role: "assistant" }),
         expect.objectContaining({
           role: "tool",
-          content: expect.stringContaining("assumptionOrCondition")
+          content: expect.stringContaining(
+            "tables.0.rows.0.assumptionOrCondition"
+          )
         })
       ])
     });
@@ -807,33 +809,42 @@ describe("Agent V3 artifact provider requests", () => {
     });
   });
 
-  it("rejects a mixed valid and invalid parameter-row repair without side effects", async () => {
-    const mixedArguments = JSON.stringify(
-      mixedInvalidParameterProviderArguments()
-    );
+  it("accepts unitless parameter rows when the table aggregate has real semantics", async () => {
+    const mixedArguments = JSON.stringify(mixedParameterProviderArguments());
     const subject = artifactRunSubject([
       artifactModelResponse([
-        { callId: "mixed-invalid-call-1", arguments: mixedArguments }
-      ]),
-      artifactModelResponse([
-        { callId: "mixed-invalid-call-2", arguments: mixedArguments }
+        { callId: "mixed-parameter-call", arguments: mixedArguments }
       ])
     ]);
 
-    await expect(subject.orchestrator.run(subject.input)).rejects.toMatchObject(
-      {
-        code: "INVALID_TOOL_ARGUMENTS",
-        retryable: false
-      }
+    await expect(
+      subject.orchestrator.run(subject.input)
+    ).resolves.toMatchObject({ status: "completed" });
+    expect(subject.storage.create).toHaveBeenCalledTimes(1);
+    expect(subject.storage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        spec: expect.objectContaining({
+          kind: "parameter_table",
+          tables: [
+            {
+              title: "泵组参数",
+              columns: ["参数", "数值或状态", "单位", "假设或工况"],
+              rows: [
+                ["有效抽速", "待用户确认", "L/s", "待用户确认"],
+                ["泵型号", "待用户确认", "不适用", "待用户确认"]
+              ]
+            }
+          ]
+        })
+      })
     );
-    expect(subject.storage.create).not.toHaveBeenCalled();
-    expect(subject.store.recordToolCall).not.toHaveBeenCalled();
-    expect(subject.store.complete).not.toHaveBeenCalled();
+    expect(subject.store.recordToolCall).toHaveBeenCalledTimes(1);
+    expect(subject.store.complete).toHaveBeenCalledTimes(1);
     expect(subject.orchestrator.counters).toMatchObject({
-      modelRequests: 2,
-      repairs: 1,
-      toolRounds: 0,
-      toolCalls: 0
+      modelRequests: 1,
+      repairs: 0,
+      toolRounds: 1,
+      toolCalls: 1
     });
   });
 
@@ -1089,7 +1100,7 @@ function invalidParameterArtifactArguments() {
   };
 }
 
-function mixedInvalidParameterProviderArguments() {
+function mixedParameterProviderArguments() {
   const valid = validParameterProviderArguments();
   return {
     ...valid,
@@ -1099,10 +1110,10 @@ function mixedInvalidParameterProviderArguments() {
         rows: [
           valid.tables[0]!.rows[0]!,
           {
-            parameter: "极限压力",
+            parameter: "泵型号",
             valueOrStatus: "待用户确认",
-            unit: "-",
-            assumptionOrCondition: "-"
+            unit: "不适用",
+            assumptionOrCondition: "待用户确认"
           }
         ]
       }

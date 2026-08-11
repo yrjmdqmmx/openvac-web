@@ -75,7 +75,8 @@ export type ArtifactProviderContract = "parameter_table";
 
 export const ARTIFACT_PROVIDER_INSTRUCTION = [
   "create_artifact 必须只返回一个简洁、完整的函数调用。",
-  "parameter_table 必须包含有真实值的单位/unit 列，并在独立假设/工况/条件列、同一复合列的值或对应 section 中写明实质假设或适用工况；title 或 summary 的声明不能代替表内或 section 内容。具体假设必须来自当前输入、可信证据或确定性计算；信息不足时应明确标记待确认，不得编造具体工况。",
+  "parameter_table 必须作为整体包含至少一个真实有量纲单位，并在每行 assumptionOrCondition 中写明实质假设、适用工况或待确认状态。物理量参数必须使用真实单位；型号、品牌、泵型、配置等描述参数的 unit 只能写不适用，数量和级数只能写无量纲或计数单位，压缩比、系数和效率只能写无量纲或百分比。title 或 summary 的声明不能代替表内内容。具体假设必须来自当前输入、可信证据或确定性计算；信息不足时应明确标记待确认，不得编造具体工况。",
+  "专用 parameter_table provider contract 的 rows 使用 parameter、valueOrStatus、unit、assumptionOrCondition 对象；不得添加 columns 或改成 cell 数组。",
   `原始参数不得超过 ${ARTIFACT_PROVIDER_LIMITS.rawArgumentBytes} UTF-8 字节，所有字符串合计不得超过 ${ARTIFACT_PROVIDER_LIMITS.visibleCharacters} 个 Unicode 字符。`,
   `sections 最多 ${ARTIFACT_PROVIDER_LIMITS.sections} 个，每节最多 ${ARTIFACT_PROVIDER_LIMITS.paragraphsPerSection} 段；tables 最多 ${ARTIFACT_PROVIDER_LIMITS.tables} 个，每表最多 ${ARTIFACT_PROVIDER_LIMITS.columnsPerTable} 列，所有表合计最多 ${ARTIFACT_PROVIDER_LIMITS.totalRows} 行。`,
   `段落最多 ${ARTIFACT_PROVIDER_LIMITS.paragraphCharacters} 字符，列名最多 ${ARTIFACT_PROVIDER_LIMITS.columnHeaderCharacters} 字符，单元格最多 ${ARTIFACT_PROVIDER_LIMITS.cellCharacters} 字符。`
@@ -136,6 +137,57 @@ const artifactProviderTableSchema = z
   })
   .strict();
 
+type NonDimensionalParameterCategory = "descriptor" | "count" | "ratio";
+
+const nonDimensionalUnitValue =
+  /^(?:无量纲|不适用|百分比|台|套|级|个|dimensionless|n\/?a|%)$/iu;
+const chineseDescriptorParameter =
+  /^(?:(?:推荐|候选|主泵|前级泵|增压泵|设备|泵组|真空泵|泵)?(?:型号|泵型号|泵型|类型|类别|品牌|厂商|制造商|系列|名称|配置|形式))$/u;
+const chineseCountParameter =
+  /^(?:(?:推荐|候选|主泵|前级泵|增压泵|设备|泵组|真空泵|泵)?(?:数量|台数|级数))$/u;
+const chineseRatioParameter =
+  /^(?:(?:额定|容积|机械|泵|泵组|系统|级间|总|理论|实际|综合|等熵|最大|最小))?(?:压缩比|比例|系数|效率)$/u;
+const englishDescriptorParameter =
+  /^(?:(?:recommended|candidate|primary|backing|booster|vacuum|pump|system)\s+)*(?:model(?:\s+(?:name|number|no\.?))?|type|category|brand|manufacturer|series|name|configuration|arrangement)$/iu;
+const englishCountParameter =
+  /^(?:(?:recommended|candidate|primary|backing|booster|vacuum|pump|system)\s+)*(?:count|quantity|stages?)$/iu;
+const englishRatioParameter =
+  /^(?:(?:recommended|candidate|primary|backing|booster|vacuum|pump|system|rated|volumetric|mechanical|isentropic|interstage|overall|total|theoretical|actual)\s+)*(?:compression\s+ratio|ratio|coefficient|efficiency)$/iu;
+const allowedUnitByNonDimensionalCategory = {
+  descriptor: /^(?:不适用|n\/?a)$/iu,
+  count: /^(?:无量纲|台|套|级|个|dimensionless)$/iu,
+  ratio: /^(?:无量纲|百分比|dimensionless|%)$/iu
+} satisfies Record<NonDimensionalParameterCategory, RegExp>;
+
+function nonDimensionalParameterCategory(
+  parameter: string
+): NonDimensionalParameterCategory | undefined {
+  const normalized = parameter.normalize("NFKC").trim();
+  const compact = normalized.replace(/\s+/gu, "");
+  if (
+    chineseDescriptorParameter.test(compact) ||
+    englishDescriptorParameter.test(normalized)
+  )
+    return "descriptor";
+  if (
+    chineseCountParameter.test(compact) ||
+    englishCountParameter.test(normalized)
+  )
+    return "count";
+  if (
+    chineseRatioParameter.test(compact) ||
+    englishRatioParameter.test(normalized)
+  )
+    return "ratio";
+  return undefined;
+}
+
+function hasDimensionalPhysicalUnitValue(unit: string): boolean {
+  return (
+    hasPhysicalUnitValue(unit) && !nonDimensionalUnitValue.test(unit.trim())
+  );
+}
+
 const parameterTableProviderRowSchema = z
   .object({
     parameter: z
@@ -157,11 +209,29 @@ const parameterTableProviderRowSchema = z
   })
   .strict()
   .superRefine((row, context) => {
-    if (!hasPhysicalUnitValue(row.unit)) {
+    const nonDimensionalCategory = nonDimensionalParameterCategory(
+      row.parameter
+    );
+    if (
+      nonDimensionalCategory === undefined &&
+      !hasDimensionalPhysicalUnitValue(row.unit)
+    ) {
       context.addIssue({
         code: "custom",
         path: ["unit"],
-        message: "Provider parameter row requires a physical unit."
+        message: "Provider physical-quantity row requires a dimensional unit."
+      });
+    }
+    if (
+      nonDimensionalCategory !== undefined &&
+      !allowedUnitByNonDimensionalCategory[nonDimensionalCategory].test(
+        row.unit.trim()
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["unit"],
+        message: "Provider non-dimensional row has an invalid unit."
       });
     }
     if (!hasAssumptionValueText(row.assumptionOrCondition)) {
@@ -243,6 +313,31 @@ export const parameterTableProviderSchema = z
         code: "custom",
         path: ["tables"],
         message: "Provider parameter tables exceed the total row limit."
+      });
+    }
+    if (
+      !spec.tables.some((table) =>
+        table.rows.some(
+          (row) =>
+            nonDimensionalParameterCategory(row.parameter) === undefined &&
+            hasDimensionalPhysicalUnitValue(row.unit)
+        )
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["tables"],
+        message:
+          "Provider parameter tables require a dimensional physical-quantity row."
+      });
+    }
+    if (
+      visibleStringCharacters(spec) > ARTIFACT_PROVIDER_LIMITS.visibleCharacters
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Provider parameter-table content exceeds the visible text limit."
       });
     }
   });
@@ -1133,7 +1228,7 @@ function createParameterTableArtifactDefinition(): ResponsesFunctionTool {
     type: "function",
     name: "create_artifact",
     description:
-      "创建一个泵组或真空系统参数表。每一行必须由模型明确提供参数、数值或状态、真实物理单位、以及假设或适用工况；信息不足时数值或状态及假设可标记待用户确认，但单位必须是该参数适用的真实物理单位。服务端只做结构映射，不会补写内容。",
+      "创建一个泵组或真空系统参数表。每一行必须提供参数、数值或状态、单位、以及假设或适用工况。物理量参数必须使用真实有量纲单位；型号、品牌、泵型、配置等描述参数只能用不适用，数量和级数只能用无量纲或台/套/级/个，压缩比、系数和效率只能用无量纲或百分比。整表至少包含一行真实有量纲物理参数。每行假设或工况信息不足时可标记待用户确认。服务端只做结构映射，不会补写内容；rows 不得添加 columns 或改成 cell 数组。",
     parameters: {
       type: "object",
       additionalProperties: false,

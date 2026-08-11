@@ -547,6 +547,9 @@ describe("ToolRegistry V3 exposure", () => {
       parameterProviderPayloadWithCanonicalVisibleCharacters(
         ARTIFACT_PROVIDER_LIMITS.visibleCharacters
       );
+    expect(visibleStringCharacters(atVisibleLimit)).toBeLessThanOrEqual(
+      ARTIFACT_PROVIDER_LIMITS.visibleCharacters
+    );
     expect(
       visibleStringCharacters(
         parameterTableProviderPayloadToArtifactArguments(atVisibleLimit)
@@ -650,7 +653,7 @@ describe("ToolRegistry V3 exposure", () => {
     );
   });
 
-  it("rejects an incomplete dedicated parameter row before storage", async () => {
+  it("rejects an incomplete row but allows non-physical rows when aggregate semantics are valid", async () => {
     const storage: ArtifactStorage & { create: ReturnType<typeof vi.fn> } = {
       create: vi.fn(async (input) => ({
         artifactId,
@@ -709,25 +712,65 @@ describe("ToolRegistry V3 exposure", () => {
             rows: [
               validParameterTableProviderPayload().tables[0].rows[0],
               {
-                parameter: "极限压力",
+                parameter: "泵型号",
                 valueOrStatus: "待用户确认",
-                unit: "-",
-                assumptionOrCondition: "-"
+                unit: "不适用",
+                assumptionOrCondition: "待用户确认"
               }
             ]
           }
         ]
       })
     });
-    expect(mixedRows.ok).toBe(false);
-    if (mixedRows.ok) throw new Error("Expected mixed-row rejection.");
-    expect(mixedRows.result.errorCode).toBe("INVALID_TOOL_ARGUMENTS");
-    expect(JSON.stringify(mixedRows.result.outputItem)).toMatch(
-      /tables\.0\.rows\.1\.(?:unit|assumptionOrCondition)/u
-    );
-    expect(JSON.stringify(mixedRows.result.outputItem)).not.toContain(
-      "极限压力"
-    );
+    expect(mixedRows.ok).toBe(true);
+    if (!mixedRows.ok)
+      throw new Error("Expected aggregate semantic acceptance.");
+    expect(mixedRows.artifactSpec).toMatchObject({
+      kind: "parameter_table",
+      tables: [
+        {
+          columns: ["参数", "数值或状态", "单位", "假设或工况"],
+          rows: [
+            ["有效抽速", "待用户确认", "L/s", "待用户确认"],
+            ["泵型号", "待用户确认", "不适用", "待用户确认"]
+          ]
+        }
+      ]
+    });
+    for (const testCase of [
+      { parameter: "泵型号", unit: "不适用", expected: true },
+      { parameter: "数量", unit: "台", expected: true },
+      { parameter: "效率", unit: "%", expected: true },
+      { parameter: "额定效率", unit: "%", expected: true },
+      { parameter: "容积效率", unit: "%", expected: true },
+      { parameter: "机械效率", unit: "%", expected: true },
+      { parameter: "系统效率", unit: "%", expected: true },
+      { parameter: "级间压缩比", unit: "无量纲", expected: true },
+      { parameter: "泵型号", unit: "%", expected: false },
+      { parameter: "数量", unit: "%", expected: false },
+      { parameter: "效率", unit: "不适用", expected: false },
+      { parameter: "额定压力", unit: "%", expected: false }
+    ]) {
+      expect(
+        parameterTableProviderSchema.safeParse({
+          ...validParameterTableProviderPayload(),
+          tables: [
+            {
+              title: "泵组参数",
+              rows: [
+                validParameterTableProviderPayload().tables[0].rows[0],
+                {
+                  parameter: testCase.parameter,
+                  valueOrStatus: "待用户确认",
+                  unit: testCase.unit,
+                  assumptionOrCondition: "待用户确认"
+                }
+              ]
+            }
+          ]
+        }).success
+      ).toBe(testCase.expected);
+    }
     expect(storage.create).not.toHaveBeenCalled();
   });
 
@@ -780,7 +823,7 @@ describe("ToolRegistry V3 exposure", () => {
     });
     expect(preflight.result.outputItem).toMatchObject({
       type: "function_call_output",
-      output: expect.stringContaining("assumptionOrCondition")
+      output: expect.stringContaining("tables.0.rows.0.assumptionOrCondition")
     });
     expect(preflight.result.outputItem).not.toEqual(
       expect.objectContaining({ output: expect.stringContaining("有效抽速") })
@@ -811,8 +854,83 @@ describe("ToolRegistry V3 exposure", () => {
     if (missingUnit.ok) throw new Error("Expected unit preflight failure.");
     expect(missingUnit.result).toMatchObject({
       errorCode: "INVALID_TOOL_ARGUMENTS",
-      missingInputs: ["tables.0.rows.0.unit"]
+      missingInputs: ["tables.0.rows.0.unit", "tables"]
     });
+    expect(storage.create).not.toHaveBeenCalled();
+
+    const onlyNonPhysicalArguments = JSON.stringify({
+      ...validParameterTableProviderPayload(),
+      tables: [
+        {
+          title: "泵组参数",
+          rows: [
+            {
+              parameter: "泵型号",
+              valueOrStatus: "待用户确认",
+              unit: "不适用",
+              assumptionOrCondition: "待用户确认"
+            }
+          ]
+        }
+      ]
+    });
+    const onlyNonPhysical = scoped.preflight({
+      callId: "call-parameter-only-non-physical",
+      name: "create_artifact",
+      arguments: onlyNonPhysicalArguments
+    });
+    expect(onlyNonPhysical.ok).toBe(false);
+    if (onlyNonPhysical.ok)
+      throw new Error("Expected physical-row aggregate failure.");
+    expect(onlyNonPhysical.result).toMatchObject({
+      errorCode: "INVALID_TOOL_ARGUMENTS",
+      missingInputs: ["tables"]
+    });
+    await expect(
+      scoped.execute({
+        callId: "call-parameter-only-non-physical-execute",
+        name: "create_artifact",
+        arguments: onlyNonPhysicalArguments
+      })
+    ).resolves.toMatchObject({ ok: false });
+    expect(storage.create).not.toHaveBeenCalled();
+
+    const misclassifiedPhysicalArguments = JSON.stringify({
+      ...validParameterTableProviderPayload(),
+      tables: [
+        {
+          title: "泵组参数",
+          rows: [
+            validParameterTableProviderPayload().tables[0].rows[0],
+            {
+              parameter: "极限压力",
+              valueOrStatus: "待用户确认",
+              unit: "不适用",
+              assumptionOrCondition: "待用户确认"
+            }
+          ]
+        }
+      ]
+    });
+    const misclassifiedPhysical = scoped.preflight({
+      callId: "call-parameter-misclassified-physical",
+      name: "create_artifact",
+      arguments: misclassifiedPhysicalArguments
+    });
+    expect(misclassifiedPhysical.ok).toBe(false);
+    if (misclassifiedPhysical.ok)
+      throw new Error("Expected physical-parameter unit failure.");
+    expect(misclassifiedPhysical.result).toMatchObject({
+      errorCode: "INVALID_TOOL_ARGUMENTS",
+      missingInputs: ["tables.0.rows.1.unit"]
+    });
+    await expect(
+      scoped.execute({
+        callId: "call-parameter-misclassified-physical-execute",
+        name: "create_artifact",
+        arguments: misclassifiedPhysicalArguments
+      })
+    ).resolves.toMatchObject({ ok: false });
     expect(storage.create).not.toHaveBeenCalled();
 
     const structurallyInvalid = scoped.preflight({
