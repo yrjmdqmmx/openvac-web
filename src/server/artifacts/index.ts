@@ -1,5 +1,9 @@
 export { renderDocx } from "./docx";
-export { loadBundledChineseFont, renderPdf } from "./pdf";
+export {
+  bundledChineseFontPath,
+  loadBundledChineseFont,
+  renderPdf
+} from "./pdf";
 export {
   renderArtifactFiles,
   renderCsv,
