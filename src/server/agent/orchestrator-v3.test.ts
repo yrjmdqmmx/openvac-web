@@ -270,6 +270,10 @@ describe("Agent V3 artifact provider requests", () => {
         name: "create_artifact"
       });
       expect(request.instructions).toContain("所有字符串合计不得超过 6000");
+      expect(request.instructions).toContain(
+        "parameter_table 必须包含有真实值的单位/unit 列"
+      );
+      expect(request.instructions).toContain("不得编造具体工况");
       expect(JSON.stringify(request.input)).not.toContain(
         "private-malformed-arguments"
       );
@@ -370,11 +374,88 @@ describe("Agent V3 artifact provider requests", () => {
         status: "completed"
       })
     );
+    expect(subject.store.complete).toHaveBeenCalledTimes(1);
     expect(subject.orchestrator.counters).toMatchObject({
       modelRequests: 2,
       repairs: 1,
       toolRounds: 1,
       toolCalls: 1
+    });
+  });
+
+  it("repairs a semantic-invalid parameter table once before storage", async () => {
+    const subject = artifactRunSubject([
+      artifactModelResponse([
+        {
+          callId: "semantic-invalid-call",
+          arguments: JSON.stringify(invalidParameterArtifactArguments())
+        }
+      ]),
+      artifactModelResponse([
+        {
+          callId: "semantic-valid-call",
+          arguments: JSON.stringify(validParameterArtifactArguments())
+        }
+      ])
+    ]);
+
+    await expect(
+      subject.orchestrator.run(subject.input)
+    ).resolves.toMatchObject({ status: "completed" });
+
+    expect(subject.request).toHaveBeenCalledTimes(2);
+    expect(subject.request.mock.calls[1]?.[5]).toBe(
+      "continuation_invalid_arguments"
+    );
+    expect(JSON.stringify(subject.request.mock.calls[1]?.[1])).toContain(
+      "parameterTable.assumption"
+    );
+    expect(subject.storage.create).toHaveBeenCalledTimes(1);
+    expect(subject.store.recordToolCall).toHaveBeenCalledTimes(1);
+    expect(subject.store.recordToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: "semantic-valid-call",
+        toolName: "create_artifact",
+        status: "completed"
+      })
+    );
+    expect(subject.store.complete).toHaveBeenCalledTimes(1);
+    expect(subject.orchestrator.counters).toMatchObject({
+      modelRequests: 2,
+      repairs: 1,
+      toolRounds: 1,
+      toolCalls: 1
+    });
+  });
+
+  it("fails closed when the semantic parameter repair is still invalid", async () => {
+    const invalidArguments = JSON.stringify(
+      invalidParameterArtifactArguments()
+    );
+    const subject = artifactRunSubject([
+      artifactModelResponse([
+        { callId: "semantic-invalid-call-1", arguments: invalidArguments }
+      ]),
+      artifactModelResponse([
+        { callId: "semantic-invalid-call-2", arguments: invalidArguments }
+      ])
+    ]);
+
+    await expect(subject.orchestrator.run(subject.input)).rejects.toMatchObject(
+      {
+        code: "INVALID_TOOL_ARGUMENTS",
+        retryable: false
+      }
+    );
+    expect(subject.request).toHaveBeenCalledTimes(2);
+    expect(subject.storage.create).not.toHaveBeenCalled();
+    expect(subject.store.recordToolCall).not.toHaveBeenCalled();
+    expect(subject.store.complete).not.toHaveBeenCalled();
+    expect(subject.orchestrator.counters).toMatchObject({
+      modelRequests: 2,
+      repairs: 1,
+      toolRounds: 0,
+      toolCalls: 0
     });
   });
 
@@ -594,6 +675,19 @@ function validParameterArtifactArguments() {
       {
         columns: ["参数", "值", "单位/假设"],
         rows: [["有效抽速", "10", "L/s；假设稳态"]]
+      }
+    ]
+  };
+}
+
+function invalidParameterArtifactArguments() {
+  return {
+    ...validParameterArtifactArguments(),
+    summary: "参数表包含单位和假设",
+    tables: [
+      {
+        columns: ["参数", "值", "单位/假设"],
+        rows: [["有效抽速", "10", "L/s"]]
       }
     ]
   };
