@@ -173,7 +173,7 @@ describe("trusted calculation projection", () => {
 
   it("binds provider call identity while allowing server-owned execution arguments", () => {
     const value = fixture();
-    const providerCall = { ...value.call, arguments: "{}" };
+    const providerCall = { ...value.call, arguments: "{private-malformed" };
     const projection = trustedPumpdownProjectionFromToolTurn({
       calls: [providerCall],
       executedCalls: [value.call],
@@ -203,6 +203,81 @@ describe("trusted calculation projection", () => {
         outputs: [value.output]
       })
     ).toBeUndefined();
+
+    const invalidIdentityTurns = [
+      {
+        executedCalls: [{ ...value.call, name: "calculate_throughput" }],
+        continuationItems: [
+          {
+            type: "function_call" as const,
+            call_id: providerCall.callId,
+            name: providerCall.name,
+            arguments: providerCall.arguments
+          }
+        ]
+      },
+      {
+        executedCalls: [value.call],
+        continuationItems: [
+          {
+            type: "function_call" as const,
+            call_id: "different-call",
+            name: providerCall.name,
+            arguments: providerCall.arguments
+          }
+        ]
+      },
+      {
+        executedCalls: [value.call],
+        continuationItems: [
+          {
+            type: "function_call" as const,
+            call_id: providerCall.callId,
+            name: "calculate_throughput",
+            arguments: providerCall.arguments
+          }
+        ]
+      },
+      {
+        executedCalls: [value.call],
+        continuationItems: [
+          {
+            type: "function_call" as const,
+            call_id: providerCall.callId,
+            name: providerCall.name,
+            arguments: "different-arguments"
+          }
+        ]
+      },
+      { executedCalls: [value.call], continuationItems: [] },
+      {
+        executedCalls: [value.call],
+        continuationItems: [
+          {
+            type: "function_call" as const,
+            call_id: providerCall.callId,
+            name: providerCall.name,
+            arguments: providerCall.arguments
+          },
+          {
+            type: "function_call" as const,
+            call_id: "call-extra",
+            name: providerCall.name,
+            arguments: providerCall.arguments
+          }
+        ]
+      }
+    ];
+    for (const invalid of invalidIdentityTurns) {
+      expect(
+        trustedPumpdownProjectionFromToolTurn({
+          calls: [providerCall],
+          executedCalls: invalid.executedCalls,
+          continuationItems: invalid.continuationItems,
+          outputs: [value.output]
+        })
+      ).toBeUndefined();
+    }
   });
 
   it("rejects payload tampering, mixed turns and non-message base context", () => {
