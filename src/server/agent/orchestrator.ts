@@ -1040,6 +1040,38 @@ export class AgentRunOrchestrator {
       this.validateAnswerCandidate(input, value, minimumLinkCount);
     let validated = validate(safeJson(input.outputText));
     if (!validated.valid) {
+      const repairSourceAnswer = validated.answer;
+      const linklessValidation =
+        minimumLinkCount > 0 && repairSourceAnswer
+          ? this.validateAnswerCandidate(
+              input,
+              withoutVerifiedLinkSelection(repairSourceAnswer),
+              0
+            )
+          : undefined;
+      const deterministicLinkRepair =
+        linklessValidation?.valid && repairSourceAnswer
+          ? buildDeterministicVerifiedLinkSelection(
+              repairSourceAnswer,
+              this.verifiedLinks
+            )
+          : undefined;
+      const deterministicValidation = deterministicLinkRepair
+        ? validate(deterministicLinkRepair)
+        : undefined;
+      if (
+        deterministicValidation?.valid &&
+        repairSourceAnswer &&
+        linkRepairPreservesCandidate(
+          repairSourceAnswer,
+          deterministicValidation.answer,
+          this.verifiedLinks
+        )
+      ) {
+        validated = deterministicValidation;
+      }
+    }
+    if (!validated.valid) {
       // Local calculation results have already passed strict schema and
       // applicability validation. Prefer the server-owned representation over
       // spending the remaining automatic-run budget on repairing model JSON.
@@ -1552,14 +1584,9 @@ function linkRepairPreservesCandidate(
   repaired: AnswerV3,
   allowedLinks: ReadonlyMap<string, VerifiedLinkPart>
 ): boolean {
-  const withoutLinks = (answer: AnswerV3) => ({
-    ...answer,
-    blocks: answer.blocks.filter((block) => block.type !== "link_reference"),
-    usedLinkIds: []
-  });
   if (
-    JSON.stringify(withoutLinks(candidate)) !==
-    JSON.stringify(withoutLinks(repaired))
+    JSON.stringify(withoutVerifiedLinkSelection(candidate)) !==
+    JSON.stringify(withoutVerifiedLinkSelection(repaired))
   ) {
     return false;
   }
@@ -1568,6 +1595,59 @@ function linkRepairPreservesCandidate(
     const allowed = allowedLinks.get(block.linkId);
     return Boolean(allowed && block.label === allowed.label);
   });
+}
+
+function withoutVerifiedLinkSelection(answer: AnswerV3): AnswerV3 {
+  return {
+    ...answer,
+    blocks: answer.blocks.filter((block) => block.type !== "link_reference"),
+    usedLinkIds: []
+  };
+}
+
+function buildDeterministicVerifiedLinkSelection(
+  candidate: AnswerV3,
+  allowedLinks: ReadonlyMap<string, VerifiedLinkPart>
+): AnswerV3 | undefined {
+  const candidateLinkIds = [
+    ...candidate.blocks.flatMap((block) =>
+      block.type === "link_reference" ? [block.linkId] : []
+    ),
+    ...candidate.usedLinkIds
+  ];
+  const uniqueCandidateLinkIds = [...new Set(candidateLinkIds)];
+  if (uniqueCandidateLinkIds.length > 1) return undefined;
+  const referencedEvidenceIds = new Set(
+    collectAnswerV3References(candidate).evidenceIds
+  );
+  const isEvidenceBound = (link: VerifiedLinkPart) =>
+    link.status === "verified" &&
+    (link.evidenceIds ?? []).some((evidenceId) =>
+      referencedEvidenceIds.has(evidenceId)
+    );
+  const existingLinkId = uniqueCandidateLinkIds[0];
+  const existingLink = existingLinkId
+    ? allowedLinks.get(existingLinkId)
+    : undefined;
+  if (existingLinkId && (!existingLink || !isEvidenceBound(existingLink))) {
+    return undefined;
+  }
+  const selectedLink =
+    existingLink ?? [...allowedLinks.values()].find(isEvidenceBound);
+  if (!selectedLink) return undefined;
+  const linklessCandidate = withoutVerifiedLinkSelection(candidate);
+  return {
+    ...linklessCandidate,
+    blocks: [
+      ...linklessCandidate.blocks,
+      {
+        type: "link_reference",
+        linkId: selectedLink.linkId,
+        label: selectedLink.label
+      }
+    ],
+    usedLinkIds: [selectedLink.linkId]
+  };
 }
 
 type CollectedModelResponse = {
