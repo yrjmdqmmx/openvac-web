@@ -126,6 +126,8 @@ export type ResponsesTextFormat =
       strict?: boolean;
     };
 
+export type ResponsesSafeInvocationPhase = "artifact_fresh_json_repair";
+
 export interface ResponsesStreamRequest {
   instructions?: string;
   input: string | ResponsesInputItem[];
@@ -134,6 +136,11 @@ export interface ResponsesStreamRequest {
   reasoningEffort?: ResponsesReasoningEffort;
   textFormat?: ResponsesTextFormat;
   maxOutputTokens?: number;
+  /**
+   * Server-owned routing hint for a narrowly hardened provider invocation.
+   * It must never be derived from browser or model input.
+   */
+  safeInvocationPhase?: ResponsesSafeInvocationPhase;
   user: string;
   signal?: AbortSignal;
 }
