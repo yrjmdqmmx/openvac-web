@@ -1323,7 +1323,13 @@ async function createTemporaryPrincipal(
 async function destroyTemporaryPrincipal(
   principal: TemporaryPrincipal
 ): Promise<void> {
+  markSmokeDiagnostic("principal_cleanup", {
+    code: "PRINCIPAL_PREPARE_DELETION_FAILED"
+  });
   await prepareUserDeletion(principal.userId);
+  markSmokeDiagnostic("principal_cleanup", {
+    code: "PRINCIPAL_SESSION_DELETE_FAILED"
+  });
   await db
     .delete(sessions)
     .where(
@@ -1332,8 +1338,17 @@ async function destroyTemporaryPrincipal(
         eq(sessions.userId, principal.userId)
       )
     );
+  markSmokeDiagnostic("principal_cleanup", {
+    code: "PRINCIPAL_USER_DELETE_FAILED"
+  });
   await db.delete(users).where(eq(users.id, principal.userId));
+  markSmokeDiagnostic("principal_cleanup", {
+    code: "PRINCIPAL_POST_DELETE_CLEANUP_FAILED"
+  });
   await cleanupDeletedUser(principal.userId);
+  markSmokeDiagnostic("principal_cleanup", {
+    code: "PRINCIPAL_DELETION_VERIFY_FAILED"
+  });
   const [remainingUser] = await db
     .select({ id: users.id })
     .from(users)
