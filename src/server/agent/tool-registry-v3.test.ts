@@ -908,6 +908,42 @@ describe("ToolRegistry V3 exposure", () => {
         expected: true
       },
       {
+        parameterKind: "physical",
+        parameter: "腔体容积",
+        unit: "L",
+        expected: true
+      },
+      {
+        parameterKind: "physical",
+        parameter: "附件流导",
+        unit: "L/s",
+        expected: true
+      },
+      {
+        parameterKind: "physical",
+        parameter: "工艺进气量",
+        unit: "Pa·m³/s",
+        expected: true
+      },
+      {
+        parameterKind: "physical",
+        parameter: "chamber volume",
+        unit: "L",
+        expected: true
+      },
+      {
+        parameterKind: "physical",
+        parameter: "accessory conductance",
+        unit: "L/s",
+        expected: true
+      },
+      {
+        parameterKind: "physical",
+        parameter: "process gas flow",
+        unit: "sccm",
+        expected: true
+      },
+      {
         parameterKind: "descriptor",
         parameter: "backup pump configuration",
         unit: "n/a",
@@ -987,6 +1023,12 @@ describe("ToolRegistry V3 exposure", () => {
       },
       {
         parameterKind: "descriptor",
+        parameter: "chamber volume",
+        unit: "n/a",
+        expected: false
+      },
+      {
+        parameterKind: "descriptor",
         parameter: "custom metric",
         unit: "n/a",
         expected: false
@@ -1055,6 +1097,75 @@ describe("ToolRegistry V3 exposure", () => {
         }).success
       ).toBe(testCase.expected);
     }
+    for (const mismatch of [
+      {
+        parameterKind: "descriptor",
+        parameter: "入口压力",
+        unit: "n/a"
+      },
+      {
+        parameterKind: "physical",
+        parameter: "泵型号",
+        unit: "Pa"
+      }
+    ]) {
+      const mismatchPreflight = scoped.preflight({
+        callId: `call-authoritative-kind-${mismatch.parameterKind}`,
+        name: "create_artifact",
+        arguments: JSON.stringify({
+          ...validParameterTableProviderPayload(),
+          tables: [
+            {
+              title: "泵组参数",
+              rows: [
+                validParameterTableProviderPayload().tables[0].rows[0],
+                {
+                  ...mismatch,
+                  valueOrStatus: "待用户确认",
+                  assumptionOrCondition: "待用户确认"
+                }
+              ]
+            }
+          ]
+        })
+      });
+      expect(mismatchPreflight.ok).toBe(false);
+      if (mismatchPreflight.ok)
+        throw new Error("Expected authoritative-kind rejection.");
+      expect(mismatchPreflight.result.missingInputs).toEqual([
+        "tables.0.rows.1.parameterKind",
+        "tables.0.rows.1.unit"
+      ]);
+    }
+    const noServerPhysical = scoped.preflight({
+      callId: "call-provider-kind-cannot-satisfy-physical-aggregate",
+      name: "create_artifact",
+      arguments: JSON.stringify({
+        ...validParameterTableProviderPayload(),
+        tables: [
+          {
+            title: "泵组参数",
+            rows: [
+              {
+                parameterKind: "physical",
+                parameter: "泵型号",
+                valueOrStatus: "待用户确认",
+                unit: "Pa",
+                assumptionOrCondition: "待用户确认"
+              }
+            ]
+          }
+        ]
+      })
+    });
+    expect(noServerPhysical.ok).toBe(false);
+    if (noServerPhysical.ok)
+      throw new Error("Expected server-derived aggregate rejection.");
+    expect(noServerPhysical.result.missingInputs).toEqual([
+      "tables.0.rows.0.parameterKind",
+      "tables.0.rows.0.unit",
+      "tables"
+    ]);
     const unsupported = scoped.preflight({
       callId: "call-unsupported-parameter-vocabulary",
       name: "create_artifact",

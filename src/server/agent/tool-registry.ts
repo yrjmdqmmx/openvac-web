@@ -216,9 +216,12 @@ const parameterKindSuffixes = {
     "抽速",
     "抽气速度",
     "流量",
+    "进气量",
     "气载",
     "漏率",
     "吞吐量",
+    "容积",
+    "流导",
     "功率",
     "温度",
     "尺寸",
@@ -236,6 +239,8 @@ const parameterKindSuffixes = {
     "gas load",
     "leak rate",
     "throughput",
+    "volume",
+    "conductance",
     "power",
     "temperature",
     "size",
@@ -299,6 +304,15 @@ function hasDimensionalPhysicalUnitValue(unit: string): boolean {
   );
 }
 
+function hasSupportedParameterUnitValue(unit: string): boolean {
+  return (
+    hasDimensionalPhysicalUnitValue(unit) ||
+    Object.values(allowedUnitByParameterKind).some((allowed) =>
+      allowed.test(unit.trim())
+    )
+  );
+}
+
 const parameterTableProviderRowSchema = z
   .object({
     parameterKind: parameterKindSchema,
@@ -336,9 +350,11 @@ const parameterTableProviderRowSchema = z
       });
     }
     const validUnit =
-      row.parameterKind === "physical"
-        ? hasDimensionalPhysicalUnitValue(row.unit)
-        : allowedUnitByParameterKind[row.parameterKind].test(row.unit.trim());
+      serverKind === undefined
+        ? hasSupportedParameterUnitValue(row.unit)
+        : serverKind === "physical"
+          ? hasDimensionalPhysicalUnitValue(row.unit)
+          : allowedUnitByParameterKind[serverKind].test(row.unit.trim());
     if (!validUnit) {
       context.addIssue({
         code: "custom",
@@ -418,7 +434,7 @@ export const parameterTableProviderSchema = z
       !spec.tables.some((table) =>
         table.rows.some(
           (row) =>
-            row.parameterKind === "physical" &&
+            parameterKindForLabel(row.parameter) === "physical" &&
             hasDimensionalPhysicalUnitValue(row.unit)
         )
       )

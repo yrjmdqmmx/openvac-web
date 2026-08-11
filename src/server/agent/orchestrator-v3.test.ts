@@ -1357,6 +1357,73 @@ describe("Agent V3 artifact provider requests", () => {
     });
   });
 
+  it("reports authoritative parameter kind and unit in the same paired repair", async () => {
+    const invalidArguments = {
+      ...validParameterProviderArguments(),
+      tables: [
+        {
+          title: "泵组参数",
+          rows: [
+            {
+              parameterKind: "physical",
+              parameter: "泵型号",
+              valueOrStatus: "待用户确认",
+              unit: "Pa",
+              assumptionOrCondition: "待用户确认"
+            }
+          ]
+        }
+      ]
+    };
+    const subject = artifactRunSubject([
+      artifactModelResponse([
+        {
+          callId: "authoritative-kind-invalid-call",
+          arguments: JSON.stringify(invalidArguments)
+        }
+      ]),
+      artifactModelResponse([
+        {
+          callId: "authoritative-kind-valid-call",
+          arguments: JSON.stringify(validParameterProviderArguments())
+        }
+      ])
+    ]);
+
+    await expect(
+      subject.orchestrator.run(subject.input)
+    ).resolves.toMatchObject({ status: "completed" });
+
+    expect(subject.request).toHaveBeenCalledTimes(2);
+    expect(subject.request.mock.calls[1]?.[5]).toBe(
+      "continuation_invalid_arguments"
+    );
+    const repairItems = subject.request.mock.calls[1]?.[1] as
+      ResponsesInputItem[] | undefined;
+    const repairOutput = repairItems?.find(
+      (item) => item.type === "function_call_output"
+    );
+    if (!repairOutput || repairOutput.type !== "function_call_output")
+      throw new Error("Expected paired repair output.");
+    if (typeof repairOutput.output !== "string")
+      throw new Error("Expected a serialized paired repair output.");
+    expect(JSON.parse(repairOutput.output)).toMatchObject({
+      missingInputs: [
+        "tables.0.rows.0.parameterKind",
+        "tables.0.rows.0.unit",
+        "tables"
+      ]
+    });
+    expect(subject.storage.create).toHaveBeenCalledTimes(1);
+    expect(subject.store.recordToolCall).toHaveBeenCalledTimes(1);
+    expect(subject.orchestrator.counters).toMatchObject({
+      modelRequests: 2,
+      repairs: 1,
+      toolRounds: 1,
+      toolCalls: 1
+    });
+  });
+
   it("fails closed when the semantic parameter repair is still invalid", async () => {
     const invalidArguments = JSON.stringify(
       invalidParameterArtifactArguments()
