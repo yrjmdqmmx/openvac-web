@@ -126,7 +126,8 @@ export type ResponsesTextFormat =
       strict?: boolean;
     };
 
-export type ResponsesSafeInvocationPhase = "artifact_fresh_json_repair";
+export type ResponsesSafeInvocationPhase =
+  "artifact_fresh_json_repair" | "artifact_continuation_repair";
 
 export interface ResponsesStreamRequest {
   instructions?: string;

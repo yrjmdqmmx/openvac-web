@@ -101,6 +101,8 @@ const NON_REPEATABLE_TOOL_NAMES = new Set(["create_artifact"]);
 export const MAX_ARTIFACT_PROVIDER_OUTPUT_TOKENS = 8_192;
 const FRESH_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION =
   "上一次 create_artifact 参数不是合法 JSON。重新生成一个简洁、完整、符合 provider envelope 的单一 create_artifact 调用；不得复述、猜测或引用上一次调用的参数。";
+const CONTINUATION_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION =
+  "上一次 create_artifact 参数未通过本地安全校验。根据已配对的工具结果中列出的缺失路径重新生成一个简洁、完整、符合 provider envelope 的单一 create_artifact 调用；不得忽略单位、假设或适用工况要求。";
 
 export type ArtifactArgumentRecoveryMode =
   "fresh_json_invalid" | "continuation_invalid_arguments";
@@ -1293,7 +1295,9 @@ export class AgentRunOrchestrator {
           ),
       ...(artifactRecoveryMode === "fresh_json_invalid"
         ? { safeInvocationPhase: "artifact_fresh_json_repair" as const }
-        : {}),
+        : artifactRecoveryMode === "continuation_invalid_arguments"
+          ? { safeInvocationPhase: "artifact_continuation_repair" as const }
+          : {}),
       user: input.userPartition,
       signal
     };
@@ -1374,10 +1378,7 @@ export class AgentRunOrchestrator {
         evidenceSourceIds: this.evidence.list().map((entry) => entry.id),
         webSearched: phase === "web_discovery",
         agentRunId: input.run.runId,
-        protocol:
-          request.safeInvocationPhase === "artifact_fresh_json_repair"
-            ? "chat"
-            : "responses",
+        protocol: request.safeInvocationPhase ? "chat" : "responses",
         phase,
         attempt: this.modelRequests,
         retryOfId: phase.endsWith("_retry")
@@ -1458,7 +1459,9 @@ export function buildAgentV3InstructionsForRisk(
     ARTIFACT_PROVIDER_INSTRUCTION,
     ...(artifactRecoveryMode === "fresh_json_invalid"
       ? [FRESH_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION]
-      : [])
+      : artifactRecoveryMode === "continuation_invalid_arguments"
+        ? [CONTINUATION_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION]
+        : [])
   ].join("\n");
 }
 

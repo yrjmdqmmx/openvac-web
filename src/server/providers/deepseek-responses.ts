@@ -29,7 +29,10 @@ const MODEL = "deepseek-v4-flash";
 const DEFAULT_REQUEST_TIMEOUT_MS = 180_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
 const MAX_CONTINUATION_ITEMS = 256;
+const MAX_ARTIFACT_CONTINUATION_ARGUMENT_BYTES = 64 * 1024;
 const SAFE_USER_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const SAFE_TOOL_CALL_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
+const SAFE_MISSING_INPUT_PATTERN = /^[A-Za-z0-9_.-]{1,160}$/;
 
 export const DEEPSEEK_RESPONSES_CAPABILITIES = {
   protocol: "responses",
@@ -106,12 +109,11 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
       throw new TypeError("maxOutputTokens must be a positive integer.");
     }
     assertFunctionCallPairing(request.input);
-    if (request.safeInvocationPhase === "artifact_fresh_json_repair") {
-      yield* this.streamStrictArtifactFreshRepair(
-        request,
-        apiKey,
-        maxOutputTokens
-      );
+    if (
+      request.safeInvocationPhase === "artifact_fresh_json_repair" ||
+      request.safeInvocationPhase === "artifact_continuation_repair"
+    ) {
+      yield* this.streamStrictArtifactRepair(request, apiKey, maxOutputTokens);
       return;
     }
     const portableRequest = portableToolRequest(request);
@@ -448,7 +450,7 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
     }
   }
 
-  private async *streamStrictArtifactFreshRepair(
+  private async *streamStrictArtifactRepair(
     request: ResponsesStreamRequest,
     apiKey: string,
     maxOutputTokens: number
@@ -643,9 +645,22 @@ function strictArtifactRepairTool(
   return matches[0]!;
 }
 
+type StrictArtifactRepairMessage =
+  | { role: "system" | "user"; content: string }
+  | {
+      role: "assistant";
+      content: null;
+      tool_calls: Array<{
+        id: string;
+        type: "function";
+        function: { name: "create_artifact"; arguments: string };
+      }>;
+    }
+  | { role: "tool"; tool_call_id: string; content: string };
+
 function strictArtifactRepairMessages(
   request: ResponsesStreamRequest
-): Array<{ role: "system" | "user"; content: string }> {
+): StrictArtifactRepairMessage[] {
   const cleanInput =
     typeof request.input === "string"
       ? request.input
@@ -664,12 +679,144 @@ function strictArtifactRepairMessages(
             ];
           })
         );
-  return [
+  const messages: StrictArtifactRepairMessage[] = [
     ...(request.instructions
       ? [{ role: "system" as const, content: request.instructions }]
       : []),
     { role: "user", content: cleanInput }
   ];
+  if (request.safeInvocationPhase !== "artifact_continuation_repair") {
+    return messages;
+  }
+  if (!Array.isArray(request.input)) {
+    throw invalidContinuation(
+      "Strict artifact continuation repair requires paired input items."
+    );
+  }
+  const calls = request.input.filter((item) => item.type === "function_call");
+  const outputs = request.input.filter(
+    (item) => item.type === "function_call_output"
+  );
+  const eligiblePairs = outputs.flatMap((outputItem) => {
+    const outputRecord = outputItem as Record<string, unknown>;
+    if (!isEligibleArtifactContinuationOutput(outputRecord.output)) return [];
+    const outputCallId = pickString(outputRecord, ["call_id"]);
+    const matchingCalls = calls.filter((callItem) => {
+      const callRecord = callItem as Record<string, unknown>;
+      return (
+        pickString(callRecord, ["call_id"]) === outputCallId &&
+        pickString(callRecord, ["name"]) === "create_artifact"
+      );
+    });
+    return matchingCalls.length === 1
+      ? [{ call: matchingCalls[0]!, output: outputItem }]
+      : [];
+  });
+  if (eligiblePairs.length !== 1) {
+    throw invalidContinuation(
+      "Strict artifact continuation repair requires one eligible artifact pair."
+    );
+  }
+  const call = eligiblePairs[0]!.call as Record<string, unknown>;
+  const output = eligiblePairs[0]!.output as Record<string, unknown>;
+  const callId = pickString(call, ["call_id"]);
+  const name = pickString(call, ["name"]);
+  const args = pickString(call, ["arguments"]);
+  if (
+    !callId ||
+    !SAFE_TOOL_CALL_ID_PATTERN.test(callId) ||
+    name !== "create_artifact" ||
+    args === undefined ||
+    Buffer.byteLength(args, "utf8") > MAX_ARTIFACT_CONTINUATION_ARGUMENT_BYTES
+  ) {
+    throw invalidContinuation(
+      "Strict artifact continuation repair contains an unsafe call."
+    );
+  }
+  try {
+    JSON.parse(args);
+  } catch {
+    throw invalidContinuation(
+      "Strict artifact continuation repair requires JSON arguments."
+    );
+  }
+  if (pickString(output, ["call_id"]) !== callId) {
+    throw invalidContinuation(
+      "Strict artifact continuation repair contains a mismatched output."
+    );
+  }
+  messages.push(
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [
+        {
+          id: callId,
+          type: "function",
+          function: { name: "create_artifact", arguments: args }
+        }
+      ]
+    },
+    {
+      role: "tool",
+      tool_call_id: callId,
+      content: safeArtifactContinuationOutput(output.output)
+    }
+  );
+  return messages;
+}
+
+function safeArtifactContinuationOutput(value: unknown): string {
+  if (typeof value !== "string") {
+    throw invalidContinuation(
+      "Strict artifact continuation repair requires a safe tool output."
+    );
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = asRecord(JSON.parse(value));
+  } catch {
+    throw invalidContinuation(
+      "Strict artifact continuation repair tool output is invalid."
+    );
+  }
+  if (parsed.ok !== false || parsed.error !== "INVALID_TOOL_ARGUMENTS") {
+    throw invalidContinuation(
+      "Strict artifact continuation repair tool output is not eligible."
+    );
+  }
+  const rawMissingInputs = Array.isArray(parsed.missingInputs)
+    ? parsed.missingInputs
+    : [];
+  if (rawMissingInputs.length > 32) {
+    throw invalidContinuation(
+      "Strict artifact continuation repair has too many missing paths."
+    );
+  }
+  const missingInputs = rawMissingInputs.map((item) => {
+    if (item === "") return "artifact.schema";
+    if (typeof item !== "string" || !SAFE_MISSING_INPUT_PATTERN.test(item)) {
+      throw invalidContinuation(
+        "Strict artifact continuation repair contains an unsafe missing path."
+      );
+    }
+    return item;
+  });
+  return JSON.stringify({
+    ok: false,
+    error: "INVALID_TOOL_ARGUMENTS",
+    missingInputs
+  });
+}
+
+function isEligibleArtifactContinuationOutput(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const parsed = asRecord(JSON.parse(value));
+    return parsed.ok === false && parsed.error === "INVALID_TOOL_ARGUMENTS";
+  } catch {
+    return false;
+  }
 }
 
 function strictChatCompletionsUrl(baseUrl: string): string {

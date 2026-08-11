@@ -239,6 +239,30 @@ export function hasExplicitArtifactIntent(question: string): boolean {
   );
 }
 
+export function hasExplicitParameterTableIntent(question: string): boolean {
+  if (!hasExplicitArtifactIntent(question)) return false;
+  const normalized = question.normalize("NFKC").trim();
+  const requestsParameterTable =
+    /(?:请|帮我|为我|我要|我需要|现在)?\s*(?:生成|创建|制作|导出|下载|整理成|写一份).{0,32}参数表/iu.test(
+      normalized
+    ) ||
+    /参数表.{0,16}(?:生成|创建|制作|导出|下载)/iu.test(normalized) ||
+    /(?:please\s+)?(?:create|generate|export|download|make|produce|write).{0,48}parameter\s+table/iu.test(
+      normalized
+    );
+  const requestsCompetingArtifact =
+    /(?:生成|创建|制作|导出|下载|整理成|写一份).{0,32}(?:诊断报告|选型报告|检查清单|检查表|独立报告|单独报告)/iu.test(
+      normalized
+    ) ||
+    /(?:diagnosis\s+report|selection\s+report|inspection\s+checklist).{0,24}(?:create|generate|export|download|make|produce|write)/iu.test(
+      normalized
+    ) ||
+    /(?:create|generate|export|download|make|produce|write).{0,48}(?:diagnosis\s+report|selection\s+report|inspection\s+checklist)/iu.test(
+      normalized
+    );
+  return requestsParameterTable && !requestsCompetingArtifact;
+}
+
 function requiredText(value: string, maximum: number, field: string): string {
   if (typeof value !== "string") {
     throw new ArtifactToolError(

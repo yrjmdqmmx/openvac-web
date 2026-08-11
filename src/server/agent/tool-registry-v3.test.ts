@@ -15,6 +15,9 @@ import { EvidenceRegistry } from "./evidence-registry";
 import {
   ARTIFACT_PROVIDER_LIMITS,
   createArtifactProviderSchema,
+  PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION,
+  parameterTableProviderPayloadToArtifactArguments,
+  parameterTableProviderSchema,
   ToolRegistry,
   visibleStringCharacters
 } from "./tool-registry";
@@ -27,6 +30,78 @@ const attachmentId = "10000000-0000-4000-8000-000000000001";
 const artifactId = "31d56d64-399a-4813-bad1-0c93e1eb8396";
 
 describe("ToolRegistry V3 exposure", () => {
+  it("uses a dedicated provider contract for explicit parameter tables", () => {
+    const scoped = registry("生成泵组选型参数表，并导出 CSV。");
+    const definition = scoped.definitions.find(
+      (candidate) => candidate.name === "create_artifact"
+    );
+
+    expect(scoped.artifactProviderContract).toBe("parameter_table");
+    expect(definition?.parameters).toMatchObject({
+      type: "object",
+      required: expect.arrayContaining(["contractVersion", "tables"]),
+      properties: {
+        contractVersion: {
+          const: PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION
+        },
+        tables: {
+          items: {
+            properties: {
+              rows: {
+                items: {
+                  required: [
+                    "parameter",
+                    "valueOrStatus",
+                    "unit",
+                    "assumptionOrCondition"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+  });
+
+  it("does not let the generic provider contract create a parameter table", () => {
+    const scoped = registry("生成诊断报告并附参数表。");
+    const definition = scoped.definitions.find(
+      (candidate) => candidate.name === "create_artifact"
+    );
+    const kindSchema = (
+      definition?.parameters.properties as Record<string, unknown>
+    )?.kind as { enum?: string[] } | undefined;
+
+    expect(scoped.artifactProviderContract).toBeUndefined();
+    expect(kindSchema?.enum).not.toContain("parameter_table");
+    const preflight = scoped.preflight({
+      callId: "call-generic-parameter-table-bypass",
+      name: "create_artifact",
+      arguments: JSON.stringify({
+        schemaVersion: "openvac.artifact.v1",
+        kind: "parameter_table",
+        title: "参数表",
+        formats: ["csv"],
+        summary: "参数、单位和假设",
+        sections: [],
+        tables: [
+          {
+            columns: ["参数", "值", "单位/假设"],
+            rows: [["有效抽速", "10", "L/s；额定工况"]]
+          }
+        ]
+      })
+    });
+
+    expect(preflight.ok).toBe(false);
+    if (preflight.ok) throw new Error("Expected generic contract rejection.");
+    expect(preflight.result).toMatchObject({
+      errorCode: "INVALID_TOOL_ARGUMENTS",
+      missingInputs: ["parameterTable.providerContract"]
+    });
+  });
+
   it("exposes the URL and attachment tools only when the current turn supplies refs", () => {
     const bare = new ToolRegistry(new EvidenceRegistry());
     expect(v3ToolNames(bare)).toEqual([]);
@@ -421,6 +496,241 @@ describe("ToolRegistry V3 exposure", () => {
     ).toBe(false);
   });
 
+  it("enforces the dedicated parameter contract at every aggregate boundary", () => {
+    const base = {
+      ...validParameterTableProviderPayload(),
+      tables: [
+        {
+          title: "表一",
+          rows: Array.from({ length: 32 }, (_, index) => ({
+            parameter: `参数 ${index + 1}`,
+            valueOrStatus: String(index + 1),
+            unit: "Pa",
+            assumptionOrCondition: "待用户确认"
+          }))
+        },
+        {
+          title: "表二",
+          rows: Array.from({ length: 32 }, (_, index) => ({
+            parameter: `工况 ${index + 1}`,
+            valueOrStatus: String(index + 1),
+            unit: "L/s",
+            assumptionOrCondition: "额定工况"
+          }))
+        }
+      ]
+    };
+
+    expect(parameterTableProviderSchema.safeParse(base).success).toBe(true);
+    expect(
+      parameterTableProviderSchema.safeParse({
+        ...base,
+        tables: [
+          base.tables[0],
+          {
+            ...base.tables[1],
+            rows: [
+              ...base.tables[1].rows,
+              {
+                parameter: "额外参数",
+                valueOrStatus: "1",
+                unit: "Pa",
+                assumptionOrCondition: "待用户确认"
+              }
+            ]
+          }
+        ]
+      }).success
+    ).toBe(false);
+    const scoped = registry("生成泵组选型参数表，并导出 CSV。");
+    const atVisibleLimit =
+      parameterProviderPayloadWithCanonicalVisibleCharacters(
+        ARTIFACT_PROVIDER_LIMITS.visibleCharacters
+      );
+    expect(
+      visibleStringCharacters(
+        parameterTableProviderPayloadToArtifactArguments(atVisibleLimit)
+      )
+    ).toBe(ARTIFACT_PROVIDER_LIMITS.visibleCharacters);
+    expect(
+      scoped.preflight({
+        callId: "call-parameter-visible-limit",
+        name: "create_artifact",
+        arguments: JSON.stringify(atVisibleLimit)
+      }).ok
+    ).toBe(true);
+    const overVisibleLimit = scoped.preflight({
+      callId: "call-parameter-visible-over-limit",
+      name: "create_artifact",
+      arguments: JSON.stringify(
+        parameterProviderPayloadWithCanonicalVisibleCharacters(
+          ARTIFACT_PROVIDER_LIMITS.visibleCharacters + 1
+        )
+      )
+    });
+    expect(overVisibleLimit.ok).toBe(false);
+    expect(
+      parameterTableProviderSchema.safeParse({
+        ...validParameterTableProviderPayload(),
+        tables: [
+          {
+            ...validParameterTableProviderPayload().tables[0],
+            rows: [
+              {
+                ...validParameterTableProviderPayload().tables[0].rows[0],
+                unit: "u".repeat(ARTIFACT_PROVIDER_LIMITS.cellCharacters + 1)
+              }
+            ]
+          }
+        ]
+      }).success
+    ).toBe(false);
+  });
+
+  it("maps the dedicated parameter-table payload without inventing content", async () => {
+    const storage: ArtifactStorage & { create: ReturnType<typeof vi.fn> } = {
+      create: vi.fn(async (input) => ({
+        artifactId,
+        userId: input.userId,
+        conversationId: input.conversationId,
+        sourceTurnId: input.turnId,
+        kind: input.spec.kind,
+        title: input.spec.title,
+        formats: input.spec.formats,
+        status: "ready" as const
+      }))
+    };
+    const scoped = registry("生成泵组选型参数表，并导出 CSV。", storage);
+    const providerPayload = {
+      contractVersion: PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION,
+      title: "泵组选型参数表",
+      formats: ["csv"] as const,
+      summary: "参数、单位和待确认工况",
+      sections: [],
+      tables: [
+        {
+          title: "泵组参数",
+          rows: [
+            {
+              parameter: "有效抽速",
+              valueOrStatus: "待用户确认",
+              unit: "L/s",
+              assumptionOrCondition: "待用户确认"
+            }
+          ]
+        }
+      ]
+    };
+
+    expect(
+      parameterTableProviderSchema.safeParse(providerPayload).success
+    ).toBe(true);
+    const result = await scoped.execute({
+      callId: "call-parameter-provider-contract",
+      name: "create_artifact",
+      arguments: JSON.stringify(providerPayload)
+    });
+
+    expect(result.ok).toBe(true);
+    expect(storage.create).toHaveBeenCalledTimes(1);
+    expect(storage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        spec: expect.objectContaining({
+          schemaVersion: "openvac.artifact.v1",
+          kind: "parameter_table",
+          tables: [
+            {
+              title: "泵组参数",
+              columns: ["参数", "数值或状态", "单位", "假设或工况"],
+              rows: [["有效抽速", "待用户确认", "L/s", "待用户确认"]]
+            }
+          ]
+        })
+      })
+    );
+  });
+
+  it("rejects an incomplete dedicated parameter row before storage", async () => {
+    const storage: ArtifactStorage & { create: ReturnType<typeof vi.fn> } = {
+      create: vi.fn(async (input) => ({
+        artifactId,
+        userId: input.userId,
+        conversationId: input.conversationId,
+        sourceTurnId: input.turnId,
+        kind: input.spec.kind,
+        title: input.spec.title,
+        formats: input.spec.formats,
+        status: "ready" as const
+      }))
+    };
+    const scoped = registry("生成泵组选型参数表，并导出 CSV。", storage);
+    const preflight = scoped.preflight({
+      callId: "call-incomplete-parameter-provider-contract",
+      name: "create_artifact",
+      arguments: JSON.stringify({
+        contractVersion: PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION,
+        title: "泵组选型参数表",
+        formats: ["csv"],
+        summary: "参数、单位和假设",
+        sections: [],
+        tables: [
+          {
+            title: "泵组参数",
+            rows: [
+              {
+                parameter: "有效抽速",
+                valueOrStatus: "待用户确认",
+                unit: "L/s"
+              }
+            ]
+          }
+        ]
+      })
+    });
+
+    expect(preflight.ok).toBe(false);
+    if (preflight.ok) throw new Error("Expected provider-contract rejection.");
+    expect(preflight.result).toMatchObject({
+      errorCode: "INVALID_TOOL_ARGUMENTS"
+    });
+    expect(JSON.stringify(preflight.result.outputItem)).toContain(
+      "assumptionOrCondition"
+    );
+    expect(storage.create).not.toHaveBeenCalled();
+
+    const mixedRows = scoped.preflight({
+      callId: "call-mixed-parameter-provider-contract",
+      name: "create_artifact",
+      arguments: JSON.stringify({
+        ...validParameterTableProviderPayload(),
+        tables: [
+          {
+            title: "泵组参数",
+            rows: [
+              validParameterTableProviderPayload().tables[0].rows[0],
+              {
+                parameter: "极限压力",
+                valueOrStatus: "待用户确认",
+                unit: "-",
+                assumptionOrCondition: "-"
+              }
+            ]
+          }
+        ]
+      })
+    });
+    expect(mixedRows.ok).toBe(false);
+    if (mixedRows.ok) throw new Error("Expected mixed-row rejection.");
+    expect(mixedRows.result.errorCode).toBe("INVALID_TOOL_ARGUMENTS");
+    expect(JSON.stringify(mixedRows.result.outputItem)).toMatch(
+      /tables\.0\.rows\.1\.(?:unit|assumptionOrCondition)/u
+    );
+    expect(JSON.stringify(mixedRows.result.outputItem)).not.toContain(
+      "极限压力"
+    );
+    expect(storage.create).not.toHaveBeenCalled();
+  });
+
   it("rejects parameter tables without real unit and assumption values before storage", async () => {
     const storage: ArtifactStorage & { create: ReturnType<typeof vi.fn> } = {
       create: vi.fn(async (input) => ({
@@ -436,16 +746,22 @@ describe("ToolRegistry V3 exposure", () => {
     };
     const scoped = registry("请生成泵组选型参数表并导出 CSV", storage);
     const invalidArguments = JSON.stringify({
-      schemaVersion: "openvac.artifact.v1",
-      kind: "parameter_table",
+      contractVersion: PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION,
       title: "泵组选型参数表",
       formats: ["csv"],
       summary: "参数表包含单位和假设",
       sections: [],
       tables: [
         {
-          columns: ["参数", "值", "单位/假设"],
-          rows: [["有效抽速", "10", "L/s"]]
+          title: "泵组参数",
+          rows: [
+            {
+              parameter: "有效抽速",
+              valueOrStatus: "10",
+              unit: "L/s",
+              assumptionOrCondition: "-"
+            }
+          ]
         }
       ]
     });
@@ -460,11 +776,11 @@ describe("ToolRegistry V3 exposure", () => {
     if (preflight.ok) throw new Error("Expected semantic preflight failure.");
     expect(preflight.result).toMatchObject({
       errorCode: "INVALID_TOOL_ARGUMENTS",
-      missingInputs: ["parameterTable.assumption"]
+      missingInputs: ["tables.0.rows.0.assumptionOrCondition"]
     });
     expect(preflight.result.outputItem).toMatchObject({
       type: "function_call_output",
-      output: expect.stringContaining("parameterTable.assumption")
+      output: expect.stringContaining("assumptionOrCondition")
     });
     expect(preflight.result.outputItem).not.toEqual(
       expect.objectContaining({ output: expect.stringContaining("有效抽速") })
@@ -478,8 +794,15 @@ describe("ToolRegistry V3 exposure", () => {
         ...JSON.parse(invalidArguments),
         tables: [
           {
-            columns: ["参数", "值", "假设"],
-            rows: [["有效抽速", "10", "稳态运行"]]
+            title: "泵组参数",
+            rows: [
+              {
+                parameter: "有效抽速",
+                valueOrStatus: "10",
+                unit: "待用户确认",
+                assumptionOrCondition: "稳态运行"
+              }
+            ]
           }
         ]
       })
@@ -488,7 +811,7 @@ describe("ToolRegistry V3 exposure", () => {
     if (missingUnit.ok) throw new Error("Expected unit preflight failure.");
     expect(missingUnit.result).toMatchObject({
       errorCode: "INVALID_TOOL_ARGUMENTS",
-      missingInputs: ["parameterTable.unit"]
+      missingInputs: ["tables.0.rows.0.unit"]
     });
     expect(storage.create).not.toHaveBeenCalled();
 
@@ -499,8 +822,14 @@ describe("ToolRegistry V3 exposure", () => {
         ...JSON.parse(invalidArguments),
         tables: [
           {
-            columns: ["参数", "值", "单位/假设"],
-            rows: [["有效抽速", "10"]]
+            title: "泵组参数",
+            rows: [
+              {
+                parameter: "有效抽速",
+                valueOrStatus: "10",
+                unit: "L/s"
+              }
+            ]
           }
         ]
       })
@@ -530,8 +859,15 @@ describe("ToolRegistry V3 exposure", () => {
           ...JSON.parse(invalidArguments),
           tables: [
             {
-              columns: ["参数", "值", "单位/假设"],
-              rows: [["有效抽速", "10", "L/s；假设稳态"]]
+              title: "泵组参数",
+              rows: [
+                {
+                  parameter: "有效抽速",
+                  valueOrStatus: "10",
+                  unit: "L/s",
+                  assumptionOrCondition: "稳态运行"
+                }
+              ]
             }
           ]
         })
@@ -542,7 +878,7 @@ describe("ToolRegistry V3 exposure", () => {
 
   it("enforces the provider raw UTF-8 boundary after JSON parsing", () => {
     const scoped = registry("请生成泵组选型参数表并导出 CSV");
-    const compact = JSON.stringify(providerSpecWithVisibleCharacters(1_000));
+    const compact = JSON.stringify(validParameterTableProviderPayload());
     const compactBytes = Buffer.byteLength(compact, "utf8");
     expect(compactBytes).toBeLessThan(
       ARTIFACT_PROVIDER_LIMITS.rawArgumentBytes
@@ -784,4 +1120,65 @@ function providerSpecWithVisibleCharacters(target: number) {
   }
   if (remaining !== 0) throw new Error("Target exceeds provider capacity.");
   return spec;
+}
+
+function validParameterTableProviderPayload() {
+  return {
+    contractVersion: "openvac.parameter-table-provider.v1" as const,
+    title: "泵组选型参数表",
+    formats: ["csv" as const],
+    summary: "参数、单位和假设",
+    sections: [] as Array<{ heading: string; paragraphs: string[] }>,
+    tables: [
+      {
+        title: "泵组参数",
+        rows: [
+          {
+            parameter: "有效抽速",
+            valueOrStatus: "待用户确认",
+            unit: "L/s",
+            assumptionOrCondition: "待用户确认"
+          }
+        ]
+      }
+    ]
+  };
+}
+
+function parameterProviderPayloadWithCanonicalVisibleCharacters(
+  target: number
+) {
+  const payload = {
+    ...validParameterTableProviderPayload(),
+    tables: [
+      {
+        title: "表",
+        rows: Array.from({ length: 64 }, () => ({
+          parameter: "参",
+          valueOrStatus: "值",
+          unit: "Pa",
+          assumptionOrCondition: "待用户确认"
+        }))
+      }
+    ]
+  };
+  let remaining =
+    target -
+    visibleStringCharacters(
+      parameterTableProviderPayloadToArtifactArguments(payload)
+    );
+  if (remaining < 0)
+    throw new Error("Target is smaller than the base payload.");
+  for (const row of payload.tables[0].rows) {
+    for (const key of ["parameter", "valueOrStatus"] as const) {
+      if (remaining <= 0) break;
+      const capacity =
+        ARTIFACT_PROVIDER_LIMITS.cellCharacters - Array.from(row[key]).length;
+      const length = Math.min(capacity, remaining);
+      row[key] += "x".repeat(length);
+      remaining -= length;
+    }
+  }
+  if (remaining !== 0) throw new Error("Target exceeds provider capacity.");
+  return payload;
 }
