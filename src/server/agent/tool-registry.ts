@@ -23,6 +23,7 @@ import type {
 import {
   ArtifactToolService,
   hasExplicitArtifactIntent,
+  MAX_ARTIFACT_SPEC_BYTES,
   type ArtifactStorage,
   UnconfiguredArtifactStorage
 } from "./artifact-tools";
@@ -203,10 +204,16 @@ export class ToolRegistry {
     name: string;
     arguments: string;
   }): Promise<ToolExecutionResult> {
-    if (Buffer.byteLength(input.arguments, "utf8") > MAX_ARGUMENT_BYTES) {
+    const isArtifactCall = input.name === "create_artifact";
+    const argumentLimit = isArtifactCall
+      ? MAX_ARTIFACT_SPEC_BYTES
+      : MAX_ARGUMENT_BYTES;
+    if (Buffer.byteLength(input.arguments, "utf8") > argumentLimit) {
       return this.output(input.callId, {
         ok: false,
-        error: "TOOL_ARGUMENTS_TOO_LARGE"
+        error: isArtifactCall
+          ? "ARTIFACT_ARGUMENTS_TOO_LARGE"
+          : "TOOL_ARGUMENTS_TOO_LARGE"
       });
     }
     let raw: unknown;
@@ -215,7 +222,9 @@ export class ToolRegistry {
     } catch {
       return this.output(input.callId, {
         ok: false,
-        error: "INVALID_TOOL_ARGUMENTS_JSON"
+        error: isArtifactCall
+          ? "ARTIFACT_ARGUMENTS_JSON_INVALID"
+          : "INVALID_TOOL_ARGUMENTS_JSON"
       });
     }
 

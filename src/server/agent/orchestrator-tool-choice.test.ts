@@ -43,6 +43,12 @@ describe("Agent V3 deterministic calculator routing", () => {
     expect(safeArtifactFailureCode("ARTIFACT_SCHEMA_UNAVAILABLE")).toBe(
       "ARTIFACT_SCHEMA_UNAVAILABLE"
     );
+    expect(safeArtifactFailureCode("ARTIFACT_ARGUMENTS_TOO_LARGE")).toBe(
+      "ARTIFACT_ARGUMENTS_TOO_LARGE"
+    );
+    expect(safeArtifactFailureCode("ARTIFACT_ARGUMENTS_JSON_INVALID")).toBe(
+      "ARTIFACT_ARGUMENTS_JSON_INVALID"
+    );
     expect(safeArtifactFailureCode("secret request-id=private")).toBe(
       "ARTIFACT_CREATION_FAILED"
     );
