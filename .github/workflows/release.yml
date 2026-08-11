@@ -638,7 +638,13 @@ jobs:
             node deploy/select-release-archive.mjs \
               "$artifacts_response" "$RUN_ID" "$RUN_ATTEMPT"
           )"
+          archive_prefix="openvac-web-release-$RUN_ID-"
+          archive_attempt="${archive_name#"$archive_prefix"}"
+          [ "$archive_name" = "$archive_prefix$archive_attempt" ] || exit 1
+          case "$archive_attempt" in ""|*[!0-9]*) exit 1 ;; esac
+          [ "$archive_attempt" -ge 1 ] && [ "$archive_attempt" -le "$RUN_ATTEMPT" ]
           printf 'name=%s\n' "$archive_name" >>"$GITHUB_OUTPUT"
+          printf 'attempt=%s\n' "$archive_attempt" >>"$GITHUB_OUTPUT"
       - name: Download the same-run web deployment archive
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -695,6 +701,7 @@ jobs:
           RELEASE_SHA: ${{ inputs.commit_sha }}
           ECS_HOST: ${{ secrets.ECS_HOST }}
           ECS_USER: ${{ secrets.ECS_USER }}
+          ARCHIVE_RUN_ATTEMPT: ${{ steps.deployment_archive.outputs.attempt }}
           WEB_IMAGE_DIGEST: ${{ steps.deployment_archive_identity.outputs.digest }}
           KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256: ${{ secrets.KNOWLEDGE_REVIEW_AUTOMATION_TOKEN_SHA256 }}
           DASHSCOPE_WORKSPACE_ID: ${{ secrets.DASHSCOPE_WORKSPACE_ID }}
@@ -718,6 +725,12 @@ jobs:
               ;;
             *) deploy_gate_fail "TARGET_INVALID" ;;
           esac
+          case "$ARCHIVE_RUN_ATTEMPT" in
+            ""|*[!0-9]*) deploy_gate_fail "ARCHIVE_ATTEMPT_INVALID" ;;
+          esac
+          [ "$ARCHIVE_RUN_ATTEMPT" -ge 1 ] &&
+            [ "$ARCHIVE_RUN_ATTEMPT" -le "$GITHUB_RUN_ATTEMPT" ] ||
+            deploy_gate_fail "ARCHIVE_ATTEMPT_INVALID"
           case "$RELEASE_SHA" in ""|*[!0-9a-f]*) deploy_gate_fail "RELEASE_SHA_CHARACTERS_INVALID" ;; esac
           [ "${#RELEASE_SHA}" -eq 40 ] || deploy_gate_fail "RELEASE_SHA_LENGTH_INVALID"
           case "$WEB_IMAGE_DIGEST" in sha256:*) web_digest="${WEB_IMAGE_DIGEST#sha256:}" ;; *) deploy_gate_fail "IMAGE_DIGEST_PREFIX_INVALID" ;; esac
@@ -802,7 +815,7 @@ jobs:
             "chmod 600 '$remote_stage/knowledge-review-token-hash' '$remote_stage/dashscope-workspace-id'"
 
           loaded_web_id="$(
-            ssh "${ssh_options[@]}" "$ssh_base"               sh -s -- "$remote_stage" "$RELEASE_SHA" "$image_repository:archive-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$WEB_IMAGE_DIGEST" <<'REMOTE_PREPARE'
+            ssh "${ssh_options[@]}" "$ssh_base"               sh -s -- "$remote_stage" "$RELEASE_SHA" "$image_repository:archive-$GITHUB_RUN_ID-$ARCHIVE_RUN_ATTEMPT" "$WEB_IMAGE_DIGEST" <<'REMOTE_PREPARE'
           set -eu
           remote_stage="$1"
           release_id="$2"
