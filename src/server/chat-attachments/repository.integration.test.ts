@@ -14,6 +14,7 @@ import {
   conversations,
   conversationTurns,
   messages,
+  session as sessions,
   user as users
 } from "@/server/db/schema";
 
@@ -322,6 +323,13 @@ describeDatabase("chat attachment repository integration", () => {
       name: "Artifact Deleting Owner",
       email: `${ownerId}@example.test`
     });
+    const sessionId = randomUUID();
+    await db.insert(sessions).values({
+      id: sessionId,
+      userId: ownerId,
+      token: randomUUID(),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1_000)
+    });
     const conversationId = randomUUID();
     await db.insert(conversations).values({
       id: conversationId,
@@ -424,7 +432,14 @@ describeDatabase("chat attachment repository integration", () => {
     });
     await db.delete(conversations).where(eq(conversations.id, conversationId));
     await prepareUserDeletion(ownerId);
-    await db.delete(users).where(eq(users.id, ownerId));
+    const deletedUsers = await db.transaction(async (transaction) => {
+      await transaction.delete(sessions).where(eq(sessions.userId, ownerId));
+      return transaction
+        .delete(users)
+        .where(eq(users.id, ownerId))
+        .returning({ id: users.id });
+    });
+    expect(deletedUsers).toEqual([{ id: ownerId }]);
 
     const [job] = await db
       .select()
@@ -435,6 +450,12 @@ describeDatabase("chat attachment repository integration", () => {
       objectType: "artifact",
       status: "queued"
     });
+    expect(
+      await db
+        .select({ id: sessions.id })
+        .from(sessions)
+        .where(eq(sessions.userId, ownerId))
+    ).toEqual([]);
     userIds.splice(userIds.indexOf(ownerId), 1);
   });
 
