@@ -304,7 +304,7 @@ describe("Agent V3 verified link selection repair", () => {
     }
   );
 
-  it("uses insertion order for a missing link and preserves an existing unique canonical ID", async () => {
+  it("uses server insertion order regardless of the model-selected link ID", async () => {
     const subject = verifiedLinkRepairSubject();
     subject.invoke.verifiedLinks.set("W1", {
       type: "verified_link",
@@ -329,7 +329,48 @@ describe("Agent V3 verified link selection repair", () => {
         currentInput: [],
         outputText: JSON.stringify(subject.answer(["W1", "W1"]))
       })
-    ).resolves.toMatchObject({ usedLinkIds: ["W1"] });
+    ).resolves.toMatchObject({ usedLinkIds: ["W2"] });
+  });
+
+  it("selects the first server binding that intersects actual block evidence", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const boundW2 = subject.invoke.verifiedLinks.get("W2");
+    if (!boundW2) throw new Error("Expected verified link W2.");
+    subject.invoke.verifiedLinks.clear();
+    subject.invoke.verifiedLinks.set("W1", {
+      type: "verified_link",
+      linkId: "W1",
+      url: "https://www.leybold.com/manual-1",
+      label: "First unrelated manual",
+      hostname: "www.leybold.com",
+      status: "verified",
+      evidenceIds: ["E9"]
+    });
+    subject.invoke.verifiedLinks.set("W2", boundW2);
+    subject.invoke.verifiedLinks.set("W3", {
+      type: "verified_link",
+      linkId: "W3",
+      url: "https://www.leybold.com/manual-3",
+      label: "Second bound manual",
+      hostname: "www.leybold.com",
+      status: "verified",
+      evidenceIds: ["E1"]
+    });
+    subject.invoke.repair = vi.fn();
+
+    const result = await subject.invoke.validateOrRepair({
+      ...subject.input,
+      currentInput: [],
+      outputText: JSON.stringify(subject.answer(["W1", "W3"]))
+    });
+
+    expect(result?.usedLinkIds).toEqual(["W2"]);
+    expect(result?.blocks.at(-1)).toEqual({
+      type: "link_reference",
+      linkId: "W2",
+      label: "Leybold 厂家手册"
+    });
+    expect(subject.invoke.repair).not.toHaveBeenCalled();
   });
 
   it.each(["label", "declared_only"] as const)(
@@ -425,6 +466,30 @@ describe("Agent V3 verified link selection repair", () => {
     expect(subject.invoke.repair).toHaveBeenCalledTimes(1);
   });
 
+  it("appends one link when the projected answer remains at the 128-block limit", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const candidate = subject.answer([]);
+    candidate.blocks.push(
+      ...Array.from({ length: 126 }, (_, index) => ({
+        type: "heading" as const,
+        level: 2 as const,
+        text: `Heading ${index}`
+      }))
+    );
+    subject.invoke.repair = vi.fn();
+
+    const result = await subject.invoke.validateOrRepair({
+      ...subject.input,
+      currentInput: [],
+      outputText: JSON.stringify(candidate)
+    });
+
+    expect(result?.blocks).toHaveLength(128);
+    expect(result?.usedLinkIds).toEqual(["W2"]);
+    expect(answerWithoutLinks(result)).toEqual(answerWithoutLinks(candidate));
+    expect(subject.invoke.repair).not.toHaveBeenCalled();
+  });
+
   it.each([
     { name: "label_240", linkId: "W2", label: "L".repeat(240), valid: true },
     { name: "label_241", linkId: "W2", label: "L".repeat(241), valid: false },
@@ -480,13 +545,11 @@ describe("Agent V3 verified link selection repair", () => {
     }
   });
 
-  it.each(["unknown", "multiple", "non_link_invalid"] as const)(
-    "does not project an unsafe %s link candidate",
+  it.each(["unknown", "multiple"] as const)(
+    "ignores an unsafe %s model link selection and projects one server binding",
     async (failure) => {
       const subject = verifiedLinkRepairSubject();
-      subject.invoke.repair = vi.fn(async () =>
-        JSON.stringify(subject.answer([]))
-      );
+      subject.invoke.repair = vi.fn();
       const candidate = subject.answer([]);
       if (failure === "unknown") {
         candidate.blocks.push({
@@ -518,20 +581,42 @@ describe("Agent V3 verified link selection repair", () => {
           }
         );
         candidate.usedLinkIds = ["W2"];
-      } else {
-        candidate.usedEvidenceIds = [];
       }
 
-      await expect(
-        subject.invoke.validateOrRepair({
-          ...subject.input,
-          currentInput: [],
-          outputText: JSON.stringify(candidate)
-        })
-      ).rejects.toMatchObject({ code: "ANSWER_VALIDATION_FAILED" });
-      expect(subject.invoke.repair).toHaveBeenCalledTimes(1);
+      const result = await subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify(candidate)
+      });
+
+      expect(result?.usedLinkIds).toEqual(["W2"]);
+      expect(result?.blocks.at(-1)).toEqual({
+        type: "link_reference",
+        linkId: "W2",
+        label: "Leybold 厂家手册"
+      });
+      expect(answerWithoutLinks(result)).toEqual(answerWithoutLinks(candidate));
+      expect(subject.invoke.repair).not.toHaveBeenCalled();
     }
   );
+
+  it("does not project when declarations do not match actual block evidence", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const candidate = subject.answer([]);
+    candidate.usedEvidenceIds = [];
+    subject.invoke.repair = vi.fn(async () =>
+      JSON.stringify(subject.answer([]))
+    );
+
+    await expect(
+      subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [],
+        outputText: JSON.stringify(candidate)
+      })
+    ).rejects.toMatchObject({ code: "ANSWER_VALIDATION_FAILED" });
+    expect(subject.invoke.repair).toHaveBeenCalledTimes(1);
+  });
 
   it("does not select a verified link unless the candidate cites bound evidence", async () => {
     const subject = verifiedLinkRepairSubject();
@@ -701,13 +786,45 @@ describe("Agent V3 verified link selection repair", () => {
     });
   });
 
-  it("completes a full run after one bounded fallback repair canonicalizes an unknown link", async () => {
+  it("fails a structurally invalid full run without repair, persistence, or audit", async () => {
     const subject = verifiedLinkRepairSubject();
-    const unknown = subject.answer(["W9"]);
-    const responses = [unknown, subject.answer(["W2"])];
+    const invalid = subject.answer([]);
+    invalid.blocks.push({
+      type: "link_reference",
+      linkId: "W".repeat(161),
+      label: "invalid oversized link identifier"
+    });
+    invalid.usedLinkIds = ["W".repeat(161)];
     subject.invoke.requestWithOneRetry = vi.fn(async () => {
       subject.invoke.modelRequests += 1;
-      return answerModelResponse(responses.shift() ?? subject.answer([]));
+      return answerModelResponse(invalid);
+    });
+
+    await expect(subject.orchestrator.run(subject.input)).rejects.toMatchObject(
+      {
+        code: "ANSWER_VALIDATION_FAILED",
+        retryable: false
+      }
+    );
+
+    expect(subject.invoke.requestWithOneRetry).toHaveBeenCalledTimes(1);
+    expect(subject.store.complete).not.toHaveBeenCalled();
+    expect(subject.store.recordToolCall).not.toHaveBeenCalled();
+    expect(subject.orchestrator.counters).toEqual({
+      modelRequests: 1,
+      retries: 0,
+      repairs: 0,
+      toolRounds: 0,
+      toolCalls: 0
+    });
+  });
+
+  it("completes a full run by projecting an unknown model link without repair", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const unknown = subject.answer(["W9"]);
+    subject.invoke.requestWithOneRetry = vi.fn(async () => {
+      subject.invoke.modelRequests += 1;
+      return answerModelResponse(unknown);
     });
 
     await expect(
@@ -717,13 +834,13 @@ describe("Agent V3 verified link selection repair", () => {
       answer: { usedLinkIds: ["W2"] }
     });
 
-    expect(subject.invoke.requestWithOneRetry).toHaveBeenCalledTimes(2);
+    expect(subject.invoke.requestWithOneRetry).toHaveBeenCalledTimes(1);
     expect(subject.store.complete).toHaveBeenCalledTimes(1);
     expect(subject.store.recordToolCall).not.toHaveBeenCalled();
     expect(subject.orchestrator.counters).toEqual({
-      modelRequests: 2,
+      modelRequests: 1,
       retries: 0,
-      repairs: 1,
+      repairs: 0,
       toolRounds: 0,
       toolCalls: 0
     });
