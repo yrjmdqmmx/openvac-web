@@ -12,7 +12,12 @@ vi.mock("@/server/chat/evidence", async (importOriginal) => ({
 import type { ArtifactStorage } from "./artifact-tools";
 import type { AttachmentStorage } from "./attachment-tools";
 import { EvidenceRegistry } from "./evidence-registry";
-import { ToolRegistry } from "./tool-registry";
+import {
+  ARTIFACT_PROVIDER_LIMITS,
+  createArtifactProviderSchema,
+  ToolRegistry,
+  visibleStringCharacters
+} from "./tool-registry";
 import type { VerifiedUrlReader } from "./verified-url";
 
 const userId = "user-a";
@@ -142,7 +147,7 @@ describe("ToolRegistry V3 exposure", () => {
     expect(JSON.stringify(result)).not.toMatch(/signed|signature|secret/iu);
   });
 
-  it("publishes artifact constraints that match canonical row and text bounds", () => {
+  it("publishes the bounded provider artifact envelope", () => {
     const scoped = registry("请生成中文诊断报告并导出 CSV");
     const definition = scoped.definitions.find(
       (tool) => tool.type === "function" && tool.name === "create_artifact"
@@ -152,26 +157,43 @@ describe("ToolRegistry V3 exposure", () => {
     expect(definition?.parameters).toMatchObject({
       properties: {
         sections: {
+          maxItems: ARTIFACT_PROVIDER_LIMITS.sections,
           items: {
             properties: {
               paragraphs: {
                 minItems: 1,
-                items: { minLength: 1, maxLength: 10_000 }
+                maxItems: ARTIFACT_PROVIDER_LIMITS.paragraphsPerSection,
+                items: {
+                  minLength: 1,
+                  maxLength: ARTIFACT_PROVIDER_LIMITS.paragraphCharacters
+                }
               }
             }
           }
         },
         tables: {
+          maxItems: ARTIFACT_PROVIDER_LIMITS.tables,
           items: {
             properties: {
               columns: {
                 minItems: 1,
+                maxItems: ARTIFACT_PROVIDER_LIMITS.columnsPerTable,
                 uniqueItems: true,
-                items: { minLength: 1, maxLength: 240 }
+                items: {
+                  minLength: 1,
+                  maxLength: ARTIFACT_PROVIDER_LIMITS.columnHeaderCharacters
+                }
               },
               rows: {
                 minItems: 1,
-                items: { minItems: 1, items: { maxLength: 10_000 } }
+                maxItems: ARTIFACT_PROVIDER_LIMITS.rowsPerTable,
+                items: {
+                  minItems: 1,
+                  maxItems: ARTIFACT_PROVIDER_LIMITS.columnsPerTable,
+                  items: {
+                    maxLength: ARTIFACT_PROVIDER_LIMITS.cellCharacters
+                  }
+                }
               }
             }
           }
@@ -283,7 +305,7 @@ describe("ToolRegistry V3 exposure", () => {
     }
   );
 
-  it("accepts a bounded parameter table above the generic tool argument limit", async () => {
+  it("rejects a provider artifact above the generation envelope before storage", async () => {
     const storage: ArtifactStorage & { create: ReturnType<typeof vi.fn> } = {
       create: vi.fn(async (input) => ({
         artifactId,
@@ -332,8 +354,102 @@ describe("ToolRegistry V3 exposure", () => {
       arguments: escapedArgumentsJson
     });
 
-    expect(result.ok).toBe(true);
-    expect(storage.create).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "INVALID_TOOL_ARGUMENTS"
+    });
+    expect(storage.create).not.toHaveBeenCalled();
+  });
+
+  it("enforces aggregate provider rows and visible characters", () => {
+    const base = {
+      schemaVersion: "openvac.artifact.v1" as const,
+      kind: "parameter_table" as const,
+      title: "泵组选型参数表",
+      formats: ["csv"] as const,
+      summary: "参数、单位和假设",
+      sections: [],
+      tables: [
+        {
+          columns: ["参数", "值", "单位/假设"],
+          rows: Array.from({ length: 32 }, (_, index) => [
+            `参数 ${index + 1}`,
+            String(index + 1),
+            "Pa；假设稳态"
+          ])
+        },
+        {
+          columns: ["参数", "值", "单位/假设"],
+          rows: Array.from({ length: 32 }, (_, index) => [
+            `工况 ${index + 1}`,
+            String(index + 1),
+            "L/s；额定工况"
+          ])
+        }
+      ]
+    };
+
+    expect(createArtifactProviderSchema.safeParse(base).success).toBe(true);
+    expect(visibleStringCharacters(base)).toBeLessThanOrEqual(
+      ARTIFACT_PROVIDER_LIMITS.visibleCharacters
+    );
+    expect(
+      createArtifactProviderSchema.safeParse({
+        ...base,
+        tables: [
+          base.tables[0],
+          {
+            ...base.tables[1],
+            rows: [...base.tables[1].rows, ["额外参数", "1", "Pa"]]
+          }
+        ]
+      }).success
+    ).toBe(false);
+    expect(
+      createArtifactProviderSchema.safeParse(
+        providerSpecWithVisibleCharacters(
+          ARTIFACT_PROVIDER_LIMITS.visibleCharacters
+        )
+      ).success
+    ).toBe(true);
+    expect(
+      createArtifactProviderSchema.safeParse(
+        providerSpecWithVisibleCharacters(
+          ARTIFACT_PROVIDER_LIMITS.visibleCharacters + 1
+        )
+      ).success
+    ).toBe(false);
+  });
+
+  it("enforces the provider raw UTF-8 boundary after JSON parsing", () => {
+    const scoped = registry("请生成泵组选型参数表并导出 CSV");
+    const compact = JSON.stringify(providerSpecWithVisibleCharacters(1_000));
+    const compactBytes = Buffer.byteLength(compact, "utf8");
+    expect(compactBytes).toBeLessThan(
+      ARTIFACT_PROVIDER_LIMITS.rawArgumentBytes
+    );
+    const atLimit = `${compact}${" ".repeat(
+      ARTIFACT_PROVIDER_LIMITS.rawArgumentBytes - compactBytes
+    )}`;
+    expect(Buffer.byteLength(atLimit, "utf8")).toBe(
+      ARTIFACT_PROVIDER_LIMITS.rawArgumentBytes
+    );
+    expect(
+      scoped.preflight({
+        callId: "call-provider-raw-limit",
+        name: "create_artifact",
+        arguments: atLimit
+      }).ok
+    ).toBe(true);
+    const overLimit = `${atLimit} `;
+    const result = scoped.preflight({
+      callId: "call-provider-raw-over-limit",
+      name: "create_artifact",
+      arguments: overLimit
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected provider raw limit failure.");
+    expect(result.result.errorCode).toBe("INVALID_TOOL_ARGUMENTS");
   });
 
   it("returns artifact-specific codes for malformed or oversized arguments", async () => {
@@ -505,4 +621,37 @@ function v3ToolNames(registry: ToolRegistry): string[] {
   return registry.definitions
     .map((definition) => definition.name)
     .filter((name) => names.has(name));
+}
+
+function providerSpecWithVisibleCharacters(target: number) {
+  const spec = {
+    schemaVersion: "openvac.artifact.v1" as const,
+    kind: "parameter_table" as const,
+    title: "表",
+    formats: ["csv"] as const,
+    summary: "表",
+    sections: [],
+    tables: [
+      {
+        columns: Array.from({ length: 8 }, (_, index) => `列${index}`),
+        rows: Array.from({ length: 64 }, () =>
+          Array.from({ length: 8 }, () => "")
+        )
+      }
+    ]
+  };
+  let remaining = target - visibleStringCharacters(spec);
+  if (remaining < 0) throw new Error("Target is smaller than the base spec.");
+  for (const row of spec.tables[0].rows) {
+    for (let index = 0; index < row.length && remaining > 0; index += 1) {
+      const length = Math.min(
+        ARTIFACT_PROVIDER_LIMITS.cellCharacters,
+        remaining
+      );
+      row[index] = "界".repeat(length);
+      remaining -= length;
+    }
+  }
+  if (remaining !== 0) throw new Error("Target exceeds provider capacity.");
+  return spec;
 }

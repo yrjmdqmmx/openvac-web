@@ -186,7 +186,7 @@ function artifactFixture(kind: ArtifactSpec["kind"]): ArtifactSpec {
       {
         title: "参数",
         columns: ["参数", "值", "单位/假设"],
-        rows: [["有效抽速", "10", "L/s"]]
+        rows: [["有效抽速", "10", "L/s；假设稳态"]]
       }
     ],
     sourceTurnId: SOURCE_TURN_ID

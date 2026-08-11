@@ -42,8 +42,32 @@ import { VerifiedUrlReader } from "./verified-url";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_ARGUMENT_BYTES = 32 * 1024;
-const MAX_ARTIFACT_ARGUMENT_BYTES = MAX_ARTIFACT_SPEC_BYTES * 8;
+export const MAX_ARTIFACT_ARGUMENT_BYTES = MAX_ARTIFACT_SPEC_BYTES * 8;
 const MAX_RESULT_BYTES = 32 * 1024;
+
+export const ARTIFACT_PROVIDER_LIMITS = {
+  rawArgumentBytes: 24 * 1024,
+  visibleCharacters: 6_000,
+  titleCharacters: 120,
+  summaryCharacters: 600,
+  sections: 4,
+  paragraphsPerSection: 4,
+  paragraphCharacters: 600,
+  tables: 2,
+  columnsPerTable: 8,
+  columnHeaderCharacters: 80,
+  rowsPerTable: 64,
+  totalRows: 64,
+  cellCharacters: 160,
+  formats: 4
+} as const;
+
+export const ARTIFACT_PROVIDER_INSTRUCTION = [
+  "create_artifact 必须只返回一个简洁、完整的函数调用。",
+  `原始参数不得超过 ${ARTIFACT_PROVIDER_LIMITS.rawArgumentBytes} UTF-8 字节，所有字符串合计不得超过 ${ARTIFACT_PROVIDER_LIMITS.visibleCharacters} 个 Unicode 字符。`,
+  `sections 最多 ${ARTIFACT_PROVIDER_LIMITS.sections} 个，每节最多 ${ARTIFACT_PROVIDER_LIMITS.paragraphsPerSection} 段；tables 最多 ${ARTIFACT_PROVIDER_LIMITS.tables} 个，每表最多 ${ARTIFACT_PROVIDER_LIMITS.columnsPerTable} 列，所有表合计最多 ${ARTIFACT_PROVIDER_LIMITS.totalRows} 行。`,
+  `段落最多 ${ARTIFACT_PROVIDER_LIMITS.paragraphCharacters} 字符，列名最多 ${ARTIFACT_PROVIDER_LIMITS.columnHeaderCharacters} 字符，单元格最多 ${ARTIFACT_PROVIDER_LIMITS.cellCharacters} 字符。`
+].join(" ");
 
 const searchKnowledgeSchema = z.object({
   query: z.string().trim().min(2).max(2_000)
@@ -70,6 +94,124 @@ const createArtifactSchema = artifactSpecBaseSchema.omit({
   sourceTurnId: true
 });
 
+const artifactProviderTableSchema = z
+  .object({
+    title: z
+      .string()
+      .trim()
+      .min(1)
+      .max(ARTIFACT_PROVIDER_LIMITS.titleCharacters)
+      .optional(),
+    columns: z
+      .array(
+        z
+          .string()
+          .trim()
+          .min(1)
+          .max(ARTIFACT_PROVIDER_LIMITS.columnHeaderCharacters)
+      )
+      .min(1)
+      .max(ARTIFACT_PROVIDER_LIMITS.columnsPerTable),
+    rows: z
+      .array(
+        z
+          .array(z.string().max(ARTIFACT_PROVIDER_LIMITS.cellCharacters))
+          .min(1)
+          .max(ARTIFACT_PROVIDER_LIMITS.columnsPerTable)
+      )
+      .min(1)
+      .max(ARTIFACT_PROVIDER_LIMITS.rowsPerTable)
+  })
+  .strict();
+
+export const createArtifactProviderSchema = z
+  .object({
+    schemaVersion: z.literal("openvac.artifact.v1"),
+    kind: z.enum([
+      "diagnosis_report",
+      "selection_report",
+      "inspection_checklist",
+      "parameter_table"
+    ]),
+    title: z
+      .string()
+      .trim()
+      .min(1)
+      .max(ARTIFACT_PROVIDER_LIMITS.titleCharacters),
+    formats: z
+      .array(z.enum(["md", "docx", "pdf", "csv"]))
+      .min(1)
+      .max(ARTIFACT_PROVIDER_LIMITS.formats),
+    summary: z
+      .string()
+      .trim()
+      .min(1)
+      .max(ARTIFACT_PROVIDER_LIMITS.summaryCharacters),
+    sections: z
+      .array(
+        z
+          .object({
+            heading: z
+              .string()
+              .trim()
+              .min(1)
+              .max(ARTIFACT_PROVIDER_LIMITS.titleCharacters),
+            paragraphs: z
+              .array(
+                z
+                  .string()
+                  .trim()
+                  .min(1)
+                  .max(ARTIFACT_PROVIDER_LIMITS.paragraphCharacters)
+              )
+              .min(1)
+              .max(ARTIFACT_PROVIDER_LIMITS.paragraphsPerSection)
+          })
+          .strict()
+      )
+      .max(ARTIFACT_PROVIDER_LIMITS.sections),
+    tables: z
+      .array(artifactProviderTableSchema)
+      .max(ARTIFACT_PROVIDER_LIMITS.tables)
+  })
+  .strict()
+  .superRefine((spec, context) => {
+    const totalRows = spec.tables.reduce(
+      (sum, table) => sum + table.rows.length,
+      0
+    );
+    if (totalRows > ARTIFACT_PROVIDER_LIMITS.totalRows) {
+      context.addIssue({
+        code: "custom",
+        path: ["tables"],
+        message: "Provider artifact tables exceed the total row limit."
+      });
+    }
+    if (
+      visibleStringCharacters(spec) > ARTIFACT_PROVIDER_LIMITS.visibleCharacters
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Provider artifact content exceeds the visible text limit."
+      });
+    }
+  });
+
+export function visibleStringCharacters(value: unknown): number {
+  if (typeof value === "string") return Array.from(value).length;
+  if (Array.isArray(value)) {
+    return value.reduce(
+      (total, item) => total + visibleStringCharacters(item),
+      0
+    );
+  }
+  if (!value || typeof value !== "object") return 0;
+  return Object.values(value).reduce(
+    (total, item) => total + visibleStringCharacters(item),
+    0
+  );
+}
+
 export type ToolExecutionResult = {
   ok: boolean;
   errorCode?: string;
@@ -88,7 +230,8 @@ export type ToolExecutionResult = {
 };
 
 export type ToolArgumentPreflight =
-  { ok: true; raw: unknown } | { ok: false; result: ToolExecutionResult };
+  | { ok: true; raw: unknown; artifactSpec?: ArtifactSpec }
+  | { ok: false; result: ToolExecutionResult };
 
 export type ToolRegistryOptions = {
   userId: string;
@@ -235,7 +378,8 @@ export class ToolRegistry {
     const argumentLimit = isArtifactCall
       ? MAX_ARTIFACT_ARGUMENT_BYTES
       : MAX_ARGUMENT_BYTES;
-    if (Buffer.byteLength(input.arguments, "utf8") > argumentLimit) {
+    const argumentBytes = Buffer.byteLength(input.arguments, "utf8");
+    if (argumentBytes > argumentLimit) {
       return {
         ok: false,
         result: this.output(input.callId, {
@@ -261,6 +405,29 @@ export class ToolRegistry {
       };
     }
     if (isArtifactCall) {
+      if (argumentBytes > ARTIFACT_PROVIDER_LIMITS.rawArgumentBytes) {
+        return {
+          ok: false,
+          result: this.output(
+            input.callId,
+            {
+              ok: false,
+              error: "INVALID_TOOL_ARGUMENTS",
+              missingInputs: ["providerEnvelope.rawArgumentBytes"]
+            },
+            [],
+            [],
+            ["providerEnvelope.rawArgumentBytes"]
+          )
+        };
+      }
+      const providerParsed = createArtifactProviderSchema.safeParse(raw);
+      if (!providerParsed.success) {
+        return {
+          ok: false,
+          result: this.invalid(input.callId, providerParsed.error)
+        };
+      }
       const parsed = createArtifactSchema.safeParse(raw);
       if (!parsed.success) {
         return { ok: false, result: this.invalid(input.callId, parsed.error) };
@@ -277,6 +444,7 @@ export class ToolRegistry {
             result: this.invalid(input.callId, validated.error)
           };
         }
+        return { ok: true, raw, artifactSpec: validated.data };
       }
     }
     return { ok: true, raw };
@@ -715,14 +883,17 @@ function createArtifactDefinition(): ResponsesFunctionTool {
   const textArray = {
     type: "array",
     minItems: 1,
-    maxItems: 100,
-    items: { type: "string", minLength: 1, maxLength: 10_000 }
+    maxItems: ARTIFACT_PROVIDER_LIMITS.paragraphsPerSection,
+    items: {
+      type: "string",
+      minLength: 1,
+      maxLength: ARTIFACT_PROVIDER_LIMITS.paragraphCharacters
+    }
   };
   return {
     type: "function",
     name: "create_artifact",
-    description:
-      "仅按用户本轮明确要求创建报告、清单或参数表产物。sections 与 tables 至少一个非空；选择 CSV 时必须提供至少一个非空表格，且每行单元格数必须等于列数。",
+    description: `仅按用户本轮明确要求创建报告、清单或参数表产物。sections 与 tables 至少一个非空；选择 CSV 时必须提供至少一个非空表格，且每行单元格数必须等于列数。所有表合计最多 ${ARTIFACT_PROVIDER_LIMITS.totalRows} 行，所有字符串合计最多 ${ARTIFACT_PROVIDER_LIMITS.visibleCharacters} 个 Unicode 字符。`,
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -746,53 +917,76 @@ function createArtifactDefinition(): ResponsesFunctionTool {
             "parameter_table"
           ]
         },
-        title: { type: "string", minLength: 1, maxLength: 240 },
+        title: {
+          type: "string",
+          minLength: 1,
+          maxLength: ARTIFACT_PROVIDER_LIMITS.titleCharacters
+        },
         formats: {
           type: "array",
           minItems: 1,
-          maxItems: 4,
+          maxItems: ARTIFACT_PROVIDER_LIMITS.formats,
           uniqueItems: true,
           items: { enum: ["md", "docx", "pdf", "csv"] }
         },
-        summary: { type: "string", minLength: 1, maxLength: 2_000 },
+        summary: {
+          type: "string",
+          minLength: 1,
+          maxLength: ARTIFACT_PROVIDER_LIMITS.summaryCharacters
+        },
         sections: {
           type: "array",
-          maxItems: 64,
+          maxItems: ARTIFACT_PROVIDER_LIMITS.sections,
           items: {
             type: "object",
             additionalProperties: false,
             required: ["heading", "paragraphs"],
             properties: {
-              heading: { type: "string", minLength: 1, maxLength: 240 },
+              heading: {
+                type: "string",
+                minLength: 1,
+                maxLength: ARTIFACT_PROVIDER_LIMITS.titleCharacters
+              },
               paragraphs: textArray
             }
           }
         },
         tables: {
           type: "array",
-          maxItems: 32,
+          maxItems: ARTIFACT_PROVIDER_LIMITS.tables,
           items: {
             type: "object",
             additionalProperties: false,
             required: ["columns", "rows"],
             properties: {
-              title: { type: "string", minLength: 1, maxLength: 240 },
+              title: {
+                type: "string",
+                minLength: 1,
+                maxLength: ARTIFACT_PROVIDER_LIMITS.titleCharacters
+              },
               columns: {
                 type: "array",
                 minItems: 1,
-                maxItems: 32,
+                maxItems: ARTIFACT_PROVIDER_LIMITS.columnsPerTable,
                 uniqueItems: true,
-                items: { type: "string", minLength: 1, maxLength: 240 }
+                items: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: ARTIFACT_PROVIDER_LIMITS.columnHeaderCharacters
+                }
               },
               rows: {
                 type: "array",
                 minItems: 1,
-                maxItems: 2_000,
+                maxItems: ARTIFACT_PROVIDER_LIMITS.rowsPerTable,
                 items: {
                   type: "array",
                   minItems: 1,
-                  maxItems: 32,
-                  items: { type: "string", maxLength: 10_000 }
+                  maxItems: ARTIFACT_PROVIDER_LIMITS.columnsPerTable,
+                  items: {
+                    type: "string",
+                    maxLength: ARTIFACT_PROVIDER_LIMITS.cellCharacters
+                  }
                 }
               }
             }
