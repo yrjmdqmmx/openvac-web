@@ -605,7 +605,7 @@ jobs:
   deploy:
     needs: [ci_gate, image]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: ${{ inputs.target == 'staging' && 90 || 45 }}
     permissions:
       actions: read
       contents: read

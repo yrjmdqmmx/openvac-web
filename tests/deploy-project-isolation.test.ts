@@ -22,6 +22,20 @@ describe("web-only deployment and R0 rollback compatibility", () => {
     expect(deploy).toContain('--project-name "$compose_project"');
   });
 
+  it("budgets extra time only for the complete staging acceptance gates", () => {
+    const jobs = [...release.matchAll(/^  ([a-zA-Z0-9_-]+):$/gmu)];
+    const deployJobs = jobs.filter((match) => match[1] === "deploy");
+    expect(deployJobs).toHaveLength(1);
+    const deployStart = deployJobs[0]?.index ?? -1;
+    expect(deployStart).toBeGreaterThan(-1);
+    const nextJob = jobs.find((match) => (match.index ?? -1) > deployStart);
+    const deployJob = release.slice(deployStart, nextJob?.index);
+    expect(deployJob).toMatch(
+      /^  deploy:\n    needs: \[ci_gate, image\]\n    runs-on: ubuntu-latest\n    timeout-minutes: \$\{\{ inputs\.target == 'staging' && 90 \|\| 45 \}\}$/mu
+    );
+    expect(deployJob.match(/^    timeout-minutes:/gmu)).toHaveLength(1);
+  });
+
   it("builds and deploys one immutable web image", () => {
     expect(release).toContain(
       "web_digest: ${{ steps.select_image.outputs.digest }}"
