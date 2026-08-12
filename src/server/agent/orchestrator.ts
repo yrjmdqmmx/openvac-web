@@ -68,15 +68,19 @@ import {
 import { RunStore, type CreatedRun } from "./run-store";
 import {
   hasExplicitArtifactIntent,
+  hasExplicitParameterTableIntent,
   type ArtifactStorage
 } from "./artifact-tools";
 import { parameterTableIncludesUnitsAndAssumptions } from "./artifact-semantics";
 import type { AttachmentStorage } from "./attachment-tools";
 import {
+  ARTIFACT_PROVIDER_LIMITS,
   ARTIFACT_PROVIDER_INSTRUCTION,
   MAX_ARTIFACT_ARGUMENT_BYTES,
+  PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION,
   ToolRegistry,
-  type ToolExecutionResult
+  type ToolExecutionResult,
+  visibleStringCharacters
 } from "./tool-registry";
 import {
   answerUsesOnlyProjectedCalculations,
@@ -108,6 +112,32 @@ const FRESH_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION =
   "上一次 create_artifact 参数不是合法 JSON。重新生成一个简洁、完整、符合 provider envelope 的单一 create_artifact 调用；不得复述、猜测或引用上一次调用的参数。";
 const CONTINUATION_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION =
   "上一次 create_artifact 参数未通过本地安全校验。根据已配对的工具结果中列出的缺失路径重新生成一个简洁、完整、符合 provider envelope 的单一 create_artifact 调用；不得忽略单位、假设或适用工况要求。";
+const PARAMETER_TABLE_REPAIR_CONTRACT_VERSION =
+  "openvac.parameter-table-repair.v1";
+const PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE = Object.freeze({
+  contractVersion: PARAMETER_TABLE_REPAIR_CONTRACT_VERSION,
+  title: "泵组选型参数表",
+  summary: "参数值和适用工况均待用户确认。",
+  format: "csv",
+  row: Object.freeze({
+    parameterKind: "physical",
+    parameter: "有效抽速",
+    valueOrStatus: "待用户确认",
+    unit: "L/s",
+    assumptionOrCondition: "运行工况待用户确认"
+  })
+});
+const PARAMETER_TABLE_SAFE_REPAIR_KEYS = Object.keys(
+  PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE
+)
+  .toSorted()
+  .join(",");
+const PARAMETER_TABLE_SAFE_REPAIR_ROW_KEYS = Object.keys(
+  PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row
+)
+  .toSorted()
+  .join(",");
+const PARAMETER_TABLE_SAFE_REPAIR_INSTRUCTION = `本次 parameter_table 修复只能使用无数组、无自由文本的最小安全 DTO：contractVersion=${PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.contractVersion}，title=${PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.title}，summary=${PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.summary}，format=${PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.format}，row 必须严格为 parameterKind=${PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.parameterKind}、parameter=${PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.parameter}、valueOrStatus=${PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.valueOrStatus}、unit=${PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.unit}、assumptionOrCondition=${PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.assumptionOrCondition}。DTO 原始参数不得超过 ${ARTIFACT_PROVIDER_LIMITS.rawArgumentBytes} UTF-8 字节，所有字符串合计不得超过 ${ARTIFACT_PROVIDER_LIMITS.visibleCharacters} 个 Unicode 字符；不得添加具体数值、数组或额外字段。`;
 
 export type ArtifactArgumentRecoveryMode =
   "fresh_json_invalid" | "continuation_invalid_arguments";
@@ -427,7 +457,18 @@ export class AgentRunOrchestrator {
       assertSingleArtifactCall(executionCalls);
       let validatedArtifactSpec: ArtifactSpec | undefined;
       if (artifactCallIndex >= 0) {
-        const artifactCall = executionCalls[artifactCallIndex]!;
+        let artifactCall = executionCalls[artifactCallIndex]!;
+        if (
+          artifactRecoveryMode !== undefined &&
+          shouldUseSafeParameterTableRepair(
+            input.run.question,
+            this.tools.definitions,
+            requestInput
+          )
+        ) {
+          artifactCall = normalizeParameterTableRepairCall(artifactCall);
+          executionCalls = executionCalls.with(artifactCallIndex, artifactCall);
+        }
         const preflight = this.tools.preflight(artifactCall);
         if (!preflight.ok) {
           const recoveryMode = selectArtifactArgumentRecoveryMode(
@@ -1475,6 +1516,13 @@ export class AgentRunOrchestrator {
       ]),
       artifactArgumentRecoveryMode: artifactRecoveryMode
     });
+    const usesSafeParameterTableRepair =
+      artifactRecoveryMode !== undefined &&
+      shouldUseSafeParameterTableRepair(
+        input.run.question,
+        toolPolicy.tools ?? [],
+        modelInput
+      );
     const forcesArtifact =
       typeof toolPolicy.toolChoice === "object" &&
       toolPolicy.toolChoice.type === "function" &&
@@ -1526,12 +1574,14 @@ export class AgentRunOrchestrator {
             )
           ]
         : [];
-    request.instructions = buildAgentV3InstructionsForRisk(
+    const baseInstructions = buildAgentV3InstructionsForRisk(
       input.riskLevel,
       artifactRecoveryMode,
       answerJsonRecoveryMode,
-      allowedLinkEvidenceIds
+      allowedLinkEvidenceIds,
+      usesSafeParameterTableRepair
     );
+    request.instructions = baseInstructions;
     const inputBudget = budgetProfile.inputTokenBudget;
     const estimatedInputTokens = estimateTokens(
       `${request.instructions}\n${JSON.stringify(request.input)}`
@@ -1682,14 +1732,19 @@ export function buildAgentV3InstructionsForRisk(
   riskLevel: RiskLevel,
   artifactRecoveryMode?: ArtifactArgumentRecoveryMode,
   answerJsonRecoveryMode?: AnswerJsonRecoveryMode,
-  allowedLinkEvidenceIds: readonly string[] = []
+  allowedLinkEvidenceIds: readonly string[] = [],
+  usesSafeParameterTableRepair = false
 ): string {
   return [
     AGENT_V3_INSTRUCTIONS,
     `本轮服务端风险等级已固定为 ${riskLevel}；最终答案的 riskLevel 必须原样使用该值，不得由模型重新分类。`,
     "如果复杂或中高风险回答没有可用证据或服务端确定性计算，不得生成无依据的 expert；应使用 clarification 或 safe_refusal。",
-    "调用 create_artifact 时，sections 与 tables 至少一个非空；CSV 必须包含非空 tables；每个 section 的 paragraphs 非空。只有通用 ArtifactSpec table 使用 columns 和 cell 数组并要求列数相等；专用 parameter_table provider contract 必须遵循工具定义的 row 对象。",
-    ARTIFACT_PROVIDER_INSTRUCTION,
+    ...(usesSafeParameterTableRepair
+      ? [PARAMETER_TABLE_SAFE_REPAIR_INSTRUCTION]
+      : [
+          "调用 create_artifact 时，sections 与 tables 至少一个非空；CSV 必须包含非空 tables；每个 section 的 paragraphs 非空。只有通用 ArtifactSpec table 使用 columns 和 cell 数组并要求列数相等；专用 parameter_table provider contract 必须遵循工具定义的 row 对象。",
+          ARTIFACT_PROVIDER_INSTRUCTION
+        ]),
     ...(artifactRecoveryMode === "fresh_json_invalid"
       ? [FRESH_ARTIFACT_ARGUMENT_REPAIR_INSTRUCTION]
       : artifactRecoveryMode === "continuation_invalid_arguments"
@@ -2216,11 +2271,262 @@ export function selectAnswerToolRequestPolicy(input: {
         : callableTools.flatMap((tool) =>
             tool.type === "function" ? [tool.name] : []
           );
+  const requestTools =
+    artifactRepairAvailable &&
+    shouldUseSafeParameterTableRepair(
+      input.question,
+      callableTools,
+      input.modelInput
+    )
+      ? selectedTools.map(parameterTableSafeRepairTool)
+      : selectedTools;
   return {
-    ...(selectedTools.length > 0 ? { tools: selectedTools } : {}),
+    ...(requestTools.length > 0 ? { tools: requestTools } : {}),
     toolChoice,
     callableFunctionNames
   };
+}
+
+function isParameterTableArtifactTool(tool: ResponsesTool): boolean {
+  if (tool.type !== "function" || tool.name !== "create_artifact") {
+    return false;
+  }
+  const properties = isPlainRecord(tool.parameters.properties)
+    ? tool.parameters.properties
+    : undefined;
+  const contractVersion =
+    properties && isPlainRecord(properties.contractVersion)
+      ? properties.contractVersion
+      : undefined;
+  return (
+    contractVersion?.const === PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION ||
+    contractVersion?.const === PARAMETER_TABLE_REPAIR_CONTRACT_VERSION
+  );
+}
+
+function shouldUseSafeParameterTableRepair(
+  question: string,
+  tools: readonly ResponsesTool[],
+  modelInput: readonly ResponsesInputItem[] = []
+): boolean {
+  if (
+    !hasExplicitParameterTableIntent(question) ||
+    !tools.some(isParameterTableArtifactTool)
+  ) {
+    return false;
+  }
+  if (
+    previousPlainUserText([...modelInput], question) !== undefined ||
+    modelInput.some(
+      (item) => item.type === "message" && item.role === "assistant"
+    ) ||
+    hasMeaningfulStructuredParameterContext(modelInput)
+  ) {
+    return false;
+  }
+  const normalized = question
+    .normalize("NFKC")
+    .trim()
+    .replace(/[。.!！?？]+$/u, "")
+    .trim();
+  if (
+    /[。.!！?？；;\n]/u.test(normalized) ||
+    /(?:不要|无需|不需要|不必|禁止|别|不得|不做|不涉及|无关).{0,20}(?:泵组|真空泵|泵)?.{0,8}(?:选型|选用)/u.test(
+      normalized
+    ) ||
+    /(?:do\s+not|don't|without|exclude|no\s+need\s+to).{0,32}(?:pump|pumping\s+system).{0,16}(?:selection|sizing)/iu.test(
+      normalized
+    )
+  ) {
+    return false;
+  }
+  return (
+    hasExplicitParameterTableIntent(normalized) &&
+    (/^(?:请|帮我|为我|我要|我需要|现在)?\s*(?:生成|创建|制作|整理成|写一份)\s*(?:泵组|真空泵|泵)(?:选型|选用)(?:所需|用|的)?参数表\s*(?:，|,)?\s*(?:并)?\s*(?:导出|下载)\s*CSV\s*$/iu.test(
+      normalized
+    ) ||
+      /^(?:please\s+)?(?:create|generate|make|produce|write)\s+(?:a\s+)?(?:pump|pumping\s+system)\s+(?:selection|sizing)\s+parameter\s+table\s+(?:and\s+)?(?:export|download)(?:\s+it)?\s+(?:as\s+)?csv\s*$/iu.test(
+        normalized
+      ))
+  );
+}
+
+function hasMeaningfulStructuredParameterContext(
+  modelInput: readonly ResponsesInputItem[]
+): boolean {
+  const structured = new Map<string, Record<string, unknown>>();
+  for (const item of modelInput) {
+    const content =
+      item.type === "message" &&
+      item.role === "user" &&
+      typeof item.content === "string"
+        ? item.content
+        : undefined;
+    const trimmedContent = content?.trim();
+    if (
+      content === undefined ||
+      trimmedContent === undefined ||
+      !trimmedContent.startsWith("BEGIN_")
+    ) {
+      continue;
+    }
+    if (content !== trimmedContent) return true;
+    const newline = content.indexOf("\n");
+    if (newline <= 0 || !content.endsWith("\nEND_UNTRUSTED_DATA")) {
+      return true;
+    }
+    const marker = content.slice(0, newline);
+    if (structured.has(marker)) return true;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(
+        content.slice(newline + 1, -"\nEND_UNTRUSTED_DATA".length)
+      );
+    } catch {
+      return true;
+    }
+    if (!isPlainRecord(payload)) return true;
+    structured.set(marker, payload);
+  }
+  const memory = structured.get("BEGIN_USER_CONFIRMED_CONTEXT");
+  const evidence = structured.get("BEGIN_EVIDENCE_REGISTRY");
+  const parts = structured.get("BEGIN_CURRENT_TURN_PARTS");
+  if (!memory || !evidence || !parts || structured.size !== 3) return true;
+  return !(
+    Object.keys(memory).toSorted().join(",") ===
+      "conversationSummary,schema,userConfirmedMemories" &&
+    memory.schema === "openvac.context.memory.v1" &&
+    Array.isArray(memory.userConfirmedMemories) &&
+    memory.userConfirmedMemories.length === 0 &&
+    memory.conversationSummary === null &&
+    Object.keys(evidence).toSorted().join(",") === "evidence,schema" &&
+    evidence.schema === "openvac.context.evidence.v1" &&
+    Array.isArray(evidence.evidence) &&
+    Object.keys(parts).toSorted().join(",") === "attachmentRefs,links,schema" &&
+    parts.schema === "openvac.context.turn-parts.v1" &&
+    Array.isArray(parts.links) &&
+    parts.links.length === 0 &&
+    Array.isArray(parts.attachmentRefs) &&
+    parts.attachmentRefs.length === 0
+  );
+}
+
+function parameterTableSafeRepairTool(tool: ResponsesTool): ResponsesTool {
+  if (tool.type !== "function" || !isParameterTableArtifactTool(tool)) {
+    return tool;
+  }
+  return {
+    ...tool,
+    description:
+      "仅用于一次 parameter_table 安全修复。输出一个 CSV 最小参数表；数值与工况保持待用户确认，不得编造具体值。",
+    parameters: parameterTableSafeRepairParameters()
+  };
+}
+
+function parameterTableSafeRepairParameters(): Record<string, unknown> {
+  const exactString = (value: string) => ({
+    type: "string",
+    enum: [value]
+  });
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: Object.keys(PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE),
+    properties: {
+      contractVersion: {
+        type: "string",
+        const: PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.contractVersion
+      },
+      title: exactString(PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.title),
+      summary: exactString(PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.summary),
+      format: exactString(PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.format),
+      row: {
+        type: "object",
+        additionalProperties: false,
+        required: Object.keys(PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row),
+        properties: {
+          parameterKind: exactString(
+            PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.parameterKind
+          ),
+          parameter: exactString(
+            PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.parameter
+          ),
+          valueOrStatus: exactString(
+            PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.valueOrStatus
+          ),
+          unit: exactString(PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.unit),
+          assumptionOrCondition: exactString(
+            PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.assumptionOrCondition
+          )
+        }
+      }
+    }
+  };
+}
+
+function normalizeParameterTableRepairCall<
+  T extends {
+    callId: string;
+    name: string;
+    arguments: string;
+  }
+>(call: T): T {
+  if (
+    Buffer.byteLength(call.arguments, "utf8") >
+    ARTIFACT_PROVIDER_LIMITS.rawArgumentBytes
+  ) {
+    throw invalidParameterTableRepair("INVALID_TOOL_ARGUMENTS");
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(call.arguments);
+  } catch {
+    throw invalidParameterTableRepair("ARTIFACT_ARGUMENTS_JSON_INVALID");
+  }
+  if (
+    !isPlainRecord(value) ||
+    Object.keys(value).toSorted().join(",") !==
+      PARAMETER_TABLE_SAFE_REPAIR_KEYS ||
+    !isPlainRecord(value.row) ||
+    Object.keys(value.row).toSorted().join(",") !==
+      PARAMETER_TABLE_SAFE_REPAIR_ROW_KEYS
+  ) {
+    throw invalidParameterTableRepair("INVALID_TOOL_ARGUMENTS");
+  }
+  if (
+    value.contractVersion !==
+      PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.contractVersion ||
+    value.title !== PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.title ||
+    value.summary !== PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.summary ||
+    value.format !== PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.format ||
+    value.row.parameterKind !==
+      PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.parameterKind ||
+    value.row.parameter !==
+      PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.parameter ||
+    value.row.valueOrStatus !==
+      PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.valueOrStatus ||
+    value.row.unit !== PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.unit ||
+    value.row.assumptionOrCondition !==
+      PARAMETER_TABLE_SAFE_REPAIR_TEMPLATE.row.assumptionOrCondition ||
+    visibleStringCharacters(value) > ARTIFACT_PROVIDER_LIMITS.visibleCharacters
+  ) {
+    throw invalidParameterTableRepair("INVALID_TOOL_ARGUMENTS");
+  }
+  return {
+    ...call,
+    arguments: JSON.stringify({
+      contractVersion: PARAMETER_TABLE_PROVIDER_CONTRACT_VERSION,
+      title: value.title,
+      formats: [value.format],
+      summary: value.summary,
+      sections: [],
+      tables: [{ title: value.title, rows: [value.row] }]
+    })
+  };
+}
+
+function invalidParameterTableRepair(code: string): AgentRuntimeError {
+  return new AgentRuntimeError(code, "产物修复参数未通过安全校验。", false);
 }
 
 export function assertAuthorizedFunctionCalls(
