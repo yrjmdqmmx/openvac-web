@@ -1549,7 +1549,11 @@ describe("Agent V3 artifact provider requests", () => {
         type: "function-call",
         callId: `call-${phases.length}`,
         name: "create_artifact",
-        arguments: JSON.stringify(validParameterArtifactArguments())
+        arguments: JSON.stringify(
+          phases.length === 1
+            ? validParameterArtifactArguments()
+            : validParameterRepairArguments()
+        )
       };
       yield {
         type: "finish",
@@ -1560,7 +1564,11 @@ describe("Agent V3 artifact provider requests", () => {
       };
     };
     const cleanInput: ResponsesInputItem[] = [
-      { type: "message", role: "user", content: "生成泵组选型参数表" }
+      {
+        type: "message",
+        role: "user",
+        content: "生成泵组选型参数表，并导出 CSV。"
+      }
     ];
 
     await invoke.collectModelResponse(
@@ -1595,15 +1603,15 @@ describe("Agent V3 artifact provider requests", () => {
         type: "function",
         name: "create_artifact"
       });
-      expect(request.instructions).toContain("所有字符串合计不得超过 6000");
-      expect(request.instructions).toContain(
-        "parameter_table 必须作为整体包含至少一个真实有量纲单位"
-      );
-      expect(request.instructions).toContain("不得编造具体工况");
       expect(JSON.stringify(request.input)).not.toContain(
         "private-malformed-arguments"
       );
     }
+    expect(requests[0]?.instructions).toContain("所有字符串合计不得超过 6000");
+    expect(requests[0]?.instructions).toContain(
+      "parameter_table 必须作为整体包含至少一个真实有量纲单位"
+    );
+    expect(requests[0]?.instructions).toContain("不得编造具体工况");
     expect(requests[0]?.instructions).not.toContain(
       "上一次 create_artifact 参数不是合法 JSON"
     );
@@ -1621,12 +1629,87 @@ describe("Agent V3 artifact provider requests", () => {
     expect(requests[2]?.safeInvocationPhase).toBe(
       "artifact_continuation_repair"
     );
+    for (const request of requests.slice(1)) {
+      expect(request.instructions).toContain(
+        "本次 parameter_table 修复只能使用无数组"
+      );
+      expect(request.instructions).not.toContain(
+        "专用 parameter_table provider contract 的 rows"
+      );
+      expect(request.instructions).not.toContain(
+        "sections 与 tables 至少一个非空"
+      );
+      expect(
+        request.tools?.find(
+          (tool) => tool.type === "function" && tool.name === "create_artifact"
+        )
+      ).toMatchObject({
+        type: "function",
+        name: "create_artifact",
+        parameters: {
+          additionalProperties: false,
+          properties: {
+            contractVersion: {
+              const: "openvac.parameter-table-repair.v1"
+            },
+            format: { enum: ["csv"] },
+            row: {
+              additionalProperties: false,
+              properties: {
+                parameterKind: { enum: ["physical"] },
+                parameter: { enum: ["有效抽速"] },
+                valueOrStatus: { enum: ["待用户确认"] },
+                unit: { enum: ["L/s"] },
+                assumptionOrCondition: {
+                  enum: ["运行工况待用户确认"]
+                }
+              }
+            }
+          }
+        }
+      });
+    }
+    expect(requests[0]?.instructions).not.toContain(
+      "本次 parameter_table 修复只能使用无数组"
+    );
+    expect(
+      requests[0]?.tools?.find(
+        (tool) => tool.type === "function" && tool.name === "create_artifact"
+      )
+    ).toMatchObject({
+      type: "function",
+      name: "create_artifact",
+      parameters: {
+        properties: {
+          formats: { items: { enum: ["md", "docx", "pdf", "csv"] } },
+          tables: {
+            items: {
+              properties: {
+                rows: {
+                  items: {
+                    properties: {
+                      parameterKind: {
+                        enum: ["physical", "descriptor", "count", "ratio"]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    });
   });
 
   it("retries one semantic repair with the identical clean transport payload", async () => {
     const { invoke, input } = artifactRequestSubject();
     const cleanInput: ResponsesInputItem[] = [
-      { type: "message", role: "user", content: "生成泵组选型参数表" }
+      {
+        type: "message",
+        role: "user",
+        content: "生成泵组选型参数表，并导出 CSV。"
+      }
     ];
     const completed = {
       outputText: "",
@@ -1673,6 +1756,63 @@ describe("Agent V3 artifact provider requests", () => {
       "answer_artifact_fresh_json_invalid_retry"
     );
     expect(invoke.retries).toBe(1);
+  });
+
+  it("keeps an unrelated parameter-table repair on the original v2 contract", async () => {
+    const { invoke, input } =
+      artifactRequestSubject("生成换热器参数表，并导出 CSV。");
+    const cleanInput: ResponsesInputItem[] = [
+      { type: "message", role: "user", content: input.run.question }
+    ];
+    const requests: ResponsesStreamRequest[] = [];
+    invoke.meteredStream = async function* (_input, request) {
+      requests.push(request);
+      yield {
+        type: "function-call",
+        callId: "unrelated-parameter-call",
+        name: "create_artifact",
+        arguments: JSON.stringify(validParameterArtifactArguments())
+      };
+      yield {
+        type: "finish",
+        status: "completed",
+        responseId: "unrelated-parameter-response",
+        outputText: "",
+        continuationItems: []
+      };
+    };
+
+    await invoke.collectModelResponse(
+      input,
+      cleanInput,
+      input.signal,
+      "answer_artifact_continuation_invalid_arguments",
+      true,
+      "continuation_invalid_arguments"
+    );
+
+    expect(requests).toHaveLength(1);
+    const request = requests[0]!;
+    const artifactTool = request.tools?.find(
+      (tool) => tool.type === "function" && tool.name === "create_artifact"
+    );
+    expect(artifactTool).toMatchObject({
+      parameters: {
+        properties: {
+          contractVersion: {
+            const: "openvac.parameter-table-provider.v2"
+          },
+          tables: { type: "array" }
+        }
+      }
+    });
+    expect(request.instructions).toContain(
+      "专用 parameter_table provider contract 的 rows"
+    );
+    expect(request.instructions).toContain("sections 与 tables 至少一个非空");
+    expect(request.instructions).not.toContain(
+      "openvac.parameter-table-repair.v1"
+    );
   });
 
   it("builds a tool-free fresh answer request without the failed provider output", async () => {
@@ -1792,7 +1932,11 @@ describe("Agent V3 artifact provider requests", () => {
     const { invoke, input } = artifactRequestSubject();
     const controller = new AbortController();
     const cleanInput: ResponsesInputItem[] = [
-      { type: "message", role: "user", content: "生成泵组选型参数表" }
+      {
+        type: "message",
+        role: "user",
+        content: "生成泵组选型参数表，并导出 CSV。"
+      }
     ];
     const collect = vi.fn(async () => {
       controller.abort();
@@ -1829,7 +1973,7 @@ describe("Agent V3 artifact provider requests", () => {
     const valid = artifactModelResponse([
       {
         callId: "valid-call",
-        arguments: JSON.stringify(validParameterArtifactArguments())
+        arguments: JSON.stringify(validParameterRepairArguments())
       }
     ]);
     const subject = artifactRunSubject([malformed, valid]);
@@ -1847,6 +1991,22 @@ describe("Agent V3 artifact provider requests", () => {
     );
     expect(subject.request.mock.calls[1]?.[5]).toBe("fresh_json_invalid");
     expect(subject.storage.create).toHaveBeenCalledTimes(1);
+    expect(subject.storage.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        spec: expect.objectContaining({
+          kind: "parameter_table",
+          formats: ["csv"],
+          sections: [],
+          tables: [
+            {
+              title: "泵组选型参数表",
+              columns: ["参数", "数值或状态", "单位", "假设或工况"],
+              rows: [["有效抽速", "待用户确认", "L/s", "运行工况待用户确认"]]
+            }
+          ]
+        })
+      })
+    );
     expect(subject.store.recordToolCall).toHaveBeenCalledTimes(1);
     expect(subject.store.recordToolCall).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1867,7 +2027,7 @@ describe("Agent V3 artifact provider requests", () => {
   it("carries a real strict provider repair through preflight, storage, and audit", async () => {
     const subject = artifactRunSubject([]);
     const malformedArguments = "{private-malformed-arguments";
-    const validArguments = JSON.stringify(validParameterArtifactArguments());
+    const validArguments = JSON.stringify(validParameterRepairArguments());
     const urls: string[] = [];
     const requestBodies: string[] = [];
     const provider = new DeepSeekResponsesProvider({
@@ -2014,7 +2174,7 @@ describe("Agent V3 artifact provider requests", () => {
         }
       ]
     });
-    const validArguments = JSON.stringify(validParameterProviderArguments());
+    const validArguments = JSON.stringify(validParameterRepairArguments());
     const urls: string[] = [];
     const requestBodies: Array<Record<string, unknown>> = [];
     const provider = new DeepSeekResponsesProvider({
@@ -2059,6 +2219,9 @@ describe("Agent V3 artifact provider requests", () => {
               }
             ])
           );
+        }
+        if (urls.length === 2) {
+          throw new TypeError("synthetic continuation TLS reset");
         }
         return new Response(
           JSON.stringify({
@@ -2111,8 +2274,10 @@ describe("Agent V3 artifact provider requests", () => {
 
     expect(urls).toEqual([
       "https://api.deepseek.com/responses",
+      "https://api.deepseek.com/beta/chat/completions",
       "https://api.deepseek.com/beta/chat/completions"
     ]);
+    expect(requestBodies[2]).toEqual(requestBodies[1]);
     expect(requestBodies[1]).toMatchObject({
       thinking: { type: "disabled" },
       max_tokens: MAX_ARTIFACT_PROVIDER_OUTPUT_TOKENS,
@@ -2123,23 +2288,20 @@ describe("Agent V3 artifact provider requests", () => {
             parameters: {
               properties: {
                 contractVersion: {
-                  enum: ["openvac.parameter-table-provider.v2"]
+                  enum: ["openvac.parameter-table-repair.v1"]
                 },
-                tables: {
-                  items: {
-                    properties: {
-                      rows: {
-                        items: {
-                          properties: {
-                            parameterKind: {
-                              enum: ["physical", "descriptor", "count", "ratio"]
-                            }
-                          },
-                          required: expect.arrayContaining(["parameterKind"])
-                        }
-                      }
+                format: { enum: ["csv"] },
+                row: {
+                  properties: {
+                    parameterKind: { enum: ["physical"] },
+                    parameter: { enum: ["有效抽速"] },
+                    valueOrStatus: { enum: ["待用户确认"] },
+                    unit: { enum: ["L/s"] },
+                    assumptionOrCondition: {
+                      enum: ["运行工况待用户确认"]
                     }
-                  }
+                  },
+                  required: expect.arrayContaining(["parameterKind"])
                 }
               }
             }
@@ -2174,9 +2336,9 @@ describe("Agent V3 artifact provider requests", () => {
           kind: "parameter_table",
           tables: [
             {
-              title: "泵组参数",
+              title: "泵组选型参数表",
               columns: ["参数", "数值或状态", "单位", "假设或工况"],
-              rows: [["有效抽速", "待用户确认", "L/s", "待用户确认"]]
+              rows: [["有效抽速", "待用户确认", "L/s", "运行工况待用户确认"]]
             }
           ]
         })
@@ -2184,7 +2346,8 @@ describe("Agent V3 artifact provider requests", () => {
     );
     expect(subject.store.recordToolCall).toHaveBeenCalledTimes(1);
     expect(subject.orchestrator.counters).toMatchObject({
-      modelRequests: 2,
+      modelRequests: 3,
+      retries: 1,
       repairs: 1,
       toolRounds: 1,
       toolCalls: 1
@@ -2202,7 +2365,7 @@ describe("Agent V3 artifact provider requests", () => {
       artifactModelResponse([
         {
           callId: "semantic-valid-call",
-          arguments: JSON.stringify(validParameterArtifactArguments())
+          arguments: JSON.stringify(validParameterRepairArguments())
         }
       ])
     ]);
@@ -2264,7 +2427,7 @@ describe("Agent V3 artifact provider requests", () => {
       artifactModelResponse([
         {
           callId: "authoritative-kind-valid-call",
-          arguments: JSON.stringify(validParameterProviderArguments())
+          arguments: JSON.stringify(validParameterRepairArguments())
         }
       ])
     ]);
@@ -2333,6 +2496,102 @@ describe("Agent V3 artifact provider requests", () => {
       toolCalls: 0
     });
   });
+
+  it("accepts the exact 24 KiB repair boundary before canonical preflight", async () => {
+    const subject = artifactRunSubject([
+      artifactModelResponse([
+        {
+          callId: "semantic-invalid-call",
+          arguments: JSON.stringify(invalidParameterArtifactArguments())
+        }
+      ]),
+      artifactModelResponse([
+        {
+          callId: "repair-boundary-call",
+          arguments: paddedParameterRepairArguments(24 * 1024)
+        }
+      ])
+    ]);
+
+    await expect(
+      subject.orchestrator.run(subject.input)
+    ).resolves.toMatchObject({ status: "completed" });
+    expect(subject.storage.create).toHaveBeenCalledTimes(1);
+    expect(subject.store.recordToolCall).toHaveBeenCalledTimes(1);
+    expect(subject.orchestrator.counters).toMatchObject({
+      modelRequests: 2,
+      repairs: 1,
+      toolRounds: 1,
+      toolCalls: 1
+    });
+  });
+
+  it.each([
+    [
+      "a replayed v2 payload",
+      JSON.stringify(validParameterProviderArguments()),
+      "INVALID_TOOL_ARGUMENTS"
+    ],
+    [
+      "an extra repair field",
+      JSON.stringify({ ...validParameterRepairArguments(), extra: "x" }),
+      "INVALID_TOOL_ARGUMENTS"
+    ],
+    [
+      "a nondimensional repair unit",
+      JSON.stringify({
+        ...validParameterRepairArguments(),
+        row: { ...validParameterRepairArguments().row, unit: "无量纲" }
+      }),
+      "INVALID_TOOL_ARGUMENTS"
+    ],
+    [
+      "malformed repair JSON",
+      "{repair-malformed",
+      "ARTIFACT_ARGUMENTS_JSON_INVALID"
+    ],
+    [
+      "an oversized repair payload",
+      paddedParameterRepairArguments(24 * 1024 + 1),
+      "INVALID_TOOL_ARGUMENTS"
+    ],
+    [
+      "a deeply nested extra field",
+      deeplyNestedParameterRepairArguments(),
+      "INVALID_TOOL_ARGUMENTS"
+    ]
+  ])(
+    "fails closed for %s without reservation, storage, or audit",
+    async (_label, repairArguments, expectedCode) => {
+      const subject = artifactRunSubject([
+        artifactModelResponse([
+          {
+            callId: "semantic-invalid-call",
+            arguments: JSON.stringify(invalidParameterArtifactArguments())
+          }
+        ]),
+        artifactModelResponse([
+          { callId: "repair-invalid-call", arguments: repairArguments }
+        ])
+      ]);
+
+      await expect(
+        subject.orchestrator.run(subject.input)
+      ).rejects.toMatchObject({
+        code: expectedCode,
+        retryable: false
+      });
+      expect(subject.storage.create).not.toHaveBeenCalled();
+      expect(subject.store.recordToolCall).not.toHaveBeenCalled();
+      expect(subject.store.complete).not.toHaveBeenCalled();
+      expect(subject.orchestrator.counters).toMatchObject({
+        modelRequests: 2,
+        repairs: 1,
+        toolRounds: 0,
+        toolCalls: 0
+      });
+    }
+  );
 
   it("accepts unitless parameter rows when the table aggregate has real semantics", async () => {
     const mixedArguments = JSON.stringify(mixedParameterProviderArguments());
@@ -2490,9 +2749,41 @@ describe("Agent V3 artifact provider requests", () => {
       toolCalls: 0
     });
   });
+
+  it("fails closed after both continuation transport attempts without side effects", async () => {
+    const subject = artifactTransportRunSubject([
+      { kind: "semantic_invalid" },
+      { kind: "transport_error" },
+      { kind: "transport_error" }
+    ]);
+
+    await expect(subject.orchestrator.run(subject.input)).rejects.toMatchObject(
+      {
+        name: "ProviderError",
+        retryable: true,
+        status: 503
+      }
+    );
+    expect(subject.requests).toHaveLength(3);
+    expect(subject.phases).toEqual([
+      "answer_1",
+      "answer_artifact_continuation_invalid_arguments",
+      "answer_artifact_continuation_invalid_arguments_retry"
+    ]);
+    expect(subject.requests[2]).toEqual(subject.requests[1]);
+    expect(subject.storage.create).not.toHaveBeenCalled();
+    expect(subject.store.recordToolCall).not.toHaveBeenCalled();
+    expect(subject.orchestrator.counters).toMatchObject({
+      modelRequests: 3,
+      retries: 1,
+      repairs: 1,
+      toolRounds: 0,
+      toolCalls: 0
+    });
+  });
 });
 
-function artifactRequestSubject() {
+function artifactRequestSubject(question = "生成泵组选型参数表，并导出 CSV。") {
   const run = {
     runId: "00000000-0000-4000-8000-000000000201",
     conversationId: "00000000-0000-4000-8000-000000000202",
@@ -2500,7 +2791,7 @@ function artifactRequestSubject() {
     assistantMessageId: "00000000-0000-4000-8000-000000000204",
     turnId: "00000000-0000-4000-8000-000000000205",
     answerVersion: 1,
-    question: "生成泵组选型参数表，并导出 CSV。",
+    question,
     inputParts: [],
     action: "initial" as const
   };
@@ -2800,6 +3091,42 @@ function validParameterProviderArguments() {
   };
 }
 
+function validParameterRepairArguments() {
+  return {
+    contractVersion: "openvac.parameter-table-repair.v1",
+    title: "泵组选型参数表",
+    summary: "参数值和适用工况均待用户确认。",
+    format: "csv",
+    row: {
+      parameterKind: "physical",
+      parameter: "有效抽速",
+      valueOrStatus: "待用户确认",
+      unit: "L/s",
+      assumptionOrCondition: "运行工况待用户确认"
+    }
+  };
+}
+
+function paddedParameterRepairArguments(targetBytes: number): string {
+  const raw = JSON.stringify(validParameterRepairArguments());
+  const paddingBytes = targetBytes - Buffer.byteLength(raw, "utf8");
+  if (paddingBytes < 0)
+    throw new Error("Repair boundary is below the DTO size.");
+  return `${raw}${" ".repeat(paddingBytes)}`;
+}
+
+function deeplyNestedParameterRepairArguments(): string {
+  const value = JSON.stringify({
+    ...validParameterRepairArguments(),
+    extra: "__NESTED__"
+  });
+  const depth = 4_000;
+  return value.replace(
+    '"__NESTED__"',
+    `${"[".repeat(depth)}0${"]".repeat(depth)}`
+  );
+}
+
 function invalidParameterArtifactArguments() {
   return {
     ...validParameterArtifactArguments(),
@@ -2874,7 +3201,11 @@ function artifactRunSubject(
   responses: ReturnType<typeof artifactModelResponse>[]
 ) {
   const cleanInput: ResponsesInputItem[] = [
-    { type: "message", role: "user", content: "生成泵组选型参数表" }
+    {
+      type: "message",
+      role: "user",
+      content: "生成泵组选型参数表，并导出 CSV。"
+    }
   ];
   const storage: ArtifactStorage & { create: ReturnType<typeof vi.fn> } = {
     create: vi.fn(async (artifactInput) => ({
@@ -2964,7 +3295,9 @@ function artifactRunSubject(
 }
 
 function artifactTransportRunSubject(
-  behaviors: Array<{ kind: "malformed" | "transport_error" | "valid" }>
+  behaviors: Array<{
+    kind: "malformed" | "semantic_invalid" | "transport_error" | "valid";
+  }>
 ) {
   const subject = artifactRunSubject([]);
   const prototype = AgentRunOrchestrator.prototype as unknown as {
@@ -2994,11 +3327,17 @@ function artifactTransportRunSubject(
       });
     }
     const callId =
-      behavior.kind === "malformed" ? "malformed-call" : "valid-call";
+      behavior.kind === "malformed"
+        ? "malformed-call"
+        : behavior.kind === "semantic_invalid"
+          ? "semantic-invalid-call"
+          : "valid-call";
     const argumentsValue =
       behavior.kind === "malformed"
         ? "{private-malformed-arguments"
-        : JSON.stringify(validParameterArtifactArguments());
+        : behavior.kind === "semantic_invalid"
+          ? JSON.stringify(invalidParameterArtifactArguments())
+          : JSON.stringify(validParameterRepairArguments());
     yield {
       type: "function-call",
       callId,

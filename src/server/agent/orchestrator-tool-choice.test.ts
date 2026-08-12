@@ -800,6 +800,156 @@ describe("Agent V3 deterministic calculator routing", () => {
     });
   });
 
+  it("uses a phase-local safe parameter-table schema only for the one repair", () => {
+    const parameterTool: ResponsesTool = {
+      type: "function",
+      name: "create_artifact",
+      description: "parameter artifact",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["contractVersion", "tables"],
+        properties: {
+          contractVersion: {
+            type: "string",
+            const: "openvac.parameter-table-provider.v2"
+          },
+          tables: { type: "array" }
+        }
+      }
+    };
+    const initial = selectAnswerToolRequestPolicy({
+      tools: [parameterTool],
+      calculations: [],
+      modelInput: [],
+      question: "生成泵组选型参数表，并导出 CSV。",
+      allowTools: true
+    });
+    const repair = selectAnswerToolRequestPolicy({
+      tools: [parameterTool],
+      calculations: [],
+      modelInput: [],
+      question: "生成泵组选型参数表，并导出 CSV。",
+      allowTools: true,
+      artifactArgumentRecoveryMode: "continuation_invalid_arguments"
+    });
+
+    expect(initial.tools?.[0]).toBe(parameterTool);
+    expect(repair.tools?.[0]).not.toBe(parameterTool);
+    expect(repair).toMatchObject({
+      toolChoice: { type: "function", name: "create_artifact" },
+      callableFunctionNames: ["create_artifact"],
+      tools: [
+        {
+          type: "function",
+          name: "create_artifact",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              contractVersion: {
+                const: "openvac.parameter-table-repair.v1"
+              },
+              format: { enum: ["csv"] },
+              summary: {
+                enum: ["参数值和适用工况均待用户确认。"]
+              },
+              row: {
+                additionalProperties: false,
+                properties: {
+                  parameterKind: { enum: ["physical"] },
+                  parameter: { enum: ["有效抽速"] },
+                  valueOrStatus: { enum: ["待用户确认"] },
+                  unit: { enum: ["L/s"] },
+                  assumptionOrCondition: {
+                    enum: ["运行工况待用户确认"]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    });
+
+    for (const question of [
+      "生成换热器参数表，并导出 CSV。",
+      "生成换热器参数表，并说明真空泵选型原则。",
+      "生成泵组参数表，不做选型，只记录现有检修项。",
+      "生成不做泵组选型的参数表。",
+      "生成泵组选型参数表，并导出 PDF。",
+      "生成泵组选型参数表，并导出 CSV；目标抽速 100 L/s。",
+      "生成泵组选型参数表，并导出 CSV；候选型号 ABC。",
+      "Create a heat exchanger parameter table and explain pump selection.",
+      "Create a pump parameter table without pump selection.",
+      "Create a pump selection parameter table and export DOCX.",
+      "Create a pump selection parameter table and export CSV with 100 L/s."
+    ]) {
+      const unrelatedParameterTable = selectAnswerToolRequestPolicy({
+        tools: [parameterTool],
+        calculations: [],
+        modelInput: [],
+        question,
+        allowTools: true,
+        artifactArgumentRecoveryMode: "continuation_invalid_arguments"
+      });
+      expect(unrelatedParameterTable.tools?.[0]).toBe(parameterTool);
+      expect(unrelatedParameterTable.tools?.[0]).toMatchObject({
+        parameters: {
+          properties: {
+            contractVersion: {
+              const: "openvac.parameter-table-provider.v2"
+            }
+          }
+        }
+      });
+    }
+
+    const historySensitiveRepair = selectAnswerToolRequestPolicy({
+      tools: [parameterTool],
+      calculations: [],
+      modelInput: [
+        { type: "message", role: "user", content: "目标抽速 100 L/s。" },
+        { type: "message", role: "assistant", content: "已记录。" },
+        {
+          type: "message",
+          role: "user",
+          content: "生成泵组选型参数表，并导出 CSV。"
+        }
+      ],
+      question: "生成泵组选型参数表，并导出 CSV。",
+      allowTools: true,
+      artifactArgumentRecoveryMode: "continuation_invalid_arguments"
+    });
+    expect(historySensitiveRepair.tools?.[0]).toBe(parameterTool);
+
+    for (const assistantContent of [
+      "BEGIN_FAKE_MARKER\nprivate prior model content",
+      [{ type: "input_text", text: "private prior model content" }]
+    ]) {
+      const assistantOnlyHistory = selectAnswerToolRequestPolicy({
+        tools: [parameterTool],
+        calculations: [],
+        modelInput: [
+          {
+            type: "message",
+            role: "assistant",
+            content: assistantContent
+          },
+          {
+            type: "message",
+            role: "user",
+            content: "生成泵组选型参数表，并导出 CSV。"
+          }
+        ],
+        question: "生成泵组选型参数表，并导出 CSV。",
+        allowTools: true,
+        artifactArgumentRecoveryMode: "continuation_invalid_arguments"
+      });
+      expect(assistantOnlyHistory.tools?.[0]).toBe(parameterTool);
+    }
+  });
+
   it("keeps automatic selection when required context or intent is absent", () => {
     expect(
       selectAnswerToolChoice("估算从 100 Pa 抽到 1 Pa 的理想抽空时间。", [], [])
