@@ -2319,7 +2319,8 @@ function shouldUseSafeParameterTableRepair(
     previousPlainUserText([...modelInput], question) !== undefined ||
     modelInput.some(
       (item) => item.type === "message" && item.role === "assistant"
-    )
+    ) ||
+    hasMeaningfulStructuredParameterContext(modelInput)
   ) {
     return false;
   }
@@ -2347,6 +2348,66 @@ function shouldUseSafeParameterTableRepair(
       /^(?:please\s+)?(?:create|generate|make|produce|write)\s+(?:a\s+)?(?:pump|pumping\s+system)\s+(?:selection|sizing)\s+parameter\s+table\s+(?:and\s+)?(?:export|download)(?:\s+it)?\s+(?:as\s+)?csv\s*$/iu.test(
         normalized
       ))
+  );
+}
+
+function hasMeaningfulStructuredParameterContext(
+  modelInput: readonly ResponsesInputItem[]
+): boolean {
+  const structured = new Map<string, Record<string, unknown>>();
+  for (const item of modelInput) {
+    const content =
+      item.type === "message" &&
+      item.role === "user" &&
+      typeof item.content === "string"
+        ? item.content
+        : undefined;
+    const trimmedContent = content?.trim();
+    if (
+      content === undefined ||
+      trimmedContent === undefined ||
+      !trimmedContent.startsWith("BEGIN_")
+    ) {
+      continue;
+    }
+    if (content !== trimmedContent) return true;
+    const newline = content.indexOf("\n");
+    if (newline <= 0 || !content.endsWith("\nEND_UNTRUSTED_DATA")) {
+      return true;
+    }
+    const marker = content.slice(0, newline);
+    if (structured.has(marker)) return true;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(
+        content.slice(newline + 1, -"\nEND_UNTRUSTED_DATA".length)
+      );
+    } catch {
+      return true;
+    }
+    if (!isPlainRecord(payload)) return true;
+    structured.set(marker, payload);
+  }
+  const memory = structured.get("BEGIN_USER_CONFIRMED_CONTEXT");
+  const evidence = structured.get("BEGIN_EVIDENCE_REGISTRY");
+  const parts = structured.get("BEGIN_CURRENT_TURN_PARTS");
+  if (!memory || !evidence || !parts || structured.size !== 3) return true;
+  return !(
+    Object.keys(memory).toSorted().join(",") ===
+      "conversationSummary,schema,userConfirmedMemories" &&
+    memory.schema === "openvac.context.memory.v1" &&
+    Array.isArray(memory.userConfirmedMemories) &&
+    memory.userConfirmedMemories.length === 0 &&
+    memory.conversationSummary === null &&
+    Object.keys(evidence).toSorted().join(",") === "evidence,schema" &&
+    evidence.schema === "openvac.context.evidence.v1" &&
+    Array.isArray(evidence.evidence) &&
+    Object.keys(parts).toSorted().join(",") === "attachmentRefs,links,schema" &&
+    parts.schema === "openvac.context.turn-parts.v1" &&
+    Array.isArray(parts.links) &&
+    parts.links.length === 0 &&
+    Array.isArray(parts.attachmentRefs) &&
+    parts.attachmentRefs.length === 0
   );
 }
 

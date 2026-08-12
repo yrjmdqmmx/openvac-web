@@ -1563,13 +1563,7 @@ describe("Agent V3 artifact provider requests", () => {
         continuationItems: []
       };
     };
-    const cleanInput: ResponsesInputItem[] = [
-      {
-        type: "message",
-        role: "user",
-        content: "生成泵组选型参数表，并导出 CSV。"
-      }
-    ];
+    const cleanInput = emptyParameterRepairContext();
 
     await invoke.collectModelResponse(
       input,
@@ -3107,6 +3101,46 @@ function validParameterRepairArguments() {
   };
 }
 
+function emptyParameterRepairContext(): ResponsesInputItem[] {
+  const message = (marker: string, value: unknown): ResponsesInputItem => ({
+    type: "message",
+    role: "user",
+    content: `${marker}\n${JSON.stringify(value)}\nEND_UNTRUSTED_DATA`
+  });
+  return [
+    message("BEGIN_USER_CONFIRMED_CONTEXT", {
+      schema: "openvac.context.memory.v1",
+      userConfirmedMemories: [],
+      conversationSummary: null
+    }),
+    message("BEGIN_EVIDENCE_REGISTRY", {
+      schema: "openvac.context.evidence.v1",
+      evidence: [
+        {
+          evidenceId: "E1",
+          title: "Vacuum system reference",
+          publisher: "CERN",
+          locator: "Pump selection",
+          excerpt:
+            "A general reference mentions 100 L/s, but it is not a user-supplied design value.",
+          trustTier: "tier_a",
+          reviewStatus: "reviewed"
+        }
+      ]
+    }),
+    message("BEGIN_CURRENT_TURN_PARTS", {
+      schema: "openvac.context.turn-parts.v1",
+      links: [],
+      attachmentRefs: []
+    }),
+    {
+      type: "message",
+      role: "user",
+      content: "生成泵组选型参数表，并导出 CSV。"
+    }
+  ];
+}
+
 function paddedParameterRepairArguments(targetBytes: number): string {
   const raw = JSON.stringify(validParameterRepairArguments());
   const paddingBytes = targetBytes - Buffer.byteLength(raw, "utf8");
@@ -3200,13 +3234,7 @@ function artifactModelResponse(
 function artifactRunSubject(
   responses: ReturnType<typeof artifactModelResponse>[]
 ) {
-  const cleanInput: ResponsesInputItem[] = [
-    {
-      type: "message",
-      role: "user",
-      content: "生成泵组选型参数表，并导出 CSV。"
-    }
-  ];
+  const cleanInput = emptyParameterRepairContext();
   const storage: ArtifactStorage & { create: ReturnType<typeof vi.fn> } = {
     create: vi.fn(async (artifactInput) => ({
       artifactId: "00000000-0000-4000-8000-000000000301",

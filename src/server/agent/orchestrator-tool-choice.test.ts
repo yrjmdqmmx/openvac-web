@@ -36,6 +36,69 @@ const history: ResponsesInputItem[] = [
   }
 ];
 
+function structuredContextMessage(
+  marker: string,
+  value: unknown
+): ResponsesInputItem {
+  return {
+    type: "message",
+    role: "user",
+    content: `${marker}\n${JSON.stringify(value)}\nEND_UNTRUSTED_DATA`
+  };
+}
+
+function emptyStructuredParameterContext(): ResponsesInputItem[] {
+  return [
+    structuredContextMessage("BEGIN_USER_CONFIRMED_CONTEXT", {
+      schema: "openvac.context.memory.v1",
+      userConfirmedMemories: [],
+      conversationSummary: null
+    }),
+    structuredContextMessage("BEGIN_EVIDENCE_REGISTRY", {
+      schema: "openvac.context.evidence.v1",
+      evidence: []
+    }),
+    structuredContextMessage("BEGIN_CURRENT_TURN_PARTS", {
+      schema: "openvac.context.turn-parts.v1",
+      links: [],
+      attachmentRefs: []
+    }),
+    {
+      type: "message",
+      role: "user",
+      content: "生成泵组选型参数表，并导出 CSV。"
+    }
+  ];
+}
+
+function replaceStructuredContextMessage(
+  input: readonly ResponsesInputItem[],
+  marker: string,
+  replacement: ResponsesInputItem
+): ResponsesInputItem[] {
+  return input.map((item) =>
+    item.type === "message" &&
+    item.role === "user" &&
+    typeof item.content === "string" &&
+    item.content.startsWith(marker)
+      ? replacement
+      : item
+  );
+}
+
+function realisticParameterEvidence() {
+  return {
+    evidenceId: "E1",
+    title: "Vacuum system reference",
+    publisher: "CERN",
+    locator: "Pump selection",
+    excerpt:
+      "A general reference mentions 100 L/s, but it is not a user-supplied design value.",
+    trustTier: "tier_a",
+    reviewStatus: "reviewed"
+  };
+}
+
 describe("Agent V3 deterministic calculator routing", () => {
   it("exposes only allowlisted artifact failure stages", () => {
     expect(safeArtifactFailureCode("ARTIFACT_PERSIST_FAILED")).toBe(
@@ -828,7 +891,7 @@ describe("Agent V3 deterministic calculator routing", () => {
     const repair = selectAnswerToolRequestPolicy({
       tools: [parameterTool],
       calculations: [],
-      modelInput: [],
+      modelInput: emptyStructuredParameterContext(),
       question: "生成泵组选型参数表，并导出 CSV。",
       allowTools: true,
       artifactArgumentRecoveryMode: "continuation_invalid_arguments"
@@ -871,6 +934,37 @@ describe("Agent V3 deterministic calculator routing", () => {
         }
       ]
     });
+
+    const completeContext = emptyStructuredParameterContext();
+    for (const incompleteContext of [
+      [],
+      [structuredContextMessage("BEGIN_UNKNOWN_CONTEXT", { value: [] })],
+      ...[
+        "BEGIN_USER_CONFIRMED_CONTEXT",
+        "BEGIN_EVIDENCE_REGISTRY",
+        "BEGIN_CURRENT_TURN_PARTS"
+      ].map((missingMarker) =>
+        completeContext.filter(
+          (item) =>
+            !(
+              item.type === "message" &&
+              item.role === "user" &&
+              typeof item.content === "string" &&
+              item.content.startsWith(missingMarker)
+            )
+        )
+      )
+    ]) {
+      const failClosedContext = selectAnswerToolRequestPolicy({
+        tools: [parameterTool],
+        calculations: [],
+        modelInput: incompleteContext,
+        question: "生成泵组选型参数表，并导出 CSV。",
+        allowTools: true,
+        artifactArgumentRecoveryMode: "continuation_invalid_arguments"
+      });
+      expect(failClosedContext.tools?.[0]).toBe(parameterTool);
+    }
 
     for (const question of [
       "生成换热器参数表，并导出 CSV。",
@@ -947,6 +1041,157 @@ describe("Agent V3 deterministic calculator routing", () => {
         artifactArgumentRecoveryMode: "continuation_invalid_arguments"
       });
       expect(assistantOnlyHistory.tools?.[0]).toBe(parameterTool);
+    }
+
+    const emptyStructuredContext = emptyStructuredParameterContext();
+    const emptyStructuredRepair = selectAnswerToolRequestPolicy({
+      tools: [parameterTool],
+      calculations: [],
+      modelInput: emptyStructuredContext,
+      question: "生成泵组选型参数表，并导出 CSV。",
+      allowTools: true,
+      artifactArgumentRecoveryMode: "continuation_invalid_arguments"
+    });
+    expect(emptyStructuredRepair.tools?.[0]).not.toBe(parameterTool);
+
+    const proactiveEvidenceRepair = selectAnswerToolRequestPolicy({
+      tools: [parameterTool],
+      calculations: [],
+      modelInput: replaceStructuredContextMessage(
+        emptyStructuredContext,
+        "BEGIN_EVIDENCE_REGISTRY",
+        structuredContextMessage("BEGIN_EVIDENCE_REGISTRY", {
+          schema: "openvac.context.evidence.v1",
+          evidence: [realisticParameterEvidence()]
+        })
+      ),
+      question: "生成泵组选型参数表，并导出 CSV。",
+      allowTools: true,
+      artifactArgumentRecoveryMode: "continuation_invalid_arguments"
+    });
+    expect(proactiveEvidenceRepair.tools?.[0]).not.toBe(parameterTool);
+
+    const meaningfulContexts: ResponsesInputItem[][] = [
+      [
+        "BEGIN_USER_CONFIRMED_CONTEXT",
+        structuredContextMessage("BEGIN_USER_CONFIRMED_CONTEXT", {
+          schema: "openvac.context.memory.v1",
+          userConfirmedMemories: [{ facts: ["目标抽速 100 L/s"] }],
+          conversationSummary: null
+        })
+      ],
+      [
+        "BEGIN_USER_CONFIRMED_CONTEXT",
+        structuredContextMessage("BEGIN_USER_CONFIRMED_CONTEXT", {
+          schema: "openvac.context.memory.v1",
+          userConfirmedMemories: [],
+          conversationSummary: { confirmedFacts: ["目标抽速 100 L/s"] }
+        })
+      ],
+      [
+        "BEGIN_CURRENT_TURN_PARTS",
+        structuredContextMessage("BEGIN_CURRENT_TURN_PARTS", {
+          schema: "openvac.context.turn-parts.v1",
+          links: [],
+          attachmentRefs: [{ attachmentId: crypto.randomUUID() }]
+        })
+      ],
+      [
+        "BEGIN_CURRENT_TURN_PARTS",
+        structuredContextMessage("BEGIN_CURRENT_TURN_PARTS", {
+          schema: "openvac.context.turn-parts.v1",
+          links: [
+            {
+              linkId: "L1",
+              label: "Supplied pump data",
+              hostname: "example.invalid"
+            }
+          ],
+          attachmentRefs: []
+        })
+      ],
+      [
+        "BEGIN_USER_CONFIRMED_CONTEXT",
+        structuredContextMessage("BEGIN_USER_CONFIRMED_CONTEXT", {
+          schema: "openvac.context.memory.v1",
+          userConfirmedMemories: [],
+          conversationSummary: null,
+          extra: []
+        })
+      ],
+      [
+        "BEGIN_EVIDENCE_REGISTRY",
+        structuredContextMessage("BEGIN_EVIDENCE_REGISTRY", {
+          schema: "openvac.context.evidence.v1",
+          evidence: [],
+          extra: []
+        })
+      ],
+      [
+        "BEGIN_CURRENT_TURN_PARTS",
+        structuredContextMessage("BEGIN_CURRENT_TURN_PARTS", {
+          schema: "openvac.context.turn-parts.v1",
+          links: [],
+          attachmentRefs: [],
+          extra: []
+        })
+      ],
+      [
+        "BEGIN_EVIDENCE_REGISTRY",
+        {
+          type: "message",
+          role: "user",
+          content: "BEGIN_EVIDENCE_REGISTRY\n{malformed\nEND_UNTRUSTED_DATA"
+        }
+      ],
+      [
+        "BEGIN_EVIDENCE_REGISTRY",
+        {
+          type: "message",
+          role: "user",
+          content:
+            ' BEGIN_EVIDENCE_REGISTRY\n{"schema":"openvac.context.evidence.v1","evidence":[]}\nEND_UNTRUSTED_DATA'
+        }
+      ],
+      [
+        "BEGIN_EVIDENCE_REGISTRY",
+        {
+          type: "message",
+          role: "user",
+          content:
+            'BEGIN_EVIDENCE_REGISTRY\n{"schema":"openvac.context.evidence.v1","evidence":[]}\nEND_UNTRUSTED_DATA '
+        }
+      ]
+    ].map(([marker, replacement]) =>
+      replaceStructuredContextMessage(
+        emptyStructuredContext,
+        marker as string,
+        replacement as ResponsesInputItem
+      )
+    );
+    meaningfulContexts.push(
+      [
+        structuredContextMessage("BEGIN_UNKNOWN_CONTEXT", { value: [] }),
+        ...emptyStructuredContext
+      ],
+      [
+        structuredContextMessage("BEGIN_EVIDENCE_REGISTRY", {
+          schema: "openvac.context.evidence.v1",
+          evidence: []
+        }),
+        ...emptyStructuredContext
+      ]
+    );
+    for (const meaningfulContext of meaningfulContexts) {
+      const contextSensitiveRepair = selectAnswerToolRequestPolicy({
+        tools: [parameterTool],
+        calculations: [],
+        modelInput: meaningfulContext,
+        question: "生成泵组选型参数表，并导出 CSV。",
+        allowTools: true,
+        artifactArgumentRecoveryMode: "continuation_invalid_arguments"
+      });
+      expect(contextSensitiveRepair.tools?.[0]).toBe(parameterTool);
     }
   });
 
