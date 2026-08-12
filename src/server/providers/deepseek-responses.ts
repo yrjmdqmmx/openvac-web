@@ -23,6 +23,7 @@ import type {
   ResponsesToolChoice,
   ResponsesUsage
 } from "./types";
+import { FRESH_ANSWER_JSON_MAX_OUTPUT_TOKENS } from "./types";
 
 const PROVIDER_ID = "deepseek-responses";
 const MODEL = "deepseek-v4-flash";
@@ -114,6 +115,10 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
       request.safeInvocationPhase === "artifact_continuation_repair"
     ) {
       yield* this.streamStrictArtifactRepair(request, apiKey, maxOutputTokens);
+      return;
+    }
+    if (request.safeInvocationPhase === "answer_fresh_json_repair") {
+      yield* this.streamFreshAnswerJsonRepair(request, apiKey, maxOutputTokens);
       return;
     }
     const portableRequest = portableToolRequest(request);
@@ -618,6 +623,152 @@ export class DeepSeekResponsesProvider implements ResponsesProvider {
       deadline.dispose();
     }
   }
+
+  private async *streamFreshAnswerJsonRepair(
+    request: ResponsesStreamRequest,
+    apiKey: string,
+    maxOutputTokens: number
+  ): AsyncGenerator<ResponsesStreamEvent, void, undefined> {
+    if ((request.tools?.length ?? 0) > 0 || request.toolChoice !== "none") {
+      throw invalidFreshAnswerJsonRepair(
+        "Fresh answer JSON repair must disable every tool."
+      );
+    }
+    if (request.textFormat?.type !== "json_schema") {
+      throw invalidFreshAnswerJsonRepair(
+        "Fresh answer JSON repair requires the local AnswerV3 schema."
+      );
+    }
+    if (
+      !isFreshAnswerV3TextFormat(request.textFormat) ||
+      maxOutputTokens !== FRESH_ANSWER_JSON_MAX_OUTPUT_TOKENS
+    ) {
+      throw invalidFreshAnswerJsonRepair(
+        "Fresh answer JSON repair contract does not match the fixed AnswerV3 boundary."
+      );
+    }
+    const messages = freshAnswerJsonMessages(request);
+    const deadline = createProviderDeadline(
+      PROVIDER_ID,
+      this.requestTimeoutMs,
+      request.signal
+    );
+    const startedAt = performance.now();
+
+    try {
+      const response = await this.fetchFn(chatCompletionsUrl(this.baseUrl), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages,
+          response_format: { type: "json_object" },
+          thinking: { type: "disabled" },
+          max_tokens: maxOutputTokens,
+          user_id: request.user,
+          stream: false
+        }),
+        redirect: "error",
+        signal: deadline.signal
+      });
+      const payload = await readJsonResponse(PROVIDER_ID, response);
+      const responseId = pickString(payload, ["id"]);
+      const choices = Array.isArray(payload.choices) ? payload.choices : [];
+      if (!responseId || choices.length !== 1) {
+        throw invalidFreshAnswerJsonRepair(
+          "Fresh answer JSON repair returned an invalid completion envelope."
+        );
+      }
+      const choice = asRecord(choices[0]);
+      const finishReason = pickString(choice, ["finish_reason"]);
+      const message = asRecord(choice.message);
+      const toolCalls = Array.isArray(message.tool_calls)
+        ? message.tool_calls
+        : [];
+      if (toolCalls.length > 0) {
+        throw invalidFreshAnswerJsonRepair(
+          "Fresh answer JSON repair returned a forbidden tool call."
+        );
+      }
+      const outputText = pickString(message, ["content"]) ?? "";
+      const usage = parseChatCompletionsUsage(asRecord(payload.usage));
+      const providerRequestId =
+        response.headers.get("x-request-id") ??
+        response.headers.get("request-id") ??
+        undefined;
+      const firstEventLatencyMs = Math.max(
+        0,
+        Math.round(performance.now() - startedAt)
+      );
+      yield { type: "response-created", responseId };
+      if (finishReason === "length") {
+        yield {
+          type: "finish",
+          status: "incomplete",
+          responseId,
+          outputText,
+          continuationItems: [],
+          usage,
+          incomplete: { reason: "max_output_tokens" },
+          providerRequestId,
+          firstEventLatencyMs,
+          completedWebSearchCalls: 0
+        };
+        return;
+      }
+      if (finishReason === "insufficient_system_resource") {
+        throw new ProviderResponseError(
+          PROVIDER_ID,
+          "Fresh answer JSON repair lacked provider resources.",
+          { status: 200, retryable: true }
+        );
+      }
+      if (finishReason !== "stop") {
+        throw invalidFreshAnswerJsonRepair(
+          `Fresh answer JSON repair ended with ${finishReason ?? "unknown"}.`
+        );
+      }
+      if (outputText) yield { type: "text-delta", text: outputText };
+      yield {
+        type: "finish",
+        status: "completed",
+        responseId,
+        outputText,
+        continuationItems: [],
+        usage,
+        providerRequestId,
+        firstEventLatencyMs,
+        completedWebSearchCalls: 0
+      };
+    } catch (cause) {
+      if (deadline.didTimeout()) throw deadline.timeoutError;
+      if (request.signal?.aborted) throw cause;
+      if (
+        cause instanceof ProviderResponseError &&
+        cause.status === 200 &&
+        cause.message.includes("non-JSON response")
+      ) {
+        throw new ProviderResponseError(
+          PROVIDER_ID,
+          "Fresh answer JSON repair response was interrupted.",
+          { status: 200, retryable: true, cause }
+        );
+      }
+      if (cause instanceof TypeError) {
+        throw new ProviderResponseError(
+          PROVIDER_ID,
+          "Fresh answer JSON repair transport failed.",
+          { retryable: true, cause }
+        );
+      }
+      throw cause;
+    } finally {
+      deadline.dispose();
+    }
+  }
 }
 
 function strictArtifactRepairTool(
@@ -657,6 +808,96 @@ type StrictArtifactRepairMessage =
       }>;
     }
   | { role: "tool"; tool_call_id: string; content: string };
+
+type FreshAnswerJsonMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+const FRESH_ANSWER_V3_FIELDS = [
+  "answerKind",
+  "blocks",
+  "missingInputs",
+  "riskLevel",
+  "schemaVersion",
+  "usedEvidenceIds",
+  "usedLinkIds"
+] as const;
+
+function isFreshAnswerV3TextFormat(
+  format: Extract<ResponsesTextFormat, { type: "json_schema" }>
+): boolean {
+  if (format.name !== "openvac_answer_v3" || format.strict !== true) {
+    return false;
+  }
+  const schema = asRecord(format.schema);
+  const required = Array.isArray(schema.required)
+    ? schema.required.filter((item): item is string => typeof item === "string")
+    : [];
+  const properties = asRecord(schema.properties);
+  const propertyNames = Object.keys(properties).sort();
+  const schemaVersion = asRecord(properties.schemaVersion);
+  const riskLevel = asRecord(properties.riskLevel);
+  const blocks = asRecord(properties.blocks);
+  const missingInputs = asRecord(properties.missingInputs);
+  const usedEvidenceIds = asRecord(properties.usedEvidenceIds);
+  const usedLinkIds = asRecord(properties.usedLinkIds);
+  return (
+    schema.type === "object" &&
+    schema.additionalProperties === false &&
+    required.length === FRESH_ANSWER_V3_FIELDS.length &&
+    required.toSorted().join(",") === FRESH_ANSWER_V3_FIELDS.join(",") &&
+    propertyNames.join(",") === FRESH_ANSWER_V3_FIELDS.join(",") &&
+    schemaVersion.const === "openvac.answer.v3" &&
+    (riskLevel.const === "low" ||
+      riskLevel.const === "medium" ||
+      riskLevel.const === "high") &&
+    blocks.type === "array" &&
+    missingInputs.type === "array" &&
+    usedEvidenceIds.type === "array" &&
+    usedLinkIds.type === "array"
+  );
+}
+
+function freshAnswerJsonMessages(
+  request: ResponsesStreamRequest
+): FreshAnswerJsonMessage[] {
+  if (!Array.isArray(request.input)) {
+    throw invalidFreshAnswerJsonRepair(
+      "Fresh answer JSON repair requires clean message input."
+    );
+  }
+  const inputMessages = request.input.map((item) => {
+    const keys = Object.keys(item).sort();
+    const role = pickString(item, ["role"]);
+    const content = pickString(item, ["content"]);
+    if (
+      item.type !== "message" ||
+      (role !== "user" && role !== "assistant") ||
+      content === undefined ||
+      keys.join(",") !== "content,role,type"
+    ) {
+      throw invalidFreshAnswerJsonRepair(
+        "Fresh answer JSON repair input contains a non-message continuation item."
+      );
+    }
+    return {
+      role: role === "user" ? ("user" as const) : ("assistant" as const),
+      content
+    };
+  });
+  if (!inputMessages.some((message) => message.role === "user")) {
+    throw invalidFreshAnswerJsonRepair(
+      "Fresh answer JSON repair requires one clean user message."
+    );
+  }
+  return [
+    ...(request.instructions
+      ? [{ role: "system" as const, content: request.instructions }]
+      : []),
+    ...inputMessages
+  ];
+}
 
 function strictArtifactRepairMessages(
   request: ResponsesStreamRequest
@@ -822,6 +1063,14 @@ function isEligibleArtifactContinuationOutput(value: unknown): boolean {
 function strictChatCompletionsUrl(baseUrl: string): string {
   const url = new URL(baseUrl);
   url.pathname = "/beta/chat/completions";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function chatCompletionsUrl(baseUrl: string): string {
+  const url = new URL(baseUrl);
+  url.pathname = "/chat/completions";
   url.search = "";
   url.hash = "";
   return url.toString();
@@ -1445,6 +1694,10 @@ function invalidContinuation(message: string): ProviderResponseError {
 }
 
 function invalidStrictArtifactRepair(message: string): ProviderResponseError {
+  return new ProviderResponseError(PROVIDER_ID, message, { retryable: false });
+}
+
+function invalidFreshAnswerJsonRepair(message: string): ProviderResponseError {
   return new ProviderResponseError(PROVIDER_ID, message, { retryable: false });
 }
 

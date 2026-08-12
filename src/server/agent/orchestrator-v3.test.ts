@@ -15,6 +15,7 @@ import {
 import {
   AgentRunOrchestrator,
   MAX_ARTIFACT_PROVIDER_OUTPUT_TOKENS,
+  MAX_FRESH_ANSWER_JSON_OUTPUT_TOKENS,
   localizeKnownCalculationBlocks,
   buildAgentV3InstructionsForRisk,
   candidateUsesOnlyKnownGrounding,
@@ -62,6 +63,21 @@ describe("Agent V3 orchestrator output boundary", () => {
     expect(instructions).toContain("风险等级已固定为 medium");
     expect(instructions).toContain("riskLevel 必须原样使用该值");
     expect(instructions).toContain("不得生成无依据的 expert");
+  });
+
+  it("binds fresh answer regeneration to server-owned link evidence ids", () => {
+    const instructions = buildAgentV3InstructionsForRisk(
+      "medium",
+      undefined,
+      "fresh_json_invalid",
+      ["E2", "E4"]
+    );
+
+    expect(instructions).toContain('["E2","E4"]');
+    expect(instructions).toContain('"evidenceIds":["E2"]');
+    expect(instructions).toContain('"usedEvidenceIds":["E2"]');
+    expect(instructions).toContain('"usedLinkIds":[]');
+    expect(instructions).toContain("不得生成 link_reference");
   });
 
   it("allows repair only when every candidate grounding id is server-known", () => {
@@ -524,21 +540,387 @@ describe("Agent V3 verified link selection repair", () => {
     expect(subject.store.complete).not.toHaveBeenCalled();
   });
 
-  it("reports invalid JSON through the fixed safe validation stage", async () => {
+  it("regenerates invalid JSON once from the clean request input and projects the server link", async () => {
     const subject = verifiedLinkRepairSubject();
+    const cleanInput: ResponsesInputItem[] = [
+      {
+        type: "message",
+        role: "user",
+        content: "clean-current-input-without-provider-output",
+        previous_response_id: "private-previous-response"
+      },
+      {
+        type: "reasoning",
+        content: "private-reasoning-continuation"
+      },
+      {
+        type: "function_call",
+        call_id: "private-call-id",
+        name: "web_search",
+        arguments: "private-call-arguments"
+      },
+      {
+        type: "function_call_output",
+        call_id: "private-call-id",
+        output: "private-tool-output"
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: "clean-canonical-assistant-context",
+        id: "private-continuation-id"
+      }
+    ];
+    const expectedFreshInput: ResponsesInputItem[] = [
+      {
+        type: "message",
+        role: "user",
+        content: "clean-current-input-without-provider-output"
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: "clean-canonical-assistant-context"
+      }
+    ];
+    const request = vi.fn(async () => answerModelResponse(subject.answer([])));
+    subject.invoke.requestWithOneRetry = request;
+
+    const result = await subject.invoke.validateOrRepair({
+      ...subject.input,
+      currentInput: cleanInput,
+      outputText: "{private-invalid-json"
+    });
+    expect(result).toMatchObject({ usedLinkIds: ["W2"] });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({ run: subject.input.run }),
+      expectedFreshInput,
+      subject.input.signal,
+      "answer_fresh_json_repair",
+      false,
+      undefined,
+      "fresh_json_invalid"
+    );
+    expect(JSON.stringify(request.mock.calls[0])).not.toMatch(
+      /private-invalid-json|private-previous-response|private-reasoning-continuation|private-call-id|private-call-arguments|private-tool-output|private-continuation-id/iu
+    );
+    expect(answerWithoutLinks(result)).toEqual(
+      answerWithoutLinks(subject.answer([]))
+    );
+    expect(subject.orchestrator.counters).toMatchObject({ repairs: 1 });
+  });
+
+  it.each([
+    {
+      name: "invalid JSON",
+      regenerated: "{invalid-again",
+      stage: "json_parse"
+    },
+    {
+      name: "schema-invalid JSON",
+      regenerated: JSON.stringify({ schemaVersion: "openvac.answer.v3" }),
+      stage: "schema"
+    }
+  ])("fails closed after fresh regeneration returns $name", async (failure) => {
+    const subject = verifiedLinkRepairSubject();
+    subject.invoke.requestWithOneRetry = vi.fn(async () => ({
+      outputText: failure.regenerated,
+      calls: [],
+      finish: {
+        type: "finish" as const,
+        status: "completed" as const,
+        responseId: "response-failed-answer-regeneration",
+        outputText: failure.regenerated,
+        continuationItems: []
+      },
+      callableFunctionNames: new Set<string>()
+    }));
     subject.invoke.repair = vi.fn();
 
     await expect(
       subject.invoke.validateOrRepair({
         ...subject.input,
-        currentInput: [],
-        outputText: "{invalid-json"
+        currentInput: [
+          { type: "message", role: "user", content: "clean-current-input" }
+        ],
+        outputText: "{initial-invalid-json"
       })
     ).rejects.toMatchObject({
       code: "ANSWER_VALIDATION_FAILED",
-      answerValidationStage: "json_parse"
+      answerValidationStage: failure.stage
     });
+    expect(subject.invoke.requestWithOneRetry).toHaveBeenCalledTimes(1);
     expect(subject.invoke.repair).not.toHaveBeenCalled();
+    expect(subject.store.complete).not.toHaveBeenCalled();
+    expect(subject.orchestrator.counters).toMatchObject({ repairs: 1 });
+  });
+
+  it("does not apply raw malformed-link recovery to a fresh answer", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const base = subject.answer([]);
+    const malformedFresh = JSON.stringify({
+      ...base,
+      blocks: [...base.blocks, { type: "link_reference", label: "invalid" }]
+    });
+    subject.invoke.requestWithOneRetry = vi.fn(async () => ({
+      outputText: malformedFresh,
+      calls: [],
+      finish: {
+        type: "finish" as const,
+        status: "completed" as const,
+        responseId: "response-malformed-fresh-link",
+        outputText: malformedFresh,
+        continuationItems: []
+      },
+      callableFunctionNames: new Set<string>()
+    }));
+    subject.invoke.repair = vi.fn();
+
+    await expect(
+      subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [
+          { type: "message", role: "user", content: "clean-current-input" }
+        ],
+        outputText: "{initial-invalid-json"
+      })
+    ).rejects.toMatchObject({
+      code: "ANSWER_VALIDATION_FAILED",
+      answerValidationStage: "schema"
+    });
+    expect(subject.invoke.requestWithOneRetry).toHaveBeenCalledTimes(1);
+    expect(subject.invoke.repair).not.toHaveBeenCalled();
+  });
+
+  it("checks cancellation before consuming the fresh regeneration quota", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const controller = new AbortController();
+    controller.abort();
+    subject.invoke.requestWithOneRetry = vi.fn();
+
+    await expect(
+      subject.invoke.validateOrRepair({
+        ...subject.input,
+        currentInput: [
+          { type: "message", role: "user", content: "clean-current-input" }
+        ],
+        outputText: "{initial-invalid-json",
+        signal: controller.signal
+      })
+    ).rejects.toThrow();
+    expect(subject.invoke.requestWithOneRetry).not.toHaveBeenCalled();
+    expect(subject.orchestrator.counters).toMatchObject({ repairs: 0 });
+  });
+
+  it("persists exactly once after one fresh regeneration and no tool side effect", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const cleanInput: ResponsesInputItem[] = [
+      { type: "message", role: "user", content: "clean-current-input" }
+    ];
+    subject.invoke.contextBuilder = {
+      build: async () => ({ input: cleanInput, disclosure: {} })
+    };
+    const regenerated = answerModelResponse(subject.answer([]));
+    const responses = [
+      {
+        ...regenerated,
+        outputText: "{initial-invalid-json",
+        finish: {
+          ...regenerated.finish,
+          responseId: "response-initial-invalid-json",
+          outputText: "{initial-invalid-json"
+        }
+      },
+      regenerated
+    ];
+    const request = vi.fn(async (..._args: unknown[]) => {
+      void _args;
+      subject.invoke.modelRequests += 1;
+      const response = responses.shift();
+      if (!response) throw new Error("Unexpected third model request.");
+      return response;
+    });
+    subject.invoke.requestWithOneRetry = request;
+
+    await expect(
+      subject.orchestrator.run(subject.input)
+    ).resolves.toMatchObject({ status: "completed" });
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls[0]?.[1]).toEqual(cleanInput);
+    expect(request.mock.calls[0]?.[4]).toBe(true);
+    expect(request.mock.calls[1]?.[1]).toEqual(cleanInput);
+    expect(request.mock.calls[1]?.[4]).toBe(false);
+    expect(request.mock.calls[1]?.[6]).toBe("fresh_json_invalid");
+    expect(subject.store.recordToolCall).not.toHaveBeenCalled();
+    expect(subject.store.complete).toHaveBeenCalledTimes(1);
+    expect(subject.orchestrator.counters).toMatchObject({
+      modelRequests: 2,
+      retries: 0,
+      repairs: 1,
+      toolRounds: 0,
+      toolCalls: 0
+    });
+  });
+
+  it("keeps a full run fail-closed after the fresh semantic result is invalid", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const cleanInput: ResponsesInputItem[] = [
+      { type: "message", role: "user", content: "clean-current-input" }
+    ];
+    subject.invoke.contextBuilder = {
+      build: async () => ({ input: cleanInput, disclosure: {} })
+    };
+    const invalidResponse = (responseId: string, outputText: string) => ({
+      outputText,
+      calls: [],
+      finish: {
+        type: "finish" as const,
+        status: "completed" as const,
+        responseId,
+        outputText,
+        continuationItems: []
+      },
+      callableFunctionNames: new Set<string>()
+    });
+    const responses = [
+      invalidResponse("response-initial-invalid", "{invalid-json"),
+      invalidResponse(
+        "response-fresh-schema-invalid",
+        JSON.stringify({ schemaVersion: "openvac.answer.v3" })
+      )
+    ];
+    const request = vi.fn(async (..._args: unknown[]) => {
+      void _args;
+      subject.invoke.modelRequests += 1;
+      const response = responses.shift();
+      if (!response) throw new Error("Unexpected third model request.");
+      return response;
+    });
+    subject.invoke.requestWithOneRetry = request;
+
+    await expect(subject.orchestrator.run(subject.input)).rejects.toMatchObject(
+      {
+        code: "ANSWER_VALIDATION_FAILED",
+        answerValidationStage: "schema",
+        retryable: false
+      }
+    );
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(subject.store.recordToolCall).not.toHaveBeenCalled();
+    expect(subject.store.complete).not.toHaveBeenCalled();
+    expect(subject.orchestrator.counters).toMatchObject({
+      modelRequests: 2,
+      retries: 0,
+      repairs: 1,
+      toolRounds: 0,
+      toolCalls: 0
+    });
+  });
+
+  it("uses the original context after a prior tool continuation round", async () => {
+    const subject = verifiedLinkRepairSubject();
+    const originalContext: ResponsesInputItem[] = [
+      { type: "message", role: "user", content: "clean-original-context" }
+    ];
+    subject.invoke.contextBuilder = {
+      build: async () => ({ input: originalContext, disclosure: {} })
+    };
+    const continuationCall = {
+      callId: "continuation-call",
+      name: "search_knowledge",
+      arguments: "{}"
+    };
+    const continuationResponse = {
+      outputText: "",
+      calls: [continuationCall],
+      finish: {
+        type: "finish" as const,
+        status: "completed" as const,
+        responseId: "response-tool-continuation",
+        outputText: "",
+        continuationItems: [
+          {
+            type: "message",
+            role: "assistant",
+            content: "private-assistant-continuation"
+          },
+          {
+            type: "function_call",
+            call_id: continuationCall.callId,
+            name: continuationCall.name,
+            arguments: continuationCall.arguments
+          }
+        ]
+      },
+      callableFunctionNames: new Set([continuationCall.name])
+    };
+    const invalidAnswerResponse = {
+      outputText: "{initial-invalid-json",
+      calls: [],
+      finish: {
+        type: "finish" as const,
+        status: "completed" as const,
+        responseId: "response-after-tool-invalid-json",
+        outputText: "{initial-invalid-json",
+        continuationItems: []
+      },
+      callableFunctionNames: new Set<string>()
+    };
+    const regenerated = answerModelResponse(subject.answer([]));
+    const responses = [
+      continuationResponse,
+      invalidAnswerResponse,
+      regenerated
+    ];
+    const request = vi.fn(async (..._args: unknown[]) => {
+      void _args;
+      subject.invoke.modelRequests += 1;
+      const response = responses.shift();
+      if (!response) throw new Error("Unexpected fourth model request.");
+      return response;
+    });
+    subject.invoke.requestWithOneRetry = request;
+    subject.invoke.executeToolCalls = vi.fn(async () => [
+      {
+        ok: true,
+        outputItem: {
+          type: "function_call_output",
+          call_id: continuationCall.callId,
+          output: "private-tool-continuation-output"
+        },
+        evidenceIds: [],
+        calculations: [],
+        verifiedLinks: [],
+        artifacts: [],
+        missingInputs: []
+      }
+    ]);
+
+    await expect(
+      subject.orchestrator.run(subject.input)
+    ).resolves.toMatchObject({ status: "completed" });
+
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(request.mock.calls[0]?.[1]).toEqual(originalContext);
+    expect(JSON.stringify(request.mock.calls[1]?.[1])).toMatch(
+      /private-assistant-continuation|private-tool-continuation-output/iu
+    );
+    expect(request.mock.calls[2]?.[1]).toEqual(originalContext);
+    expect(JSON.stringify(request.mock.calls[2]?.[1])).not.toMatch(
+      /private-assistant-continuation|private-tool-continuation-output|continuation-call|function_call/iu
+    );
+    expect(request.mock.calls[2]?.[4]).toBe(false);
+    expect(request.mock.calls[2]?.[6]).toBe("fresh_json_invalid");
+    expect(subject.invoke.executeToolCalls).toHaveBeenCalledTimes(1);
+    expect(subject.store.complete).toHaveBeenCalledTimes(1);
+    expect(subject.orchestrator.counters).toMatchObject({
+      modelRequests: 3,
+      repairs: 1,
+      toolRounds: 1
+    });
   });
 
   it("reports a parsed non-Answer object as a schema-stage failure", async () => {
@@ -1293,6 +1675,119 @@ describe("Agent V3 artifact provider requests", () => {
     expect(invoke.retries).toBe(1);
   });
 
+  it("builds a tool-free fresh answer request without the failed provider output", async () => {
+    const { invoke, input } = artifactRequestSubject();
+    const cleanInput: ResponsesInputItem[] = [
+      {
+        type: "message",
+        role: "user",
+        content: "clean-answer-input"
+      }
+    ];
+    const requests: ResponsesStreamRequest[] = [];
+    invoke.meteredStream = async function* (_input, request) {
+      requests.push(request);
+      yield {
+        type: "finish",
+        status: "completed",
+        responseId: "response-fresh-answer-json",
+        outputText: JSON.stringify(finalAnswer),
+        continuationItems: []
+      };
+    };
+
+    await invoke.collectModelResponse(
+      input,
+      cleanInput,
+      input.signal,
+      "answer_fresh_json_repair",
+      false,
+      undefined,
+      "fresh_json_invalid"
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      input: cleanInput,
+      toolChoice: "none",
+      maxOutputTokens: MAX_FRESH_ANSWER_JSON_OUTPUT_TOKENS,
+      safeInvocationPhase: "answer_fresh_json_repair"
+    });
+    expect(requests[0]?.tools).toBeUndefined();
+    expect(requests[0]?.instructions).toContain("上一次最终答案不是合法 JSON");
+    expect(requests[0]?.instructions).toContain("不得调用任何工具");
+    expect(requests[0]?.instructions).toContain("顶层必须且只能包含");
+    expect(requests[0]?.instructions).toContain("只使用 paragraph block");
+    expect(requests[0]?.instructions).toContain(
+      '"schemaVersion":"openvac.answer.v3"'
+    );
+    expect(requests[0]?.instructions).toContain('"usedLinkIds":[]');
+    expect(requests[0]?.instructions).not.toContain(
+      "上一次 create_artifact 参数不是合法 JSON"
+    );
+    expect(JSON.stringify(requests[0]?.input)).not.toMatch(
+      /private-invalid-json|previous_response_id|continuation|reasoning item/iu
+    );
+  });
+
+  it("retries a fresh answer transport fault with the identical clean payload", async () => {
+    const { invoke, input } = artifactRequestSubject();
+    const cleanInput: ResponsesInputItem[] = [
+      { type: "message", role: "user", content: "clean-answer-input" }
+    ];
+    const requests: ResponsesStreamRequest[] = [];
+    const phases: string[] = [];
+    let attempt = 0;
+    invoke.meteredStream = async function* (_input, request, phase) {
+      requests.push(request);
+      phases.push(phase);
+      attempt += 1;
+      if (attempt === 1) {
+        throw new ProviderError("transient", {
+          provider: "deepseek-responses",
+          status: 503,
+          retryable: true
+        });
+      }
+      yield {
+        type: "finish",
+        status: "completed",
+        responseId: "response-fresh-answer-retry",
+        outputText: JSON.stringify(finalAnswer),
+        continuationItems: []
+      };
+    };
+
+    await expect(
+      invoke.requestWithOneRetry(
+        input,
+        cleanInput,
+        input.signal,
+        "answer_fresh_json_repair",
+        false,
+        undefined,
+        "fresh_json_invalid"
+      )
+    ).resolves.toMatchObject({
+      outputText: "",
+      finish: { status: "completed" }
+    });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
+    expect(requests[0]).toMatchObject({
+      input: cleanInput,
+      toolChoice: "none",
+      maxOutputTokens: MAX_FRESH_ANSWER_JSON_OUTPUT_TOKENS,
+      safeInvocationPhase: "answer_fresh_json_repair"
+    });
+    expect(phases).toEqual([
+      "answer_fresh_json_repair",
+      "answer_fresh_json_repair_retry"
+    ]);
+    expect(invoke.retries).toBe(1);
+  });
+
   it("does not create a transport retry after cancellation wins the failure race", async () => {
     const { invoke, input } = artifactRequestSubject();
     const controller = new AbortController();
@@ -2034,7 +2529,8 @@ function artifactRequestSubject() {
       phase: string,
       allowTools: boolean,
       artifactRecoveryMode?:
-        "fresh_json_invalid" | "continuation_invalid_arguments"
+        "fresh_json_invalid" | "continuation_invalid_arguments",
+      answerJsonRecoveryMode?: "fresh_json_invalid"
     ): Promise<unknown>;
     requestWithOneRetry(
       input: ReturnType<typeof artifactRunInput>,
@@ -2043,7 +2539,8 @@ function artifactRequestSubject() {
       phase: string,
       allowTools: boolean,
       artifactRecoveryMode?:
-        "fresh_json_invalid" | "continuation_invalid_arguments"
+        "fresh_json_invalid" | "continuation_invalid_arguments",
+      answerJsonRecoveryMode?: "fresh_json_invalid"
     ): Promise<unknown>;
   };
   invoke.tools = new ToolRegistry(new EvidenceRegistry(), {
@@ -2111,6 +2608,7 @@ function verifiedLinkRepairSubject() {
     proactiveKnowledgeSearch(): Promise<void>;
     proactiveAttachmentEvidence(): Promise<void>;
     proactiveWebSearch(): Promise<void>;
+    executeToolCalls: ReturnType<typeof vi.fn>;
     repair(
       request: typeof input & { outputText: string },
       errors: string[]
