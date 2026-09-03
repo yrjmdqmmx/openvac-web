@@ -95,7 +95,17 @@ export default async function HomePage() {
 
       <footer className="relative z-10 border-t border-[var(--border)] bg-[rgba(255,255,255,0.68)] text-[#465057] backdrop-blur-xl">
         <div className="footer-shell flex flex-col gap-5 py-8 text-xs sm:min-h-[135px] sm:flex-row sm:items-center sm:justify-between sm:py-0">
-          <span>© 2026 OpenVac · 真空泵专家 Agent</span>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <span>© 2026 OpenVac · 真空泵专家 Agent</span>
+            <a
+              href="https://beian.miit.gov.cn/"
+              target="_blank"
+              rel="noreferrer"
+              className="transition-colors hover:text-[var(--ink)]"
+            >
+              浙ICP备2026071869号-2
+            </a>
+          </div>
           <nav className="flex flex-wrap gap-5" aria-label="页脚导航">
             <Link href="/product">产品说明</Link>
             <Link href="/legal/terms">服务协议</Link>
