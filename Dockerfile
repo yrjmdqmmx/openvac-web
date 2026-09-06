@@ -6,7 +6,7 @@ COPY public/semacad/semacad-liquid-metal-poster.avif /semacad-liquid-metal-poste
 COPY scripts/verify-semacad-release.ts /verify-semacad-release.ts
 COPY src/lib/semacad-release.ts /semacad-release.ts
 
-FROM node:24-alpine AS base
+FROM node:26-alpine AS base
 ARG PNPM_VERSION=10.28.2
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
